@@ -3,6 +3,13 @@
 ## System Overview
 A secure, scalable platform for continuously finetuning private Small Language Models using multimodal personal health data on RunPod infrastructure.
 
+### Key Enhancement: Axolotl Integration
+The system now leverages **Axolotl** for optimized serverless fine-tuning with:
+- **Efficient Training**: QLoRA, LoRA, and DPO support
+- **Serverless Architecture**: RunPod integration for scale-to-zero deployments
+- **Advanced Optimizations**: Flash Attention, gradient checkpointing, sample packing
+- **Multi-format Support**: ShareGPT, Alpaca, and custom conversation formats
+
 ## A. Data Types & Preparation
 
 ### Data Sources and Formats
@@ -182,6 +189,34 @@ training_config:
   warmup_ratio: 0.1
   max_epochs: 3
   early_stopping_patience: 5
+```
+
+### Axolotl-Enhanced Training Pipeline
+
+```yaml
+axolotl_features:
+  quantization:
+    - method: QLoRA (4-bit)
+    - memory_savings: ~75%
+    - performance_impact: <5% accuracy loss
+
+  optimization:
+    - flash_attention: 2x faster training
+    - gradient_checkpointing: 40% memory reduction
+    - sample_packing: 15% efficiency gain
+
+  serverless_deployment:
+    platform: RunPod
+    container: winglian/axolotl-cloud:main-latest
+    scaling:
+      min_instances: 0
+      max_instances: 10
+      idle_timeout: 60s
+
+  data_formats:
+    - ShareGPT: Multi-turn conversations
+    - Alpaca: Instruction-following
+    - Custom: Health-specific templates
 ```
 
 ## C. Privacy, Security, and Containerization

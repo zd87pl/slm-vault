@@ -1,0 +1,37 @@
+FROM winglian/axolotl-cloud:main-latest
+
+# Additional dependencies for health data processing
+RUN pip install --no-cache-dir \
+    redis \
+    boto3 \
+    cryptography \
+    differential-privacy \
+    pandas \
+    scikit-learn
+
+# Install genetic data processing tools
+RUN pip install --no-cache-dir \
+    biopython \
+    pysam
+
+# Create directories
+RUN mkdir -p /app /data /models /configs
+
+# Copy our custom code
+COPY src/axolotl_training.py /app/
+COPY src/data_pipeline.py /app/
+COPY src/security.py /app/
+
+WORKDIR /app
+
+# Environment variables
+ENV PYTHONPATH=/app:$PYTHONPATH
+ENV CUDA_VISIBLE_DEVICES=0
+ENV TOKENIZERS_PARALLELISM=false
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s \
+    CMD python -c "import torch; print(torch.cuda.is_available())"
+
+# RunPod handler entry point
+CMD ["python", "-u", "/app/axolotl_training.py"]

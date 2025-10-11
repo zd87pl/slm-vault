@@ -1,0 +1,103 @@
+# Example Axolotl configuration for Personal SLM fine-tuning
+base_model: meta-llama/Llama-3.2-1B
+model_type: LlamaForCausalLM
+tokenizer_type: AutoTokenizer
+
+# 4-bit quantization for efficient training
+load_in_8bit: false
+load_in_4bit: true
+
+# LoRA configuration
+adapter: qlora
+lora_r: 16
+lora_alpha: 32
+lora_dropout: 0.05
+lora_target_modules:
+  - q_proj
+  - v_proj
+  - k_proj
+  - o_proj
+  - gate_proj
+  - up_proj
+  - down_proj
+lora_target_linear: true
+
+# Special tokens for health data
+special_tokens:
+  - <genetic_context>
+  - </genetic_context>
+  - <fitness_metrics>
+  - </fitness_metrics>
+  - <health_goal>
+  - </health_goal>
+  - <recovery_status>
+  - </recovery_status>
+
+# Dataset configuration
+datasets:
+  - path: ./data/health_conversations.jsonl
+    type: sharegpt
+    conversation: chatml  # or vicuna
+
+# Sequence and packing
+sequence_len: 2048
+sample_packing: true
+pad_to_sequence_len: true
+
+# Training hyperparameters
+micro_batch_size: 2
+gradient_accumulation_steps: 4
+num_epochs: 3
+
+# Optimizer
+optimizer: paged_adamw_8bit
+lr_scheduler: cosine
+learning_rate: 0.0002
+
+# Training optimizations
+gradient_checkpointing: true
+flash_attention: true
+bf16: true
+tf32: true
+
+# Checkpointing
+save_steps: 100
+eval_steps: 50
+logging_steps: 10
+output_dir: ./outputs
+
+# Weights & Biases
+wandb_project: personal-slm
+wandb_watch: gradients
+wandb_log_model: checkpoint
+
+# Early stopping
+early_stopping_patience: 3
+load_best_model_at_end: true
+
+# DPO configuration (optional)
+# rl: dpo
+# dpo_beta: 0.1
+# dpo_label_smoothing: 0.0
+# dpo_loss: sigmoid
+
+# Evaluation
+val_set_size: 0.1
+eval_table_size: 10
+eval_max_new_tokens: 128
+
+# Advanced settings
+warmup_steps: 100
+weight_decay: 0.01
+max_grad_norm: 1.0
+seed: 42
+
+# Multi-GPU settings (if applicable)
+ddp: true
+fsdp:
+  - full_shard
+  - auto_wrap
+fsdp_config:
+  fsdp_limit_all_gathers: true
+  fsdp_sync_module_states: true
+  fsdp_offload_params: false
