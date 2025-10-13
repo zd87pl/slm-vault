@@ -1,0 +1,37 @@
+# WDVA PoC Requirements
+# Copyright © 2025 Zygmunt Dyras. All rights reserved.
+
+# Core ML
+torch>=2.1.0
+transformers>=4.36.0
+accelerate>=0.25.0
+bitsandbytes>=0.41.0
+peft>=0.7.0
+
+# Cryptography
+cryptography>=41.0.0
+pynacl>=1.5.0
+argon2-cffi>=23.0.0
+
+# Genomics
+cyvcf2>=0.30.0
+numpy>=1.24.0
+scipy>=1.11.0
+
+# API (for demo)
+fastapi>=0.104.0
+uvicorn>=0.24.0
+python-multipart>=0.0.6
+pydantic>=2.5.0
+
+# Utilities
+pyyaml>=6.0
+tqdm>=4.66.0
+pandas>=2.1.0
+python-dotenv>=1.0.0
+
+# Development
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.0.0
+ruff>=0.1.0
