@@ -1,10 +1,10 @@
-# SLM Vault
+# Genetic Fitness Platform with EVO2 (WDVA Architecture)
 
-> Your DNA. Your Data. Your AI.
+> Weight-Delta Vault Adapters for Privacy-Preserving Personalized Health AI
 
 ## Vision
 
-A privacy-first platform where every individual owns a continuously learning AI model trained on their unique biological and behavioral data. We're building the future of personalized health optimization—where your genetics meet your daily metrics to create insights no generic AI could ever provide.
+A revolutionary genetic-fitness platform leveraging our patented Weight-Delta Vault Adapters (WDVA) technology and EVO2 evolutionary optimization framework. This privacy-first system enables individuals to own continuously learning AI models trained on their unique genetic profiles and fitness data, delivering unprecedented personalization without compromising privacy.
 
 ## The Problem
 
@@ -14,13 +14,14 @@ Current health AI solutions are either:
 - **Privacy-invasive**: Your most intimate health data controlled by big tech companies
 - **Static**: Test results that never evolve with your changing health
 
-## Our Solution
+## Our Solution: WDVA Technology
 
-**Personal SLMs (Small Language Models)** that:
-- Learn from your unique genetic profile (via EVO2 embeddings)
-- Continuously adapt to your fitness metrics and lifestyle
-- Remain completely under your control (encrypted, user-owned)
-- Improve over time as they learn your patterns and responses
+**Weight-Delta Vault Adapters (WDVA)** enable:
+- **Encrypted Weight Deltas**: Per-user model adaptations stored as encrypted vaults with ephemeral runtime merging
+- **EVO2 Genetic Optimization**: Evolutionary algorithms optimizing fitness recommendations based on genomic variants
+- **MCP-Gated Consent**: Granular, cryptographically-enforced consent management with Model Context Protocol
+- **Genomics-Aware Processing**: Specialized VCF file handling with uncertainty quantification and non-diagnostic boundaries
+- **Cryptographic Right-to-be-Forgotten**: Immediate model forgetting through key destruction rather than data deletion
 
 ## Key Differentiators
 
@@ -36,17 +37,18 @@ Unlike static genetic reports, your model evolves daily, learning from every wor
 ### 🚀 Accessible Everywhere
 Query your personal health AI through ChatGPT, mobile apps, wearables, or API—while maintaining complete data sovereignty.
 
-## Architecture Overview
+## WDVA Architecture Overview
 
 ```
-User Data Sources          Processing Layer           Intelligence Layer          Access Points
+User Data Sources          WDVA Processing            Intelligence Layer          Access Points
 ─────────────────         ─────────────────          ─────────────────          ─────────────
 
-Genetic Sequencing  ──┐                                                    ┌──▶ ChatGPT Plugin
-                      │                                                    │
-Fitness Wearables   ──┼──▶ Secure Pipeline ──▶ Personal SLM (RunPod) ────┼──▶ Mobile App
-                      │         (Axolotl)          (Your Model)           │
-Health Records      ──┘                                                    └──▶ Developer API
+VCF Genomic Files  ──┐                                                     ┌──▶ MCP Gateway
+                     │    ┌─────────────────┐      ┌──────────────┐      │    (Consent-Gated)
+Fitness Metrics    ──┼───▶│ Weight-Delta    │─────▶│ EVO2 Genetic │─────┼──▶ Health Agents
+                     │    │ Vault Adapters  │      │ Optimizer    │      │    (Trusted AI)
+Biometric Data     ──┘    └─────────────────┘      └──────────────┘      └──▶ Secure API
+                          Encrypted Storage         Ephemeral Merge            (JWT Tokens)
 ```
 
 ## Use Cases
@@ -68,11 +70,18 @@ Health Records      ──┘                                                   
 
 ## Technology Stack
 
-- **Genetic Analysis**: EVO2 for genomic embeddings
-- **Model Training**: Axolotl with QLoRA optimization
-- **Infrastructure**: RunPod serverless GPUs (scale-to-zero)
-- **Security**: HIPAA-compliant, end-to-end encryption
-- **Distribution**: OpenAI GPT Store, native apps
+### Core WDVA Components
+- **Cryptographic Layer**: XChaCha20-Poly1305 encryption with 256-bit keys
+- **Genetic Processing**: EVO2 evolutionary optimizer with VCF variant analysis
+- **Weight Delta Storage**: Encrypted per-user adapters with Associated Authenticated Data (AAD)
+- **Runtime Merging**: Ephemeral TEE-based model fusion (Intel SGX/ARM TrustZone)
+- **Consent Management**: MCP-gated JWT tokens with hierarchical scopes
+
+### Infrastructure
+- **Model Training**: Axolotl with DoRA/LoRA parameter-efficient fine-tuning
+- **Compute**: RunPod serverless GPUs with secure enclaves
+- **Security**: GDPR Article 9 compliant, HIPAA technical safeguards
+- **Distribution**: OpenAI GPT Store, native apps, healthcare integrations
 
 ## Business Model
 
@@ -142,8 +151,23 @@ Reach out for integration opportunities: partners@slm-vault.ai
 ### For Investors
 Series A conversations beginning Q1 2026: investors@slm-vault.ai
 
+## Intellectual Property
+
+### Patent Portfolio
+- **Weight-Delta Vault Adapters (WDVA)**: Patent pending for privacy-preserving AI personalization
+- **EVO2 Genetic Optimizer**: Proprietary evolutionary algorithms for genomics-aware fitness optimization
+- **Cryptographic Right-to-be-Forgotten**: Novel key destruction methodology for immediate data erasure
+
+### Technical Innovations
+- First practical implementation of ephemeral runtime merging for neural networks
+- Healthcare-specific privacy engineering for genomics data
+- Genomics-aware uncertainty quantification with non-diagnostic safeguards
+- MCP-integrated consent management framework
+
 ---
 
-*Building the future where every person has their own health AI that knows them better than any doctor, coach, or nutritionist ever could—while keeping their data completely private.*
+*Building the future of genetic fitness optimization where personalized health AI respects privacy by design.*
 
-**SLM Vault** - Personal Intelligence for Personal Health
+**Genetic Fitness Platform with EVO2** - Privacy-Preserving Personalized Health Intelligence
+
+Copyright © 2025 Zygmunt Dyras. All rights reserved.
