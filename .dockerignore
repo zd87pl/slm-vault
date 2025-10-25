@@ -1,0 +1,73 @@
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+
+# Test files
+tests/
+*.test.py
+
+# Documentation (not needed in container)
+*.md
+!README.md
+ROADMAP.md
+BACKLOG.md
+POC_READINESS_REVIEW.md
+BROWSER_EXTENSION_MCP_ARCHITECTURE.md
+IMPLEMENTATION_SUMMARY.md
+REAL_WORLD_APPLICATIONS.md
+TEST_COVERAGE.md
+RUNPOD_DEPLOYMENT.md
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Outputs and cache
+outputs/
+.cache/
+*.log
+*.safetensors
+*.enc
+*.json
+
+# Scripts (not needed in runtime)
+scripts/
+*.sh
+
+# Docker
+Dockerfile
+.dockerignore
+
+# Environment
+.env
+.env.*
+*.pem
+*.key
+
+# Large test data
+*.bin
+*.pt
+*.ckpt
+models/
+data/
+
+# Tianjin conductor directory
+.conductor/
