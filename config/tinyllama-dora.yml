@@ -1,0 +1,89 @@
+# TinyLlama DoRA Training Configuration for Axolotl
+# Optimized for RTX 4090 with 24GB VRAM
+
+# ============= BASE MODEL =============
+base_model: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+model_type: LlamaForCausalLM
+tokenizer_type: LlamaTokenizer
+
+# ============= QUANTIZATION (QDoRA) =============
+load_in_4bit: true          # QDoRA - 4-bit quantization for memory efficiency
+load_in_8bit: false         # Don't use 8-bit (compatibility issues with FSDP)
+
+# ============= DoRA ADAPTER CONFIGURATION =============
+adapter: lora
+peft_use_dora: true         # ENABLE DoRA (this is the key parameter!)
+
+# DoRA/LoRA parameters
+lora_r: 16                  # Rank - DoRA works well at lower ranks
+lora_alpha: 32              # 2× rank (standard scaling factor)
+lora_dropout: 0.05          # Low dropout for DoRA
+lora_target_linear: true    # Target all linear layers
+
+# Explicitly target modules (alternative to lora_target_linear)
+lora_target_modules:
+  - gate_proj
+  - down_proj
+  - up_proj
+  - q_proj
+  - v_proj
+  - k_proj
+  - o_proj
+
+# ============= DATASET =============
+datasets:
+  - path: yahma/alpaca-cleaned
+    type: alpaca
+
+dataset_prepared_path: ./prepared-dora-data
+val_set_size: 0.05
+sequence_len: 1024
+
+# ============= TRAINING PARAMETERS =============
+micro_batch_size: 2
+gradient_accumulation_steps: 2
+num_epochs: 3
+
+# Optimizer and scheduler
+optimizer: adamw_bnb_8bit         # 8-bit Adam for memory efficiency
+lr_scheduler: cosine
+learning_rate: 0.00015            # Slightly lower than LoRA (DoRA recommendation)
+
+# ============= OPTIMIZATION =============
+bf16: auto                        # Use bfloat16 if available
+tf32: false                       # Disable TF32
+gradient_checkpointing: true      # Enable for memory efficiency
+flash_attention: true             # Use Flash Attention 2 if available
+sample_packing: true              # Pack samples for efficiency
+
+# ============= OUTPUT =============
+output_dir: ./outputs/tinyllama-dora
+
+# Logging
+logging_steps: 10
+eval_steps: 100
+save_steps: 100
+save_strategy: steps
+save_total_limit: 2
+
+# ============= WEIGHTS & BIASES (Optional) =============
+# Uncomment and configure if using W&B
+# wandb_project: tinyllama-dora-training
+# wandb_entity: your-entity
+# wandb_watch: false
+# wandb_log_model: false
+
+# ============= ADVANCED OPTIONS =============
+# Uncomment if needed
+# gradient_clipping: 1.0
+# warmup_steps: 10
+# weight_decay: 0.0
+# max_steps: 1000
+
+# ============= SPECIAL TOKENS =============
+# TinyLlama chat template tokens
+special_tokens:
+  pad_token: "<pad>"
+  bos_token: "<s>"
+  eos_token: "</s>"
+  unk_token: "<unk>"

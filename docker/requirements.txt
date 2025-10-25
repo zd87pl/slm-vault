@@ -1,0 +1,28 @@
+# Core dependencies
+torch>=2.1.0
+transformers>=4.36.0
+peft>=0.9.0
+accelerate>=0.26.0
+bitsandbytes>=0.41.0
+safetensors>=0.4.0
+datasets>=2.16.0
+
+# Cryptography
+pycryptodome>=3.19.0
+cryptography>=41.0.0
+
+# Compression
+zstandard>=0.22.0
+
+# RunPod
+runpod>=1.7.0
+
+# Utilities
+python-dotenv>=1.0.0
+scipy>=1.11.0
+
+# Optional: Training with Axolotl
+# axolotl[flash-attn,deepspeed]>=0.4.0
+
+# Optional: Monitoring
+# wandb>=0.16.0
