@@ -392,9 +392,13 @@ def inference_with_encrypted_dora(config: Dict[str, Any]) -> Dict[str, Any]:
         text = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
         result = {
-            "text": text,
+            "response": text,
             "prompt": prompt,
-            "model": model_name
+            "metadata": {
+                "model": model_name,
+                "cache_hit": False,
+                "mode": "basic_inference"
+            }
         }
 
     # Log metrics (only for encrypted adapter mode)
