@@ -18,8 +18,9 @@ import os
 from typing import Dict, Any
 from pathlib import Path
 
-# Add parent directory to path for imports (before local imports)
-sys.path.insert(0, str(Path(__file__).parent.parent))
+# Add current directory to path for imports
+# rp_handler.py is in /workspace/src/, and we need to import from same directory
+sys.path.insert(0, str(Path(__file__).parent))
 
 # Configure logging
 logging.basicConfig(
@@ -29,10 +30,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import local modules
-from src.dora_crypto import EncryptedDoRAManager, generate_secure_password
-from src.ephemeral_inference import EphemeralDoRAInference
-from src.utils import log_memory_stats
+# Import local modules (no 'src.' prefix since we're already in src/)
+from dora_crypto import EncryptedDoRAManager, generate_secure_password
+from ephemeral_inference import EphemeralDoRAInference
+from utils import log_memory_stats
 
 
 def handler(event):
