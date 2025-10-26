@@ -182,7 +182,11 @@ def train_dora(config: Dict[str, Any]) -> Dict[str, Any]:
         else:
             raise ValueError("Unknown dataset format")
 
-        return tokenizer(texts, truncation=True, padding='max_length', max_length=512)
+        # Tokenize and add labels for causal LM training
+        tokenized = tokenizer(texts, truncation=True, padding='max_length', max_length=512)
+        # For causal LM, labels are the same as input_ids (model will shift internally)
+        tokenized['labels'] = tokenized['input_ids']
+        return tokenized
 
     # Tokenize dataset
     logger.info("Tokenizing dataset...")
