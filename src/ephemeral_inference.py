@@ -17,15 +17,27 @@ import logging
 from contextlib import contextmanager
 import copy
 
-from dora_crypto import EncryptedDoRAManager
-from utils import (
-    AdapterCache,
-    secure_zero_dict,
-    SecureMemoryContext,
-    synchronize_cuda_streams,
-    get_current_stream_context,
-    log_memory_stats
-)
+# Support both import styles (RunPod vs local examples)
+try:
+    from src.dora_crypto import EncryptedDoRAManager
+    from src.utils import (
+        AdapterCache,
+        secure_zero_dict,
+        SecureMemoryContext,
+        synchronize_cuda_streams,
+        get_current_stream_context,
+        log_memory_stats
+    )
+except ImportError:
+    from dora_crypto import EncryptedDoRAManager
+    from utils import (
+        AdapterCache,
+        secure_zero_dict,
+        SecureMemoryContext,
+        synchronize_cuda_streams,
+        get_current_stream_context,
+        log_memory_stats
+    )
 
 logger = logging.getLogger(__name__)
 
