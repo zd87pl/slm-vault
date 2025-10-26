@@ -342,36 +342,72 @@ def inference_with_encrypted_dora(config: Dict[str, Any]) -> Dict[str, Any]:
     Returns:
         Dictionary with inference results
     """
-    logger.info("Starting inference with encrypted adapter...")
-
     # Get config
-    encrypted_path = config['encrypted_adapter_path']
-    encryption_key = bytes.fromhex(config['encryption_key'])
+    encrypted_path = config.get('encrypted_adapter_path')
+    encryption_key_hex = config.get('encryption_key')
     prompt = config['prompt']
     model_name = config.get('model_name', 'TinyLlama/TinyLlama-1.1B-Chat-v1.0')
     max_tokens = config.get('max_tokens', 256)
     temperature = config.get('temperature', 0.7)
     enable_cache = config.get('enable_cache', True)
 
-    # Initialize inference engine
-    inference_engine = EphemeralDoRAInference(
-        base_model_name=model_name,
-        encryption_key=encryption_key,
-        enable_cache=enable_cache,
-        load_in_4bit=True,  # Use QDoRA for memory efficiency
-    )
+    # Check if using encrypted adapter or basic inference
+    if encrypted_path and encryption_key_hex:
+        logger.info("Starting inference with encrypted adapter...")
+        encryption_key = bytes.fromhex(encryption_key_hex)
 
-    # Run inference
-    logger.info(f"Running inference: {prompt[:50]}...")
-    result = inference_engine.inference_with_encrypted_adapter(
-        encrypted_path=encrypted_path,
-        prompt=prompt,
-        max_tokens=max_tokens,
-        temperature=temperature,
-    )
+        # Initialize inference engine
+        inference_engine = EphemeralDoRAInference(
+            base_model_name=model_name,
+            encryption_key=encryption_key,
+            enable_cache=enable_cache,
+            load_in_4bit=True,  # Use QDoRA for memory efficiency
+        )
 
-    # Log metrics
-    inference_engine.log_metrics()
+        # Run inference
+        logger.info(f"Running inference: {prompt[:50]}...")
+        result = inference_engine.inference_with_encrypted_adapter(
+            encrypted_path=encrypted_path,
+            prompt=prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+    else:
+        # Basic inference without adapter (for testing)
+        logger.info("Starting basic inference (no adapter)...")
+        from transformers import AutoModelForCausalLM, AutoTokenizer
+
+        # Load model and tokenizer
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            torch_dtype=torch.float16,
+            device_map="auto"
+        )
+        tokenizer = AutoTokenizer.from_pretrained(model_name)
+
+        # Generate
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_tokens,
+            temperature=temperature,
+            do_sample=True
+        )
+        text = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        result = {
+            "response": text,
+            "prompt": prompt,
+            "metadata": {
+                "model": model_name,
+                "cache_hit": False,
+                "mode": "basic_inference"
+            }
+        }
+
+    # Log metrics (only for encrypted adapter mode)
+    if encrypted_path and encryption_key_hex:
+        inference_engine.log_metrics()
 
     return {
         "status": "inference_complete",
