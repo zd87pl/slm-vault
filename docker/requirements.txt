@@ -1,11 +1,11 @@
-# Core dependencies
-torch>=2.1.0
-transformers>=4.36.0
-peft>=0.9.0
-accelerate>=0.26.0
-bitsandbytes>=0.41.0
-safetensors>=0.4.0
-datasets>=2.16.0
+# Core dependencies (updated for RTX 5090 support)
+torch>=2.5.0
+transformers>=4.46.0
+peft>=0.13.0
+accelerate>=1.1.0
+bitsandbytes>=0.44.0
+safetensors>=0.4.5
+datasets>=3.0.0
 
 # Cryptography
 pycryptodome>=3.19.0
