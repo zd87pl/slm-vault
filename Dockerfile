@@ -1,6 +1,7 @@
 # RunPod-optimized Dockerfile for DoRA WDVA
 # Place at repository root for easier RunPod portal builds
 # Updated for RTX 5090 support with PyTorch 2.5.1 + CUDA 12.4
+# Build: 2025-10-26-v2 (force rebuild)
 
 FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
@@ -20,7 +21,7 @@ COPY docker/requirements.txt /workspace/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy application code (includes ModuleDict fix in dora_crypto.py)
 COPY src/ /workspace/src/
 COPY config/ /workspace/config/
 COPY examples/ /workspace/examples/
