@@ -25,7 +25,7 @@ from typing import Dict, Optional, List, Any
 import logging
 from pathlib import Path
 
-from .utils.memory_security import (
+from utils.memory_security import (
     secure_zero_dict,
     SecureMemoryContext,
     mlock_tensor

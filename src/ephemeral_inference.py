@@ -17,8 +17,8 @@ import logging
 from contextlib import contextmanager
 import copy
 
-from .dora_crypto import EncryptedDoRAManager
-from .utils import (
+from dora_crypto import EncryptedDoRAManager
+from utils import (
     AdapterCache,
     secure_zero_dict,
     SecureMemoryContext,
