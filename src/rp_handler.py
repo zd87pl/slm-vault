@@ -43,6 +43,7 @@ def handler(event):
     Supported tasks:
     - 'training': Train DoRA adapter
     - 'encrypt': Encrypt trained adapter
+    - 'train_and_encrypt': Train then encrypt in one job (for stateless workflow)
     - 'inference': Run inference with encrypted adapter
 
     Args:
@@ -62,6 +63,8 @@ def handler(event):
             result = train_dora(input_data)
         elif task == 'encrypt':
             result = encrypt_dora_adapter(input_data)
+        elif task == 'train_and_encrypt':
+            result = train_and_encrypt(input_data)
         elif task == 'inference':
             result = inference_with_encrypted_dora(input_data)
         else:
@@ -329,6 +332,57 @@ def encrypt_dora_adapter(config: Dict[str, Any]) -> Dict[str, Any]:
         "metadata": encrypted_metadata['metadata'],
         "compressed": encrypted_metadata['metadata']['compressed'],
         "original_size_mb": encrypted_metadata['metadata']['original_size_bytes'] / 1024**2,
+    }
+
+
+def train_and_encrypt(config: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Train DoRA adapter and encrypt it in one job (for stateless workflow).
+
+    This combines training and encryption to avoid persistence between jobs.
+
+    Args:
+        config: Configuration with keys from both train_dora and encrypt_dora_adapter
+
+    Returns:
+        Dictionary with both training and encryption results
+    """
+    logger.info("Starting combined train + encrypt workflow...")
+
+    # Step 1: Train adapter
+    logger.info("Step 1/2: Training DoRA adapter...")
+    training_result = train_dora(config)
+
+    adapter_path = training_result['adapter_path']
+    logger.info(f"Training complete. Adapter at: {adapter_path}")
+
+    # Step 2: Encrypt adapter
+    logger.info("Step 2/2: Encrypting adapter...")
+    encryption_config = {
+        'adapter_path': adapter_path,
+        'encryption_key': config.get('encryption_key', 'generate'),
+        'output_path': config.get('encrypted_output_path', '/workspace/output/encrypted_adapter.json'),
+        'enable_compression': config.get('enable_compression', True)
+    }
+
+    encryption_result = encrypt_dora_adapter(encryption_config)
+
+    # Combine results
+    return {
+        "status": "train_and_encrypt_complete",
+        "training": {
+            "adapter_path": training_result['adapter_path'],
+            "trainable_params": training_result['trainable_params'],
+            "total_params": training_result['total_params'],
+            "train_loss": training_result.get('train_loss'),
+            "train_samples": training_result['train_samples']
+        },
+        "encryption": {
+            "encrypted_path": encryption_result['encrypted_path'],
+            "encryption_key": encryption_result['encryption_key'],
+            "original_size_mb": encryption_result['original_size_mb'],
+            "compressed": encryption_result['compressed']
+        }
     }
 
 
