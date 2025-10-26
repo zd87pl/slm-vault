@@ -49,6 +49,25 @@ pip install -r docker/requirements.txt
 docker build -t dora-wdva:latest -f docker/Dockerfile .
 ```
 
+## 🚢 RunPod Deployment
+
+Deploy to RunPod Serverless in 3 steps:
+
+```bash
+# 1. Build and push Docker image
+docker build -t your-username/dora-wdva:latest .
+docker push your-username/dora-wdva:latest
+
+# 2. Deploy to RunPod
+./scripts/deploy_runpod.sh
+
+# 3. Test endpoint
+export RUNPOD_API_KEY="your-key-here"
+./test_runpod.sh
+```
+
+See [RUNPOD_DEPLOYMENT.md](RUNPOD_DEPLOYMENT.md) for detailed deployment instructions and [RUNPOD_TROUBLESHOOTING.md](RUNPOD_TROUBLESHOOTING.md) for debugging guide.
+
 ## 📚 Documentation
 
 - **Training**: See [scripts/train.sh](scripts/train.sh) and [config/tinyllama-dora.yml](config/tinyllama-dora.yml)
@@ -119,6 +138,7 @@ result = engine.inference_with_encrypted_adapter(
 
 ## 📊 Testing
 
+### Local Testing
 ```bash
 # Run all tests
 python3 tests/run_tests.py
@@ -127,6 +147,21 @@ python3 tests/run_tests.py
 python3 tests/test_encryption.py
 python3 tests/test_adapter_cache.py
 ```
+
+### RunPod Endpoint Testing
+```bash
+# Quick health check (30 seconds)
+export RUNPOD_API_KEY="your-key-here"
+./test_runpod.sh
+
+# Comprehensive test suite (5-10 minutes)
+./test_runpod_comprehensive.sh
+
+# Full workflow test (Python)
+python3 test_full_workflow.py
+```
+
+See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing documentation, load testing strategies, and performance benchmarks.
 
 ## 📝 License
 
