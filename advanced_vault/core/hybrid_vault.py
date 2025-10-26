@@ -47,15 +47,19 @@ class HybridVault:
         master_key: bytes,
         kv_db_path: str = "~/.vault/kv_store.db",
         dora_adapter_path: Optional[str] = None,
+        runpod_endpoint_id: Optional[str] = None,
+        runpod_api_key: Optional[str] = None,
         enable_router_logging: bool = False
     ):
         """
         Initialize hybrid vault.
 
         Args:
-            master_key: 32-byte encryption key
+            master_key: 32-byte encryption key for KV encryption
             kv_db_path: Path to SQLite database
             dora_adapter_path: Path to encrypted DoRA adapter (optional)
+            runpod_endpoint_id: RunPod endpoint ID for remote inference (optional)
+            runpod_api_key: RunPod API key for remote inference (optional)
             enable_router_logging: Log routing decisions
         """
         self.master_key = master_key
@@ -64,10 +68,15 @@ class HybridVault:
         self.kv_store = EncryptedKVStore(master_key, db_path=kv_db_path)
         logger.info("Initialized Layer 1 (KV Store)")
 
-        # Initialize Layer 2: DoRA Adapters (optional for now)
+        # Initialize Layer 2: DoRA Adapters (optional)
         self.dora_adapter_path = dora_adapter_path
+        self.runpod_endpoint_id = runpod_endpoint_id
+        self.runpod_api_key = runpod_api_key
         self.dora_engine = None  # Will be initialized when needed
-        if dora_adapter_path:
+
+        if dora_adapter_path and (runpod_endpoint_id and runpod_api_key):
+            self._init_dora_layer_runpod()
+        elif dora_adapter_path:
             self._init_dora_layer()
 
         # Initialize Smart Router
@@ -77,7 +86,7 @@ class HybridVault:
         logger.info("Initialized HybridVault")
 
     def _init_dora_layer(self):
-        """Initialize Layer 2 (DoRA adapters)."""
+        """Initialize Layer 2 (DoRA adapters) - local inference."""
         try:
             # Import here to avoid dependency if not using Layer 2
             import sys
@@ -96,9 +105,25 @@ class HybridVault:
                 enable_cache=True,
                 load_in_4bit=True
             )
-            logger.info("Initialized Layer 2 (DoRA)")
+            logger.info("Initialized Layer 2 (DoRA - Local)")
         except ImportError as e:
             logger.warning(f"Could not initialize Layer 2: {e}")
+            self.dora_engine = None
+
+    def _init_dora_layer_runpod(self):
+        """Initialize Layer 2 (DoRA adapters) - RunPod inference."""
+        try:
+            # Create RunPod client for remote inference
+            from .runpod_client import RunPodDoRAClient
+
+            self.dora_engine = RunPodDoRAClient(
+                endpoint_id=self.runpod_endpoint_id,
+                api_key=self.runpod_api_key,
+                adapter_path=self.dora_adapter_path
+            )
+            logger.info("Initialized Layer 2 (DoRA - RunPod)")
+        except ImportError as e:
+            logger.warning(f"Could not initialize RunPod Layer 2: {e}")
             self.dora_engine = None
 
     def store(
