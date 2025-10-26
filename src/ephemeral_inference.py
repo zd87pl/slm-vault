@@ -427,8 +427,21 @@ class EphemeralDoRAInference:
         Returns:
             Generated text
         """
+        # Apply chat template if model supports it (for chat models like TinyLlama-Chat)
+        if hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None:
+            # Format as chat message
+            messages = [{"role": "user", "content": prompt}]
+            formatted_prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        else:
+            # Use raw prompt for base models
+            formatted_prompt = prompt
+
         # Tokenize input
-        inputs = self.tokenizer(prompt, return_tensors="pt", padding=True)
+        inputs = self.tokenizer(formatted_prompt, return_tensors="pt", padding=True)
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
         # Generate
@@ -442,8 +455,16 @@ class EphemeralDoRAInference:
                 **kwargs
             )
 
-        # Decode
-        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Decode full output and strip the formatted prompt
+        full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+        # Remove the formatted prompt from the beginning
+        if full_response.startswith(formatted_prompt):
+            response = full_response[len(formatted_prompt):].strip()
+        else:
+            # Fallback: just return full response if prompt doesn't match
+            response = full_response.strip()
+
         return response
 
     def get_metrics(self) -> Dict[str, Any]:

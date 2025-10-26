@@ -149,30 +149,36 @@ THE SOLUTION: Weight-Delta Vault Adapters (WDVA)
     input("Press Enter to continue to training...")
 
     # =========================================================================
-    # STEP 2: Training
+    # STEP 2: Training & Encryption (Combined)
     # =========================================================================
-    print_step(2, "Training Your Personal AI Model on RunPod")
+    print_step(2, "Training & Encrypting Your Personal AI Model")
 
     print("""
-Now we'll train a DoRA adapter on the RunPod endpoint with your data.
+Now we'll train a DoRA adapter AND encrypt it in one step.
 
 In this step:
-1. Send training data to RunPod endpoint (encrypted in transit)
-2. RunPod trains a DoRA adapter on YOUR preferences
-3. Adapter saved on secure RunPod storage (temporary)
+1. RunPod trains a DoRA adapter on YOUR preferences
+2. Immediately encrypts it with military-grade cryptography
+3. Returns encrypted adapter + YOUR encryption key
+4. Original unencrypted adapter is discarded (never persisted)
 
-📝 Training creates a small file (~50MB) that contains:
-   - Weight adjustments that make the AI understand YOU
-   - Your dietary preferences, fitness response patterns, health history
+📝 This creates:
+   - Encrypted file (~25MB compressed) with YOUR personalization
+   - Encryption key (like a password) known only to YOU
 
-⏱️  This typically takes 30-60 seconds on A100 GPU.
+🔐 Encryption uses:
+   - XChaCha20-Poly1305 (same as Signal messaging)
+   - Unique key generated for YOU
+   - Prevents anyone else from accessing your model
+
+⏱️  This typically takes 60-90 seconds on A100 GPU.
 """)
 
-    print("\n🚀 Submitting training job to RunPod...")
+    print("\n🚀 Submitting training + encryption job to RunPod...")
 
-    training_payload = {
+    combined_payload = {
         "input": {
-            "task": "training",
+            "task": "train_and_encrypt",
             "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
             "dataset": "yahma/alpaca-cleaned",
             "max_samples": 50,
@@ -180,63 +186,32 @@ In this step:
             "batch_size": 4,
             "rank": 16,
             "alpha": 32,
-            "output_dir": "/workspace/output/my_health_adapter"
+            "output_dir": "/workspace/output/my_health_adapter",
+            "encryption_key": "generate",  # Generate new key
+            "encrypted_output_path": "/workspace/output/my_health_adapter.encrypted",
+            "enable_compression": True
         }
     }
 
-    job_id = submit_job(training_payload)
+    job_id = submit_job(combined_payload)
     print(f"Job ID: {job_id}")
-    print("Waiting for training to complete", end="", flush=True)
+    print("Waiting for training + encryption to complete", end="", flush=True)
 
     result = wait_for_completion(job_id, timeout=300)
     print(" ✅")
 
-    adapter_path = result['output']['adapter_path']
-    trainable_params = result['output'].get('trainable_params', 'N/A')
+    # Extract results
+    training_info = result['output']['training']
+    encryption_info = result['output']['encryption']
 
-    print(f"\n✅ Training complete!")
-    print(f"   Adapter path: {adapter_path}")
+    trainable_params = training_info.get('trainable_params', 'N/A')
+    encrypted_path = encryption_info['encrypted_path']
+    encryption_key = encryption_info['encryption_key']
+    original_size = encryption_info['original_size_mb']
+
+    print(f"\n✅ Training & Encryption complete!")
     print(f"   Trainable params: {trainable_params:,}")
-    print(f"   Size: ~50MB of YOUR personalized model weights")
-
-    input("\nPress Enter to continue to encryption...")
-
-    # =========================================================================
-    # STEP 3: Encryption
-    # =========================================================================
-    print_step(3, "Encrypting Your Personal Adapter")
-
-    print("""
-🔐 Now we ENCRYPT your adapter so only YOU can use it.
-
-This encryption:
-- Uses military-grade XChaCha20-Poly1305 (same as Signal messaging)
-- Generates a unique encryption key known only to YOU
-- Prevents anyone else from accessing your model (even if they steal the file)
-""")
-
-    print("\n🔐 Submitting encryption job to RunPod...")
-
-    encryption_payload = {
-        "input": {
-            "task": "encrypt",
-            "adapter_path": adapter_path,
-            "encryption_key": "generate",  # Generate new key
-            "output_path": "/workspace/output/my_health_adapter.encrypted"
-        }
-    }
-
-    job_id = submit_job(encryption_payload)
-    print(f"Job ID: {job_id}")
-    print("Waiting for encryption to complete", end="", flush=True)
-
-    result = wait_for_completion(job_id, timeout=120)
-    print(" ✅")
-
-    encrypted_path = result['output']['encrypted_path']
-    encryption_key = result['output']['encryption_key']
-
-    print(f"\n✅ Encryption complete!")
+    print(f"   Original size: {original_size:.2f} MB")
     print(f"   Encrypted path: {encrypted_path}")
 
     print(f"\n🔑 Your Encryption Key (64 characters):")
@@ -260,7 +235,7 @@ This encryption:
     # =========================================================================
     # STEP 4: Using Your Encrypted Model
     # =========================================================================
-    print_step(4, "Using Your Personal AI (Decryption Happens In-Memory)")
+    print_step(3, "Using Your Personal AI (Decryption Happens In-Memory)")
 
     print("""
 🤖 Now you can ask your personal AI for advice!
@@ -325,7 +300,7 @@ Let's try it with a fitness question:
     # =========================================================================
     # STEP 5: Right-to-be-Forgotten
     # =========================================================================
-    print_step(5, "Right-to-be-Forgotten: Cryptographic Deletion")
+    print_step(4, "Right-to-be-Forgotten: Cryptographic Deletion")
 
     print("""
 🗑️  Traditional deletion problems:
