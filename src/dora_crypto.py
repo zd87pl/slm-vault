@@ -301,7 +301,15 @@ class EncryptedDoRAManager:
                     if hasattr(mag, 'weight'):
                         dora_weights[f"{name}.magnitude"] = mag.weight.data.clone()
                 elif hasattr(module, 'lora_magnitude_vector'):
-                    dora_weights[f"{name}.magnitude"] = module.lora_magnitude_vector.data.clone()
+                    # Handle ModuleDict for lora_magnitude_vector too
+                    mag_vec = module.lora_magnitude_vector
+                    if hasattr(mag_vec, 'default'):
+                        mag_vec = mag_vec.default
+                    if hasattr(mag_vec, 'data'):
+                        dora_weights[f"{name}.magnitude"] = mag_vec.data.clone()
+                    else:
+                        # Direct tensor
+                        dora_weights[f"{name}.magnitude"] = mag_vec.clone()
 
         if not dora_weights:
             raise ValueError("No DoRA weights found in model. Ensure model has DoRA adapters.")
