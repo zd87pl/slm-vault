@@ -25,11 +25,19 @@ from typing import Dict, Optional, List, Any
 import logging
 from pathlib import Path
 
-from utils.memory_security import (
-    secure_zero_dict,
-    SecureMemoryContext,
-    mlock_tensor
-)
+# Support both import styles (RunPod vs local examples)
+try:
+    from src.utils.memory_security import (
+        secure_zero_dict,
+        SecureMemoryContext,
+        mlock_tensor
+    )
+except ImportError:
+    from utils.memory_security import (
+        secure_zero_dict,
+        SecureMemoryContext,
+        mlock_tensor
+    )
 
 logger = logging.getLogger(__name__)
 
