@@ -442,8 +442,10 @@ class EphemeralDoRAInference:
                 **kwargs
             )
 
-        # Decode
-        response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # Decode only the newly generated tokens (skip input prompt)
+        input_length = inputs['input_ids'].shape[1]
+        generated_tokens = outputs[0][input_length:]
+        response = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
         return response
 
     def get_metrics(self) -> Dict[str, Any]:
