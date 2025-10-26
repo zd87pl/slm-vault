@@ -120,6 +120,14 @@ def train_dora(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Load model with 4-bit quantization (QDoRA)
     logger.info(f"Loading model: {model_name}")
+
+    # Debug: Check CUDA availability
+    logger.info(f"CUDA available: {torch.cuda.is_available()}")
+    if torch.cuda.is_available():
+        logger.info(f"CUDA device count: {torch.cuda.device_count()}")
+        logger.info(f"CUDA device name: {torch.cuda.get_device_name(0)}")
+        logger.info(f"CUDA version: {torch.version.cuda}")
+
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_compute_dtype=torch.bfloat16,
