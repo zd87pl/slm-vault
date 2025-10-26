@@ -1,7 +1,8 @@
 # RunPod-optimized Dockerfile for DoRA WDVA
 # Place at repository root for easier RunPod portal builds
+# Updated for RTX 5090 support with PyTorch 2.5.0 + CUDA 12.4
 
-FROM pytorch/pytorch:2.1.0-cuda12.1-cudnn8-runtime
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
 
 WORKDIR /workspace
 
