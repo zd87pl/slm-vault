@@ -250,6 +250,7 @@ def encrypt_dora_adapter(config: Dict[str, Any]) -> Dict[str, Any]:
         Dictionary with encryption results
     """
     from peft import PeftModel
+    from transformers import AutoModelForCausalLM
 
     logger.info("Starting adapter encryption...")
 
