@@ -277,18 +277,29 @@ class EncryptedDoRAManager:
             # Check for LoRA components
             if hasattr(module, 'lora_A') and hasattr(module, 'lora_B'):
                 # Extract LoRA matrices (direction component)
-                if hasattr(module.lora_A, 'default'):
-                    # PEFT >= 0.9.0 structure
-                    dora_weights[f"{name}.lora_A"] = module.lora_A.default.weight.data.clone()
-                    dora_weights[f"{name}.lora_B"] = module.lora_B.default.weight.data.clone()
-                else:
-                    # Older structure
-                    dora_weights[f"{name}.lora_A"] = module.lora_A.weight.data.clone()
-                    dora_weights[f"{name}.lora_B"] = module.lora_B.weight.data.clone()
+                # Handle ModuleDict (PEFT >= 0.9.0) vs direct module
+                lora_a = module.lora_A
+                lora_b = module.lora_B
+
+                # If it's a ModuleDict, get the 'default' adapter
+                if hasattr(lora_a, 'default'):
+                    lora_a = lora_a.default
+                if hasattr(lora_b, 'default'):
+                    lora_b = lora_b.default
+
+                # Now extract the weight
+                if hasattr(lora_a, 'weight'):
+                    dora_weights[f"{name}.lora_A"] = lora_a.weight.data.clone()
+                    dora_weights[f"{name}.lora_B"] = lora_b.weight.data.clone()
 
                 # Extract magnitude vector (DoRA-specific)
                 if hasattr(module, 'weight_m_wdecomp'):
-                    dora_weights[f"{name}.magnitude"] = module.weight_m_wdecomp.weight.data.clone()
+                    mag = module.weight_m_wdecomp
+                    # Handle ModuleDict for magnitude
+                    if hasattr(mag, 'default'):
+                        mag = mag.default
+                    if hasattr(mag, 'weight'):
+                        dora_weights[f"{name}.magnitude"] = mag.weight.data.clone()
                 elif hasattr(module, 'lora_magnitude_vector'):
                     dora_weights[f"{name}.magnitude"] = module.lora_magnitude_vector.data.clone()
 
