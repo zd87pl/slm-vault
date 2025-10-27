@@ -1,0 +1,12 @@
+# Enclave GUI Requirements
+
+# GUI Framework
+flet==0.28.3
+
+# Backend integration
+supabase==2.9.0
+requests==2.32.3
+
+# Encryption (already in main project)
+# cryptography
+# pynacl
