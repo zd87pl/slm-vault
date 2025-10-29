@@ -465,78 +465,93 @@ class VaultApp:
 
     def show_add_dialog(self, e):
         """Show add secret dialog."""
-        service_field = ft.TextField(label="Service (e.g., stripe, github)", autofocus=True)
-        content_field = ft.TextField(label="Secret / Knowledge", password=True, multiline=True)
-        tags_field = ft.TextField(label="Tags (comma-separated)", hint_text="payment, production")
-        description_field = ft.TextField(label="Description (optional)", multiline=True)
+        try:
+            print("Opening add dialog...")  # Debug
 
-        type_radio = ft.RadioGroup(
-            content=ft.Row([
-                ft.Radio(value="secret", label="Secret"),
-                ft.Radio(value="knowledge", label="Knowledge"),
-            ]),
-            value="secret"
-        )
+            service_field = ft.TextField(label="Service (e.g., stripe, github)", autofocus=True)
+            content_field = ft.TextField(label="Secret / Knowledge", password=True, multiline=True)
+            tags_field = ft.TextField(label="Tags (comma-separated)", hint_text="payment, production")
+            description_field = ft.TextField(label="Description (optional)", multiline=True)
 
-        def close_dialog():
-            dialog.open = False
+            type_radio = ft.RadioGroup(
+                content=ft.Row([
+                    ft.Radio(value="secret", label="Secret"),
+                    ft.Radio(value="knowledge", label="Knowledge"),
+                ]),
+                value="secret"
+            )
+
+            def close_dialog():
+                dialog.open = False
+                self.page.update()
+
+            def add_entry(e):
+                if not service_field.value or not content_field.value:
+                    service_field.error_text = "Required" if not service_field.value else None
+                    content_field.error_text = "Required" if not content_field.value else None
+                    self.page.update()
+                    return
+
+                # Parse tags
+                tags = [t.strip() for t in tags_field.value.split(',')] if tags_field.value else []
+
+                # Store in vault
+                self.vault.store(
+                    content=content_field.value,
+                    data_type=type_radio.value,
+                    service=service_field.value,
+                    tags=tags,
+                    description=description_field.value or None
+                )
+
+                # Show success snackbar
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"✅ Added {service_field.value}"),
+                    bgcolor="#4caf50",
+                )
+                self.page.snack_bar.open = True
+
+                close_dialog()
+                self.load_secrets()
+
+            dialog = ft.AlertDialog(
+                title=ft.Text("Add Entry"),
+                content=ft.Container(
+                    content=ft.Column(
+                        [
+                            type_radio,
+                            service_field,
+                            content_field,
+                            tags_field,
+                            description_field,
+                        ],
+                        spacing=15,
+                        tight=True,
+                    ),
+                    width=500,
+                ),
+                actions=[
+                    ft.TextButton("Cancel", on_click=lambda _: close_dialog()),
+                    ft.ElevatedButton("Add", on_click=add_entry),
+                ],
+                actions_alignment=ft.MainAxisAlignment.END,
+            )
+
+            self.page.dialog = dialog
+            dialog.open = True
             self.page.update()
 
-        def add_entry(e):
-            if not service_field.value or not content_field.value:
-                service_field.error_text = "Required" if not service_field.value else None
-                content_field.error_text = "Required" if not content_field.value else None
-                self.page.update()
-                return
-
-            # Parse tags
-            tags = [t.strip() for t in tags_field.value.split(',')] if tags_field.value else []
-
-            # Store in vault
-            self.vault.store(
-                content=content_field.value,
-                data_type=type_radio.value,
-                service=service_field.value,
-                tags=tags,
-                description=description_field.value or None
-            )
-
-            # Show success snackbar
+        except Exception as ex:
+            print(f"Error opening add dialog: {ex}")
+            import traceback
+            traceback.print_exc()
+            # Show error to user
             self.page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"✅ Added {service_field.value}"),
-                bgcolor="#4caf50",
+                content=ft.Text(f"❌ Error: {str(ex)}"),
+                bgcolor="#f44336",
             )
             self.page.snack_bar.open = True
-
-            close_dialog()
-            self.load_secrets()
-
-        dialog = ft.AlertDialog(
-            title=ft.Text("Add Entry"),
-            content=ft.Container(
-                content=ft.Column(
-                    [
-                        type_radio,
-                        service_field,
-                        content_field,
-                        tags_field,
-                        description_field,
-                    ],
-                    spacing=15,
-                    tight=True,
-                ),
-                width=500,
-            ),
-            actions=[
-                ft.TextButton("Cancel", on_click=lambda _: close_dialog()),
-                ft.ElevatedButton("Add", on_click=add_entry),
-            ],
-            actions_alignment=ft.MainAxisAlignment.END,
-        )
-
-        self.page.dialog = dialog
-        dialog.open = True
-        self.page.update()
+            self.page.update()
 
     def view_secret(self, entry):
         """Show secret details."""
