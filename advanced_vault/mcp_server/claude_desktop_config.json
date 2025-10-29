@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "personal-vault": {
+      "command": "python",
+      "args": ["-m", "advanced_vault.mcp_server"],
+      "env": {
+        "VAULT_PATH": "~/.vault"
+      }
+    }
+  }
+}
