@@ -514,7 +514,9 @@ class VaultApp:
                 close_dialog()
                 self.load_secrets()
 
+            print("Creating AlertDialog...")
             dialog = ft.AlertDialog(
+                modal=True,
                 title=ft.Text("Add Entry"),
                 content=ft.Container(
                     content=ft.Column(
@@ -536,10 +538,19 @@ class VaultApp:
                 ],
                 actions_alignment=ft.MainAxisAlignment.END,
             )
+            print(f"Dialog created: {dialog}")
 
+            print("Setting page.dialog...")
             self.page.dialog = dialog
+            print(f"page.dialog set to: {self.page.dialog}")
+
+            print("Opening dialog...")
             dialog.open = True
+            print(f"dialog.open = {dialog.open}")
+
+            print("Calling page.update()...")
             self.page.update()
+            print("✓ Dialog should be visible!")
 
         except Exception as ex:
             print(f"Error opening add dialog: {ex}")
