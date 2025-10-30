@@ -215,9 +215,6 @@ python3 test_full_workflow.py
 
 See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing documentation, load testing strategies, and performance benchmarks.
 
-## 📝 License
-
-MIT License
 
 ---
 
