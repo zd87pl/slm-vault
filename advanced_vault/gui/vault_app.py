@@ -11,7 +11,6 @@ import threading
 import requests
 import logging
 import base64
-import uuid
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -151,24 +150,18 @@ class VaultApp:
                 self.cloud_sync = None
             
             # Initialize Q&A generator and training manager
-            # Use hardcoded RunPod endpoint (shared for all users)
             try:
-                if self.runpod_endpoint and self.runpod_api_key:
-                    self.qa_generator = QAGenerator(
-                        runpod_endpoint_id=self.runpod_endpoint,
-                        runpod_api_key=self.runpod_api_key
-                    )
-                    self.training_manager = TrainingManager(
-                        backend_url=self.backend_url,
-                        session_data=self.session_data,
-                        runpod_endpoint_id=self.runpod_endpoint,
-                        runpod_api_key=self.runpod_api_key
-                    )
-                    logger.info(f"Q&A generator and training manager initialized with endpoint: {self.runpod_endpoint}")
-                else:
-                    logger.warning("RunPod endpoint not configured")
-                    self.qa_generator = None
-                    self.training_manager = None
+                self.qa_generator = QAGenerator(
+                    runpod_endpoint_id=self.runpod_endpoint,
+                    runpod_api_key=self.runpod_api_key
+                )
+                self.training_manager = TrainingManager(
+                    backend_url=self.backend_url,
+                    session_data=self.session_data,
+                    runpod_endpoint_id=self.runpod_endpoint,
+                    runpod_api_key=self.runpod_api_key
+                )
+                logger.info("Q&A generator and training manager initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize training services: {e}")
                 self.qa_generator = None
@@ -1055,13 +1048,9 @@ class VaultApp:
                 
                 logger.info(f"Stored PDF as knowledge entry: {filename} (ID: {entry_id})")
                 
-                # Sync to cloud (non-blocking, don't fail if sync fails)
+                # Sync to cloud
                 if self.cloud_sync:
-                    try:
-                        self.cloud_sync.sync_entry_background(entry_id)
-                    except Exception as sync_error:
-                        logger.warning(f"Cloud sync failed (non-critical): {sync_error}")
-                        # Don't show error to user - local storage succeeded
+                    self.cloud_sync.sync_entry_background(entry_id)
                 
                 # Update UI
                 self.page.snack_bar = ft.SnackBar(
@@ -1074,13 +1063,9 @@ class VaultApp:
                 # Reload secrets
                 self.load_secrets()
                 
-                # Offer to generate Q&A and train model ONLY if RunPod is configured
-                if (self.qa_generator and self.training_manager and 
-                    self.runpod_endpoint and self.runpod_api_key and
-                    len(result['text_chunks']) > 0):
+                # Offer to generate Q&A and train model
+                if self.qa_generator and self.training_manager and len(result['text_chunks']) > 0:
                     self._offer_training(filename, result['text_chunks'])
-                else:
-                    logger.info("RunPod not configured - skipping training offer")
                 
             except Exception as ex:
                 logger.error(f"Error processing PDF: {ex}")
@@ -1175,25 +1160,9 @@ class VaultApp:
                 self.page.snack_bar.open = True
                 self.page.update()
                 
-                # Try to register adapter (non-blocking - continue even if it fails)
-                adapter_id = str(uuid.uuid4())
-                encryption_key_hex = encryption_key.hex()
-                
-                try:
-                    registration_success = self.training_manager.register_adapter_intent(
-                        adapter_id=adapter_id,
-                        encryption_key_hex=encryption_key_hex
-                    )
-                    if not registration_success:
-                        logger.warning("Adapter registration failed (backend auth issue), continuing with training anyway")
-                except Exception as reg_error:
-                    logger.warning(f"Adapter registration error (non-critical): {reg_error}")
-                    # Continue anyway - training can proceed without backend registration
-                
                 result = self.training_manager.submit_training_job(
                     dataset_path=dataset_path,
                     encryption_key_hex=encryption_key_hex,
-                    adapter_id=adapter_id,
                     model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
                     epochs=3,
                     batch_size=4
