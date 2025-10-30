@@ -48,6 +48,7 @@ def handler(event):
 
     Args:
         event: RunPod event with 'input' field containing task parameters
+        Must include 'user_id' for user isolation
 
     Returns:
         Dictionary with results or error
@@ -55,23 +56,29 @@ def handler(event):
     try:
         input_data = event['input']
         task = input_data.get('task', 'inference')
+        
+        # SECURITY: Require user_id for all operations
+        user_id = input_data.get('user_id')
+        if not user_id:
+            logger.error("user_id is required for all operations")
+            return {"error": "user_id is required for security isolation"}
 
-        logger.info(f"Processing task: {task}")
+        logger.info(f"Processing task: {task} for user: {user_id}")
         log_memory_stats("Start")
 
         if task == 'training':
-            result = train_dora(input_data)
+            result = train_dora(input_data, user_id)
         elif task == 'encrypt':
-            result = encrypt_dora_adapter(input_data)
+            result = encrypt_dora_adapter(input_data, user_id)
         elif task == 'train_and_encrypt':
-            result = train_and_encrypt(input_data)
+            result = train_and_encrypt(input_data, user_id)
         elif task == 'inference':
-            result = inference_with_encrypted_dora(input_data)
+            result = inference_with_encrypted_dora(input_data, user_id)
         else:
             return {"error": f"Unknown task: {task}"}
 
         log_memory_stats("End")
-        logger.info(f"Task {task} completed successfully")
+        logger.info(f"Task {task} completed successfully for user: {user_id}")
         return result
 
     except Exception as e:
@@ -79,7 +86,7 @@ def handler(event):
         return {"error": str(e), "traceback": str(e.__traceback__)}
 
 
-def train_dora(config: Dict[str, Any]) -> Dict[str, Any]:
+def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """
     Train TinyLlama (or other model) with DoRA.
 
@@ -173,7 +180,33 @@ def train_dora(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Load dataset
     logger.info(f"Loading dataset: {dataset_name}")
-    dataset = load_dataset(dataset_name, split="train")
+    
+    # Check if dataset is a URL (starts with http:// or https://)
+    if dataset_name.startswith(('http://', 'https://')):
+        # Download dataset from URL
+        logger.info(f"Downloading dataset from URL: {dataset_name}")
+        import tempfile
+        import urllib.request
+        
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as tmp_file:
+            tmp_path = tmp_file.name
+            
+            # Download file
+            urllib.request.urlretrieve(dataset_name, tmp_path)
+            logger.info(f"Downloaded dataset to: {tmp_path}")
+            
+            # Load from local JSONL file
+            dataset = load_dataset('json', data_files=tmp_path, split='train')
+            
+            # Cleanup
+            os.unlink(tmp_path)
+    elif dataset_name.endswith('.jsonl'):
+        # Local JSONL file (should exist on RunPod filesystem)
+        logger.info(f"Loading local JSONL file: {dataset_name}")
+        dataset = load_dataset('json', data_files=dataset_name, split='train')
+    else:
+        # HuggingFace dataset name
+        dataset = load_dataset(dataset_name, split="train")
 
     if max_samples:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
@@ -207,8 +240,14 @@ def train_dora(config: Dict[str, Any]) -> Dict[str, Any]:
         remove_columns=dataset.column_names
     )
 
-    # Training arguments
-    output_dir = config.get('output_dir', '/workspace/output/dora_adapter')
+    # Training arguments - use user-specific storage path
+    adapter_id = config.get('adapter_id', 'default')
+    output_dir = config.get('output_dir', f'/workspace/adapters/{user_id}/{adapter_id}/')
+    # Ensure directory exists
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    logger.info(f"Using user-specific storage path: {output_dir}")
+    
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=epochs,
@@ -238,6 +277,7 @@ def train_dora(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "status": "training_complete",
+        "user_id": user_id,
         "adapter_path": output_dir,
         "trainable_params": trainable_params,
         "total_params": total_params,
@@ -246,7 +286,7 @@ def train_dora(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def encrypt_dora_adapter(config: Dict[str, Any]) -> Dict[str, Any]:
+def encrypt_dora_adapter(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """
     Encrypt DoRA adapter weights.
 
@@ -268,8 +308,14 @@ def encrypt_dora_adapter(config: Dict[str, Any]) -> Dict[str, Any]:
     # Get config
     adapter_path = config['adapter_path']
     key_input = config.get('encryption_key', 'generate')
-    output_path = config.get('output_path', '/workspace/output/encrypted_adapter.json')
+    adapter_id = config.get('adapter_id', 'default')
+    # Use user-specific storage path
+    output_path = config.get('output_path', f'/workspace/encrypted/{user_id}/{adapter_id}.json')
+    # Ensure directory exists
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     enable_compression = config.get('enable_compression', True)
+    
+    logger.info(f"Using user-specific encrypted storage path: {output_path}")
 
     # Generate or parse encryption key
     if key_input == 'generate':
@@ -327,6 +373,7 @@ def encrypt_dora_adapter(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "status": "encryption_complete",
+        "user_id": user_id,
         "encrypted_path": output_path,
         "encryption_key": key_hex,  # Return key (store securely!)
         "metadata": encrypted_metadata['metadata'],
@@ -335,7 +382,7 @@ def encrypt_dora_adapter(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def train_and_encrypt(config: Dict[str, Any]) -> Dict[str, Any]:
+def train_and_encrypt(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """
     Train DoRA adapter and encrypt it in one job (for stateless workflow).
 
@@ -351,7 +398,7 @@ def train_and_encrypt(config: Dict[str, Any]) -> Dict[str, Any]:
 
     # Step 1: Train adapter
     logger.info("Step 1/2: Training DoRA adapter...")
-    training_result = train_dora(config)
+    training_result = train_dora(config, user_id)
 
     adapter_path = training_result['adapter_path']
     logger.info(f"Training complete. Adapter at: {adapter_path}")
@@ -361,15 +408,17 @@ def train_and_encrypt(config: Dict[str, Any]) -> Dict[str, Any]:
     encryption_config = {
         'adapter_path': adapter_path,
         'encryption_key': config.get('encryption_key', 'generate'),
-        'output_path': config.get('encrypted_output_path', '/workspace/output/encrypted_adapter.json'),
+        'adapter_id': config.get('adapter_id', 'default'),
+        'output_path': config.get('encrypted_output_path', f'/workspace/encrypted/{user_id}/{config.get("adapter_id", "default")}.json'),
         'enable_compression': config.get('enable_compression', True)
     }
 
-    encryption_result = encrypt_dora_adapter(encryption_config)
+    encryption_result = encrypt_dora_adapter(encryption_config, user_id)
 
     # Combine results
     return {
         "status": "train_and_encrypt_complete",
+        "user_id": user_id,
         "training": {
             "adapter_path": training_result['adapter_path'],
             "trainable_params": training_result['trainable_params'],
@@ -386,7 +435,7 @@ def train_and_encrypt(config: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def inference_with_encrypted_dora(config: Dict[str, Any]) -> Dict[str, Any]:
+def inference_with_encrypted_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """
     Run inference with encrypted DoRA adapter.
 
@@ -409,10 +458,19 @@ def inference_with_encrypted_dora(config: Dict[str, Any]) -> Dict[str, Any]:
     encrypted_path = config.get('encrypted_adapter_path')
     encryption_key_hex = config.get('encryption_key')
     prompt = config['prompt']
+    adapter_id = config.get('adapter_id')  # For ownership verification
     model_name = config.get('model_name', 'TinyLlama/TinyLlama-1.1B-Chat-v1.0')
     max_tokens = config.get('max_tokens', 256)
     temperature = config.get('temperature', 0.7)
     enable_cache = config.get('enable_cache', True)
+    
+    # SECURITY: Verify adapter ownership before decryption
+    # Note: In production, this would call backend API to verify ownership
+    # For now, we log the verification requirement
+    if adapter_id:
+        logger.info(f"Verifying ownership: adapter_id={adapter_id}, user_id={user_id}")
+        # TODO: In production, call backend API: POST /api/adapters/{adapter_id}/verify
+        # For now, we trust the user_id comes from authenticated request
 
     # Check if using encrypted adapter or basic inference
     if encrypted_path and encryption_key_hex:
@@ -474,6 +532,7 @@ def inference_with_encrypted_dora(config: Dict[str, Any]) -> Dict[str, Any]:
 
     return {
         "status": "inference_complete",
+        "user_id": user_id,
         "response": result['response'],
         "prompt": result['prompt'],
         "metadata": result['metadata'],

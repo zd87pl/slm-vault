@@ -9,8 +9,11 @@ import os
 import sys
 import threading
 import requests
+import logging
+import base64
+import uuid
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 from datetime import datetime
 import time
 
@@ -18,8 +21,14 @@ import time
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from advanced_vault.core import HybridVault
-from advanced_vault.encrypted_kv import QueryFilter
+from advanced_vault.encrypted_kv import QueryFilter, EntryType
 from auth_screen import AuthScreen
+from cloud_sync import CloudSyncService
+from pdf_processor import PDFProcessor
+from qa_generator import QAGenerator
+from training_manager import TrainingManager
+
+logger = logging.getLogger(__name__)
 
 
 class VaultApp:
@@ -41,11 +50,17 @@ class VaultApp:
         # Authentication state
         self.session_data = None
         self.vault = None
+        self.cloud_sync = None
+        self.pdf_processor = PDFProcessor()
+        self.pdf_file_picker = None  # Will be created when Knowledge view is shown
+        self.qa_generator = None
+        self.training_manager = None
 
         # RunPod connectivity state
         self.runpod_status = "unknown"  # unknown, connected, disconnected
-        self.runpod_endpoint = os.getenv("RUNPOD_ENDPOINT_ID")
-        self.runpod_api_key = os.getenv("RUNPOD_API_KEY")
+        # Hardcoded RunPod endpoint for all users
+        self.runpod_endpoint = os.getenv("RUNPOD_ENDPOINT_ID", "ayi3s70ihlpbtg")
+        self.runpod_api_key = os.getenv("RUNPOD_API_KEY", "rpa_2U1UUIMCCU2CEOXGT7HOW1975SGDDSD4W29ULAN0kl4xnh")
         self.last_check = None
 
         # Vault setup paths
@@ -95,6 +110,9 @@ class VaultApp:
         # Initialize vault
         self.initialize_vault()
 
+        # Sync from cloud on login
+        self.sync_from_cloud()
+
         # Build main UI
         self.page.clean()
         self.build_ui()
@@ -118,6 +136,62 @@ class VaultApp:
             kv_db_path=str(self.db_path),
             enable_router_logging=False
         )
+        
+        # Initialize cloud sync service
+        if self.session_data:
+            try:
+                self.cloud_sync = CloudSyncService(
+                    backend_url=self.backend_url,
+                    session_data=self.session_data,
+                    vault=self.vault.kv_store
+                )
+                logger.info("Cloud sync service initialized")
+            except Exception as e:
+                logger.error(f"Failed to initialize cloud sync: {e}")
+                self.cloud_sync = None
+            
+            # Initialize Q&A generator and training manager
+            # Use hardcoded RunPod endpoint (shared for all users)
+            try:
+                if self.runpod_endpoint and self.runpod_api_key:
+                    self.qa_generator = QAGenerator(
+                        runpod_endpoint_id=self.runpod_endpoint,
+                        runpod_api_key=self.runpod_api_key
+                    )
+                    self.training_manager = TrainingManager(
+                        backend_url=self.backend_url,
+                        session_data=self.session_data,
+                        runpod_endpoint_id=self.runpod_endpoint,
+                        runpod_api_key=self.runpod_api_key
+                    )
+                    logger.info(f"Q&A generator and training manager initialized with endpoint: {self.runpod_endpoint}")
+                else:
+                    logger.warning("RunPod endpoint not configured")
+                    self.qa_generator = None
+                    self.training_manager = None
+            except Exception as e:
+                logger.error(f"Failed to initialize training services: {e}")
+                self.qa_generator = None
+                self.training_manager = None
+
+    def sync_from_cloud(self):
+        """Sync entries from cloud on login."""
+        if not self.cloud_sync:
+            return
+        
+        def _sync():
+            try:
+                cloud_entries = self.cloud_sync.fetch_from_cloud()
+                if cloud_entries:
+                    # Merge with local entries (cloud wins on conflicts)
+                    result = self.cloud_sync.merge_entries(cloud_entries, conflict_resolution="cloud")
+                    logger.info(f"Synced {result.get('merged', 0)} entries from cloud")
+            except Exception as e:
+                logger.error(f"Error syncing from cloud: {e}")
+        
+        # Run in background thread
+        thread = threading.Thread(target=_sync, daemon=True)
+        thread.start()
 
     def logout(self):
         """Logout user."""
@@ -294,6 +368,11 @@ class VaultApp:
                     label="Knowledge",
                 ),
                 ft.NavigationRailDestination(
+                    icon=ft.Icons.TRAIN_OUTLINED,
+                    selected_icon=ft.Icons.TRAIN,
+                    label="Training",
+                ),
+                ft.NavigationRailDestination(
                     icon=ft.Icons.BAR_CHART_OUTLINED,
                     selected_icon=ft.Icons.BAR_CHART,
                     label="Statistics",
@@ -342,7 +421,23 @@ class VaultApp:
 
     def load_secrets(self):
         """Load secrets from vault."""
+        # Store header if we're in knowledge view
+        header_container = None
+        if self.selected_type == "knowledge" and len(self.secrets_list.controls) > 0:
+            # Check if first item is the knowledge header
+            first_item = self.secrets_list.controls[0]
+            if isinstance(first_item, ft.Container) and isinstance(first_item.content, ft.Column):
+                col_content = first_item.content.controls
+                if col_content and isinstance(col_content[0], ft.Row):
+                    row_content = col_content[0].controls
+                    if row_content and isinstance(row_content[0], ft.Text) and "Knowledge Base" in str(row_content[0].value):
+                        header_container = first_item
+        
         self.secrets_list.controls.clear()
+        
+        # Restore header if we're in knowledge view
+        if header_container:
+            self.secrets_list.controls.append(header_container)
 
         # Get all entries
         from advanced_vault.encrypted_kv import QueryFilter, EntryType
@@ -352,20 +447,37 @@ class VaultApp:
         if self.selected_type == "secret":
             query_filter.entry_type = EntryType.SECRET
         # Note: "knowledge" entries are not yet stored in KV (Layer 2 not implemented)
+        elif self.selected_type == "knowledge":
+            # For knowledge, we still search all entries but filter by data_type in tags or description
+            pass
 
         result = self.vault.kv_store.search(query_filter)
 
         # Convert EncryptedEntry objects to dicts
         entries = []
         for entry in result:
-            entries.append({
-                'id': entry.id,
-                'service': entry.service,
-                'data_type': 'secret',  # All KV entries are secrets for now
-                'tags': entry.tags,
-                'timestamp': entry.updated_at.timestamp() if entry.updated_at else 0,
-                'description': entry.description
-            })
+            # Filter knowledge entries if in knowledge view
+            if self.selected_type == "knowledge":
+                # Check if entry has knowledge tag or is marked as knowledge
+                # Knowledge entries are typically tagged with "pdf", "document", or "knowledge"
+                if "knowledge" in entry.tags or "pdf" in entry.tags or "document" in entry.tags:
+                    entries.append({
+                        'id': entry.id,
+                        'service': entry.service,
+                        'data_type': 'knowledge',
+                        'tags': entry.tags,
+                        'timestamp': entry.updated_at.timestamp() if entry.updated_at else 0,
+                        'description': entry.description
+                    })
+            else:
+                entries.append({
+                    'id': entry.id,
+                    'service': entry.service,
+                    'data_type': 'secret',  # All KV entries are secrets for now
+                    'tags': entry.tags,
+                    'timestamp': entry.updated_at.timestamp() if entry.updated_at else 0,
+                    'description': entry.description
+                })
 
         # Filter by search query
         if self.search_query:
@@ -384,13 +496,15 @@ class VaultApp:
                 card = self.create_secret_card(entry)
                 self.secrets_list.controls.append(card)
         else:
-            self.secrets_list.controls.append(
-                ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Icon(ft.Icons.LOCK_OPEN, size=64, color="#9e9e9e"),
-                            ft.Text("No secrets yet", size=20, weight=ft.FontWeight.BOLD),
-                            ft.Text("Click + to add your first secret", color="#9e9e9e"),
+            # Only show empty message if not in knowledge view (knowledge view has its own header)
+            if self.selected_type != "knowledge":
+                self.secrets_list.controls.append(
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Icon(ft.Icons.LOCK_OPEN, size=64, color="#9e9e9e"),
+                                    ft.Text("No secrets yet", size=20, weight=ft.FontWeight.BOLD),
+                                ft.Text("Click + to add your first secret", color="#9e9e9e"),
                         ],
                         horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                         spacing=10,
@@ -468,7 +582,12 @@ class VaultApp:
         try:
             print("Opening add dialog...")  # Debug
 
-            service_field = ft.TextField(label="Service (e.g., stripe, github)", autofocus=True)
+            # Close any existing dialogs in overlay
+            for overlay_item in list(self.page.overlay):
+                if isinstance(overlay_item, ft.AlertDialog) and overlay_item.open:
+                    overlay_item.open = False
+
+            service_field = ft.TextField(label="Service (e.g., stripe, github)")
             content_field = ft.TextField(label="Secret / Knowledge", password=True, multiline=True)
             tags_field = ft.TextField(label="Tags (comma-separated)", hint_text="payment, production")
             description_field = ft.TextField(label="Description (optional)", multiline=True)
@@ -482,8 +601,9 @@ class VaultApp:
             )
 
             def close_dialog():
-                dialog.open = False
-                self.page.update()
+                if dialog:
+                    dialog.open = False
+                    self.page.update()
 
             def add_entry(e):
                 if not service_field.value or not content_field.value:
@@ -496,13 +616,17 @@ class VaultApp:
                 tags = [t.strip() for t in tags_field.value.split(',')] if tags_field.value else []
 
                 # Store in vault
-                self.vault.store(
+                entry_id = self.vault.store(
                     content=content_field.value,
                     data_type=type_radio.value,
                     service=service_field.value,
                     tags=tags,
                     description=description_field.value or None
                 )
+
+                # Sync to cloud in background
+                if self.cloud_sync:
+                    self.cloud_sync.sync_entry_background(entry_id)
 
                 # Show success snackbar
                 self.page.snack_bar = ft.SnackBar(
@@ -515,23 +639,25 @@ class VaultApp:
                 self.load_secrets()
 
             print("Creating AlertDialog...")
+            # Create dialog content column with all fields - remove scroll, add width
+            dialog_content = ft.Column(
+                [
+                    type_radio,
+                    service_field,
+                    content_field,
+                    tags_field,
+                    description_field,
+                ],
+                spacing=15,
+                tight=True,
+                width=500,
+            )
+            
+            # Try without Container wrapper - use Column directly
             dialog = ft.AlertDialog(
                 modal=True,
                 title=ft.Text("Add Entry"),
-                content=ft.Container(
-                    content=ft.Column(
-                        [
-                            type_radio,
-                            service_field,
-                            content_field,
-                            tags_field,
-                            description_field,
-                        ],
-                        spacing=15,
-                        tight=True,
-                    ),
-                    width=500,
-                ),
+                content=dialog_content,
                 actions=[
                     ft.TextButton("Cancel", on_click=lambda _: close_dialog()),
                     ft.ElevatedButton("Add", on_click=add_entry),
@@ -540,17 +666,13 @@ class VaultApp:
             )
             print(f"Dialog created: {dialog}")
 
-            print("Setting page.dialog...")
-            self.page.dialog = dialog
-            print(f"page.dialog set to: {self.page.dialog}")
-
-            print("Opening dialog...")
+            print("Adding dialog to page.overlay...")
+            # Add dialog to overlay (the correct way in Flet)
+            self.page.overlay.append(dialog)
             dialog.open = True
-            print(f"dialog.open = {dialog.open}")
-
-            print("Calling page.update()...")
+            print(f"Dialog added to overlay, open={dialog.open}, overlay length={len(self.page.overlay)}")
             self.page.update()
-            print("✓ Dialog should be visible!")
+            print("✓ Dialog should now be visible!")
 
         except Exception as ex:
             print(f"Error opening add dialog: {ex}")
@@ -634,7 +756,7 @@ class VaultApp:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-        self.page.dialog = dialog
+        self.page.overlay.append(dialog)
         dialog.open = True
         self.page.update()
 
@@ -673,7 +795,7 @@ class VaultApp:
             actions_alignment=ft.MainAxisAlignment.END,
         )
 
-        self.page.dialog = dialog
+        self.page.overlay.append(dialog)
         dialog.open = True
         self.page.update()
 
@@ -696,12 +818,12 @@ class VaultApp:
             self.type_filter.value = "secret"
             self.load_secrets()
         elif index == 1:  # Knowledge
-            self.selected_type = "knowledge"
-            self.type_filter.value = "knowledge"
-            self.load_secrets()
-        elif index == 2:  # Statistics
+            self.show_knowledge_view()
+        elif index == 2:  # Training
+            self.show_training_view()
+        elif index == 3:  # Statistics
             self.show_statistics()
-        elif index == 3:  # Settings
+        elif index == 4:  # Settings
             self.show_settings()
 
     def show_statistics(self):
@@ -731,6 +853,405 @@ class VaultApp:
                 padding=20,
             )
         )
+        self.page.update()
+
+    def show_knowledge_view(self):
+        """Show knowledge view with PDF upload."""
+        self.selected_type = "knowledge"
+        self.type_filter.value = "knowledge"
+        
+        # Create file picker if not already exists
+        if not hasattr(self, 'pdf_file_picker') or self.pdf_file_picker is None:
+            self.pdf_file_picker = ft.FilePicker(
+                on_result=self.on_pdf_selected
+            )
+            self.page.overlay.append(self.pdf_file_picker)
+        
+        # Upload button with explicit click handler
+        upload_button = ft.ElevatedButton(
+            "📄 Upload PDF",
+            icon=ft.Icons.UPLOAD_FILE,
+            on_click=self._on_upload_click,
+            bgcolor="#2196F3",
+            color="white",
+            tooltip="Upload a PDF file"
+        )
+        
+        # Clear and rebuild knowledge view
+        self.secrets_list.controls.clear()
+        
+        # Knowledge view header with upload button
+        self.secrets_list.controls.append(
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Row(
+                            [
+                                ft.Text("📚 Knowledge Base", size=24, weight=ft.FontWeight.BOLD),
+                                upload_button,
+                            ],
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        ),
+                        ft.Divider(),
+                        ft.Text(
+                            "Upload PDF documents to extract knowledge and generate training data.",
+                            size=14,
+                            color="#9e9e9e"
+                        ),
+                        ft.Divider(),
+                    ],
+                    spacing=10,
+                ),
+                padding=20,
+            )
+        )
+        
+        # Load existing knowledge entries (these will be added after the header)
+        self.load_secrets()
+        self.page.update()
+
+    def _on_upload_click(self, e):
+        """Handle upload button click."""
+        print(f"DEBUG: Upload button clicked! Event: {e}")
+        logger.info("Upload PDF button clicked")
+        try:
+            if not hasattr(self, 'pdf_file_picker') or self.pdf_file_picker is None:
+                print("DEBUG: File picker not initialized!")
+                logger.error("PDF file picker not initialized")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("❌ File picker not initialized. Please restart the app."),
+                    bgcolor="#f44336",
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            print(f"DEBUG: File picker exists: {self.pdf_file_picker}")
+            print(f"DEBUG: Page overlay items: {len(self.page.overlay)}")
+            logger.info("Opening file picker...")
+            
+            # Try to open file picker - on macOS this might need special handling
+            try:
+                # Workaround for Flet 0.28.3 macOS FilePicker bug
+                # Try native macOS dialog if Flet FilePicker fails
+                import subprocess
+                import json
+                
+                # Use macOS native file picker as fallback
+                print("DEBUG: Attempting macOS native file picker...")
+                result = subprocess.run(
+                    [
+                        'osascript', '-e',
+                        '''
+                        set theFile to choose file of type {"PDF"} with prompt "Select PDF File"
+                        set theFilePosix to POSIX path of theFile
+                        return theFilePosix
+                        '''
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0:
+                    file_path = result.stdout.strip()
+                    print(f"DEBUG: macOS file picker returned: {file_path}")
+                    
+                    # Create a fake FilePickerResultEvent
+                    class FakeFile:
+                        def __init__(self, path):
+                            self.path = path
+                            self.name = Path(path).name
+                    
+                    class FakeEvent:
+                        def __init__(self, file_path):
+                            self.files = [FakeFile(file_path)]
+                    
+                    # Call the handler with fake event
+                    fake_event = FakeEvent(file_path)
+                    self.on_pdf_selected(fake_event)
+                    return
+                else:
+                    print(f"DEBUG: macOS file picker cancelled or error: {result.stderr}")
+                    
+            except FileNotFoundError:
+                print("DEBUG: osascript not found, trying Flet FilePicker")
+                # Fall back to Flet FilePicker
+                self.pdf_file_picker.pick_files(
+                    allowed_extensions=["pdf"],
+                    dialog_title="Select PDF File"
+                )
+            except subprocess.TimeoutExpired:
+                print("DEBUG: File picker timeout")
+            except Exception as picker_error:
+                print(f"DEBUG: pick_files() error: {picker_error}")
+                # Try Flet FilePicker as fallback
+                try:
+                    self.pdf_file_picker.pick_files(
+                        allowed_extensions=["pdf"],
+                        dialog_title="Select PDF File"
+                    )
+                except Exception as fallback_error:
+                    print(f"DEBUG: Fallback also failed: {fallback_error}")
+                    raise
+                
+            print("DEBUG: pick_files() called successfully")
+            logger.info("File picker opened")
+            
+            # Force page update
+            self.page.update()
+            print("DEBUG: Page updated after pick_files()")
+        except Exception as ex:
+            print(f"DEBUG: Exception occurred: {ex}")
+            import traceback
+            traceback.print_exc()
+            logger.error(f"Error opening file picker: {ex}", exc_info=True)
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Error: {str(ex)}"),
+                bgcolor="#f44336",
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+
+    def on_pdf_selected(self, e: ft.FilePickerResultEvent):
+        """Handle PDF file selection."""
+        logger.info(f"File picker result: {e}")
+        logger.info(f"Files: {e.files if e.files else 'None'}")
+        if not e.files or len(e.files) == 0:
+            logger.info("No file selected")
+            return
+        
+        file_path = e.files[0].path
+        filename = e.files[0].name
+        logger.info(f"Selected file: {filename} at {file_path}")
+        
+        # Show processing indicator
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text(f"📄 Processing {filename}..."),
+            bgcolor="#2196F3",
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+        
+        # Process PDF in background thread
+        def process_pdf():
+            try:
+                # Process PDF
+                result = self.pdf_processor.process_pdf(file_path)
+                
+                # Store PDF binary encrypted
+                with open(file_path, 'rb') as f:
+                    pdf_data = f.read()
+                
+                # Store as knowledge entry in Layer 1 (for now, until Layer 2 is fully implemented)
+                # Use service name as filename, tag it as knowledge/pdf
+                entry_id = self.vault.kv_store.put(
+                    service=filename,
+                    secret_value=base64.b64encode(pdf_data).decode('utf-8'),
+                    entry_type=EntryType.OTHER,  # Use OTHER type for knowledge entries
+                    tags=["pdf", "document", "knowledge"],
+                    description=f"PDF: {result['metadata']['page_count']} pages, {len(result['text_chunks'])} chunks"
+                )
+                
+                logger.info(f"Stored PDF as knowledge entry: {filename} (ID: {entry_id})")
+                
+                # Sync to cloud (non-blocking, don't fail if sync fails)
+                if self.cloud_sync:
+                    try:
+                        self.cloud_sync.sync_entry_background(entry_id)
+                    except Exception as sync_error:
+                        logger.warning(f"Cloud sync failed (non-critical): {sync_error}")
+                        # Don't show error to user - local storage succeeded
+                
+                # Update UI
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"✅ Processed {filename}: {len(result['text_chunks'])} chunks"),
+                    bgcolor="#4caf50",
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                
+                # Reload secrets
+                self.load_secrets()
+                
+                # Offer to generate Q&A and train model ONLY if RunPod is configured
+                if (self.qa_generator and self.training_manager and 
+                    self.runpod_endpoint and self.runpod_api_key and
+                    len(result['text_chunks']) > 0):
+                    self._offer_training(filename, result['text_chunks'])
+                else:
+                    logger.info("RunPod not configured - skipping training offer")
+                
+            except Exception as ex:
+                logger.error(f"Error processing PDF: {ex}")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Error processing PDF: {str(ex)}"),
+                    bgcolor="#f44336",
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+        
+        thread = threading.Thread(target=process_pdf, daemon=True)
+        thread.start()
+
+    def _offer_training(self, filename: str, text_chunks: List[str]):
+        """Offer to generate Q&A and train model after PDF processing."""
+        def on_yes(e):
+            dialog.open = False
+            self.page.update()
+            self._start_training_workflow(filename, text_chunks)
+        
+        def on_no(e):
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Generate Training Model?"),
+            content=ft.Text(
+                f"Would you like to generate Q&A pairs from this PDF and train a personalized model?\n\n"
+                f"This will:\n"
+                f"• Generate Q&A pairs from {len(text_chunks)} chunks\n"
+                f"• Train a DoRA adapter on your data\n"
+                f"• Store encrypted adapter in your vault"
+            ),
+            actions=[
+                ft.TextButton("No", on_click=on_no),
+                ft.ElevatedButton("Yes, Generate Model", on_click=on_yes, bgcolor="#2196F3"),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        # Close any existing dialogs
+        for overlay_item in list(self.page.overlay):
+            if isinstance(overlay_item, ft.AlertDialog) and overlay_item.open:
+                overlay_item.open = False
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+
+    def _start_training_workflow(self, filename: str, text_chunks: List[str]):
+        """Start Q&A generation and training workflow."""
+        def workflow():
+            try:
+                # Step 1: Generate Q&A pairs
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("📝 Generating Q&A pairs..."),
+                    bgcolor="#2196F3",
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                
+                qa_pairs = self.qa_generator.generate_from_chunks(
+                    text_chunks=text_chunks,
+                    user_id=self.session_data.get("user_id"),
+                    num_pairs_per_chunk=3
+                )
+                
+                if not qa_pairs:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("❌ Failed to generate Q&A pairs"),
+                        bgcolor="#f44336",
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                    return
+                
+                # Step 2: Save dataset
+                dataset_filename = f"{filename.replace('.pdf', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
+                dataset_path = self.training_manager.save_dataset(qa_pairs, dataset_filename)
+                
+                # Step 3: Generate encryption key
+                import os
+                encryption_key = os.urandom(32)
+                encryption_key_hex = encryption_key.hex()
+                
+                # Step 4: Submit training job
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("🚀 Submitting training job..."),
+                    bgcolor="#2196F3",
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                
+                # Try to register adapter (non-blocking - continue even if it fails)
+                adapter_id = str(uuid.uuid4())
+                encryption_key_hex = encryption_key.hex()
+                
+                try:
+                    registration_success = self.training_manager.register_adapter_intent(
+                        adapter_id=adapter_id,
+                        encryption_key_hex=encryption_key_hex
+                    )
+                    if not registration_success:
+                        logger.warning("Adapter registration failed (backend auth issue), continuing with training anyway")
+                except Exception as reg_error:
+                    logger.warning(f"Adapter registration error (non-critical): {reg_error}")
+                    # Continue anyway - training can proceed without backend registration
+                
+                result = self.training_manager.submit_training_job(
+                    dataset_path=dataset_path,
+                    encryption_key_hex=encryption_key_hex,
+                    adapter_id=adapter_id,
+                    model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+                    epochs=3,
+                    batch_size=4
+                )
+                
+                # Update UI
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"✅ Training job submitted! Job ID: {result['runpod_job_id']}"),
+                    bgcolor="#4caf50",
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                
+                logger.info(f"Training workflow completed for {filename}")
+                
+            except Exception as ex:
+                logger.error(f"Error in training workflow: {ex}")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Error: {str(ex)}"),
+                    bgcolor="#f44336",
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+        
+        thread = threading.Thread(target=workflow, daemon=True)
+        thread.start()
+
+    def show_training_view(self):
+        """Show training jobs view."""
+        self.secrets_list.controls.clear()
+        
+        # Training view content
+        self.secrets_list.controls.append(
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Row(
+                            [
+                                ft.Text("🤖 Training Jobs", size=24, weight=ft.FontWeight.BOLD),
+                            ],
+                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        ),
+                        ft.Divider(),
+                        ft.Text(
+                            "Training jobs are submitted automatically after PDF processing.\n"
+                            "Check status and view completed adapters here.",
+                            size=14,
+                            color="#9e9e9e"
+                        ),
+                        ft.Divider(),
+                        ft.Text("No training jobs yet. Upload a PDF to get started!", size=14, color="#9e9e9e"),
+                    ],
+                    spacing=10,
+                ),
+                padding=20,
+            )
+        )
+        
         self.page.update()
 
     def show_settings(self):
