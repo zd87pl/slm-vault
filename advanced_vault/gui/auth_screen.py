@@ -99,19 +99,13 @@ class AuthScreen:
         self.backend_url = backend_url
         self.on_auth_success = on_auth_success
 
-        # Get Supabase credentials
-        # Hardcoded Supabase credentials (env vars can override)
-        self.supabase_url = os.getenv(
-            "SUPABASE_URL",
-            "https://ibiapabkyskoazpgcymo.supabase.co"
-        )
-        self.supabase_anon_key = os.getenv(
-            "SUPABASE_ANON_KEY",
-            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImliaWFwYWJreXNrb2F6cGdjeW1vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1MjI5MjksImV4cCI6MjA3NzA5ODkyOX0.9UzEO0CN-FCyloTAWHqg6MaoHxnd0CAvfLUh-2ZA05s"
-        )
+        # Get Supabase credentials from environment variables
+        # Set SUPABASE_URL and SUPABASE_ANON_KEY in launch script or environment
+        self.supabase_url = os.getenv("SUPABASE_URL")
+        self.supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
         
-        if not self.supabase_anon_key:
-            raise ValueError("SUPABASE_ANON_KEY environment variable not set")
+        if not self.supabase_url or not self.supabase_anon_key:
+            raise ValueError("SUPABASE_URL and SUPABASE_ANON_KEY environment variables must be set")
 
         # Initialize Supabase client
         self.supabase: Client = create_client(self.supabase_url, self.supabase_anon_key)

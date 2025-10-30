@@ -58,12 +58,10 @@ class TrainingManager:
         }
         
         # Initialize Supabase client for secure storage
-        # Hardcoded Supabase credentials (env vars can override)
-        supabase_url = os.getenv("SUPABASE_URL", "https://ibiapabkyskoazpgcymo.supabase.co")
-        supabase_anon_key = os.getenv(
-            "SUPABASE_ANON_KEY",
-            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImliaWFwYWJreXNrb2F6cGdjeW1vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1MjI5MjksImV4cCI6MjA3NzA5ODkyOX0.9UzEO0CN-FCyloTAWHqg6MaoHxnd0CAvfLUh-2ZA05s"
-        )
+        # Get Supabase credentials from environment variables
+        # Set SUPABASE_URL and SUPABASE_ANON_KEY in launch script or environment
+        supabase_url = os.getenv("SUPABASE_URL")
+        supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
         
         if supabase_url and supabase_anon_key:
             try:
