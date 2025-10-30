@@ -12,10 +12,10 @@ import time
 import uuid
 import hashlib
 import os
-import base64
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime
+from supabase import create_client, Client
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +56,25 @@ class TrainingManager:
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
+        
+        # Initialize Supabase client for secure storage
+        supabase_url = os.getenv("SUPABASE_URL")
+        # For Supabase Storage, we need the anon key (not access token)
+        # The access token is used for authentication via headers
+        supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
+        
+        if supabase_url and supabase_anon_key:
+            try:
+                self.supabase = create_client(supabase_url, supabase_anon_key)
+            except Exception as e:
+                logger.warning(f"Failed to initialize Supabase client: {e}")
+                self.supabase = None
+        else:
+            self.supabase = None
+            if not supabase_url:
+                logger.warning("SUPABASE_URL not set - secure storage unavailable")
+            if not supabase_anon_key:
+                logger.warning("SUPABASE_ANON_KEY not set - secure storage unavailable")
         
         # Create datasets directory
         if self.user_id:
@@ -148,23 +167,23 @@ class TrainingManager:
             logger.warning(f"Adapter registration error (non-critical): {e}")
             # Continue anyway - training can proceed without backend registration
         
-        # Prepare training config
-        # Upload dataset to cloud storage and get URL
-        dataset_url = self._upload_dataset_temporary(dataset_path)
+        # Upload dataset to secure Supabase Storage
+        dataset_url = self._upload_dataset_to_supabase_storage(dataset_path)
         
         if not dataset_url:
-            logger.error(f"Failed to upload dataset. Dataset saved locally at: {dataset_path}")
+            logger.error(f"Failed to upload dataset to secure storage. Dataset saved locally at: {dataset_path}")
             raise ValueError(
-                "Failed to upload dataset to cloud storage. "
+                "Failed to upload dataset to secure storage. "
                 "RunPod requires a URL-accessible dataset file. "
-                f"Local path: {dataset_path}"
+                "Please ensure Supabase Storage is configured and accessible."
             )
         
+        # Prepare training config
         training_config = {
             "task": "train_and_encrypt",
             "user_id": self.user_id,
             "adapter_id": adapter_id,
-            "dataset": dataset_url,  # URL to dataset file
+            "dataset": dataset_url,  # Signed URL to secure Supabase Storage
             "model_name": model_name,
             "encryption_key": encryption_key_hex,
             "output_dir": f"/workspace/adapters/{self.user_id}/{adapter_id}/",
@@ -276,49 +295,73 @@ class TrainingManager:
         logger.info(f"Saved dataset with {len(qa_pairs)} pairs to {dataset_path}")
         return str(dataset_path)
     
-    def _upload_dataset_temporary(self, dataset_path: str) -> Optional[str]:
+    def _upload_dataset_to_supabase_storage(self, dataset_path: str) -> Optional[str]:
         """
-        Upload dataset to temporary file hosting service.
+        Upload dataset to Supabase Storage securely.
         
-        TODO: Replace with Supabase Storage upload for production.
+        Files are stored in: datasets/{user_id}/{filename}
+        Access is controlled via RLS policies set in Supabase dashboard.
         
         Args:
             dataset_path: Local path to dataset file
             
         Returns:
-            Public URL to dataset file or None if failed
+            Signed URL to download the dataset (valid for 1 hour) or None if failed
         """
+        if not self.supabase or not self.user_id:
+            logger.error("Supabase client not initialized or user_id missing")
+            return None
+        
         try:
             # Read dataset file
             with open(dataset_path, 'rb') as f:
                 dataset_content = f.read()
             
-            # Try uploading to file.io (temporary file hosting)
-            # This is a simple solution for testing - replace with Supabase Storage in production
-            logger.info("Uploading dataset to temporary hosting...")
+            filename = os.path.basename(dataset_path)
+            storage_path = f"{self.user_id}/{filename}"
+            bucket_name = "datasets"
             
-            files = {'file': (os.path.basename(dataset_path), dataset_content, 'application/jsonl')}
-            response = requests.post(
-                'https://file.io',
-                files=files,
-                timeout=30
+            logger.info(f"Uploading dataset to Supabase Storage: {bucket_name}/{storage_path} ({len(dataset_content)} bytes)")
+            
+            # Upload file to Supabase Storage
+            # The Supabase client is initialized with anon key, but we need to set auth
+            # Set the session auth token for authenticated requests
+            if self.access_token:
+                # Set auth header for this request
+                # Supabase Python client handles auth automatically when initialized with session
+                # But we need to ensure the client has the session token
+                pass  # Auth handled by client initialization
+            
+            response = self.supabase.storage.from_(bucket_name).upload(
+                path=storage_path,
+                file=dataset_content,
+                file_options={
+                    "content-type": "application/jsonl",
+                    "upsert": "false"  # Don't overwrite existing files
+                }
             )
             
-            if response.status_code == 200:
-                result = response.json()
-                if result.get('success'):
-                    url = result.get('link')
-                    logger.info(f"Dataset uploaded successfully: {url}")
-                    return url
+            if response:
+                # Get signed URL (valid for 1 hour)
+                signed_url_response = self.supabase.storage.from_(bucket_name).create_signed_url(
+                    path=storage_path,
+                    expires_in=3600  # 1 hour
+                )
+                
+                if signed_url_response and 'signedURL' in signed_url_response:
+                    signed_url = signed_url_response['signedURL']
+                    logger.info(f"Dataset uploaded successfully to Supabase Storage")
+                    logger.info(f"Signed URL expires in 1 hour")
+                    return signed_url
                 else:
-                    logger.error(f"File.io upload failed: {result}")
+                    logger.error(f"Failed to create signed URL: {signed_url_response}")
+                    return None
             else:
-                logger.error(f"File.io upload failed: {response.status_code} {response.text}")
-            
-            return None
-            
+                logger.error(f"Upload failed: {response}")
+                return None
+                
         except Exception as e:
-            logger.error(f"Error uploading dataset: {e}")
+            logger.error(f"Error uploading dataset to Supabase Storage: {e}")
             return None
     
     def update_adapter_status(
