@@ -11,6 +11,7 @@ import threading
 import requests
 import logging
 import base64
+import tempfile
 from pathlib import Path
 from typing import Optional, List
 from datetime import datetime
@@ -535,6 +536,35 @@ class VaultApp:
             for tag in tags[:3]  # Show max 3 tags
         ]
 
+        # Build action buttons
+        action_buttons = [
+            ft.IconButton(
+                ft.Icons.VISIBILITY,
+                tooltip="View",
+                on_click=lambda _, e=entry: self.view_secret(e),
+            ),
+        ]
+        
+        # Add "Train Model" button for PDF/knowledge entries
+        if "pdf" in tags or "knowledge" in tags or "document" in tags:
+            action_buttons.append(
+                ft.IconButton(
+                    ft.Icons.TRAIN_OUTLINED,
+                    tooltip="Train Model",
+                    on_click=lambda _, e=entry: self._offer_training_from_entry(e),
+                    icon_color="#ffc107",
+                )
+            )
+        
+        action_buttons.append(
+            ft.IconButton(
+                ft.Icons.DELETE_OUTLINE,
+                tooltip="Delete",
+                on_click=lambda _, e=entry: self.delete_secret(e),
+                icon_color="#f44336",
+            )
+        )
+
         return ft.Card(
             content=ft.Container(
                 content=ft.Row(
@@ -549,19 +579,7 @@ class VaultApp:
                             expand=True,
                         ),
                         ft.Row(
-                            [
-                                ft.IconButton(
-                                    ft.Icons.VISIBILITY,
-                                    tooltip="View",
-                                    on_click=lambda _, e=entry: self.view_secret(e),
-                                ),
-                                ft.IconButton(
-                                    ft.Icons.DELETE_OUTLINE,
-                                    tooltip="Delete",
-                                    on_click=lambda _, e=entry: self.delete_secret(e),
-                                    icon_color="#f44336",
-                                ),
-                            ],
+                            action_buttons,
                             spacing=0,
                         ),
                     ],
@@ -1082,6 +1100,48 @@ class VaultApp:
 
     def _offer_training(self, filename: str, text_chunks: List[str]):
         """Offer to generate Q&A and train model after PDF processing."""
+        # Check if RunPod is configured
+        if not self.runpod_endpoint or not self.runpod_api_key:
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("RunPod Not Configured"),
+                content=ft.Text(
+                    f"RunPod endpoint is not configured. Please set RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY environment variables.\n\n"
+                    f"Training requires:\n"
+                    f"• RunPod endpoint ID\n"
+                    f"• RunPod API key\n"
+                    f"• These should be set in launch_enclave_gui.sh"
+                ),
+                actions=[
+                    ft.TextButton("OK", on_click=lambda e: setattr(dialog, 'open', False) or self.page.update()),
+                ],
+            )
+            self.page.overlay.append(dialog)
+            dialog.open = True
+            self.page.update()
+            return
+        
+        # Check if Q&A generator and training manager are initialized
+        if not self.qa_generator or not self.training_manager:
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text("Training Services Not Available"),
+                content=ft.Text(
+                    f"Q&A generator or training manager failed to initialize.\n\n"
+                    f"Please check:\n"
+                    f"• RunPod endpoint connectivity\n"
+                    f"• Backend API availability\n"
+                    f"• Network connection"
+                ),
+                actions=[
+                    ft.TextButton("OK", on_click=lambda e: setattr(dialog, 'open', False) or self.page.update()),
+                ],
+            )
+            self.page.overlay.append(dialog)
+            dialog.open = True
+            self.page.update()
+            return
+        
         def on_yes(e):
             dialog.open = False
             self.page.update()
@@ -1099,7 +1159,8 @@ class VaultApp:
                 f"This will:\n"
                 f"• Generate Q&A pairs from {len(text_chunks)} chunks\n"
                 f"• Train a DoRA adapter on your data\n"
-                f"• Store encrypted adapter in your vault"
+                f"• Store encrypted adapter in your vault\n\n"
+                f"Note: This may take several minutes."
             ),
             actions=[
                 ft.TextButton("No", on_click=on_no),
@@ -1116,6 +1177,56 @@ class VaultApp:
         self.page.overlay.append(dialog)
         dialog.open = True
         self.page.update()
+
+    def _offer_training_from_entry(self, entry):
+        """Offer training from an existing PDF entry."""
+        service = entry.get('service', 'Unknown')
+        tags = entry.get('tags', [])
+        
+        # Extract PDF data from entry
+        try:
+            secret_value = self.vault.kv_store.get(service)
+            if not secret_value:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Could not retrieve PDF data"),
+                    bgcolor="#f44336",
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Decode base64 PDF data
+            pdf_data = base64.b64decode(secret_value)
+            
+            # Write to temporary file for processing
+            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
+                tmp_path = tmp_file.name
+                tmp_file.write(pdf_data)
+            
+            # Process PDF to get text chunks
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"📄 Processing {service}..."),
+                bgcolor="#2196F3",
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            
+            result = self.pdf_processor.process_pdf(tmp_path)
+            
+            # Cleanup temp file
+            os.unlink(tmp_path)
+            
+            # Offer training with the extracted chunks
+            self._offer_training(service, result['text_chunks'])
+            
+        except Exception as ex:
+            logger.error(f"Error extracting PDF for training: {ex}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Error: {str(ex)}"),
+                bgcolor="#f44336",
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
 
     def _start_training_workflow(self, filename: str, text_chunks: List[str]):
         """Start Q&A generation and training workflow."""
