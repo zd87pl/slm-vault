@@ -67,8 +67,9 @@ class PDFProcessor:
                         full_text += f"\n\n--- Page {page_num + 1} ---\n\n"
                         full_text += page_text
                 
-                # Split into chunks (targeting 500-1000 tokens, ~2000-4000 chars)
-                # Simple heuristic: split by paragraphs, then combine until ~3000 chars
+                # Split into chunks (targeting ~300 tokens, ~1200 chars)
+                # Model has 2048 token limit, so we need to leave room for prompt + response (~500 tokens)
+                # Each chunk should be ~300 tokens (~1200 chars) max
                 paragraphs = full_text.split("\n\n")
                 current_chunk = ""
                 
@@ -77,8 +78,8 @@ class PDFProcessor:
                     if not para:
                         continue
                     
-                    # If adding this paragraph would exceed ~3500 chars, save current chunk
-                    if current_chunk and len(current_chunk) + len(para) > 3500:
+                    # If adding this paragraph would exceed ~1200 chars, save current chunk
+                    if current_chunk and len(current_chunk) + len(para) > 1200:
                         text_chunks.append(current_chunk.strip())
                         current_chunk = para
                     else:
