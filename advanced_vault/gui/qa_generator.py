@@ -60,15 +60,28 @@ class QAGenerator:
             text_chunk = text_chunk[:max_chunk_length] + "..."
         
         # Create prompt for Q&A generation
-        prompt = f"""Generate {num_pairs} high-quality question-answer pairs from the following text.
+        # Use a more structured prompt to get better JSON output
+        prompt = f"""You are a helpful assistant that generates question-answer pairs for training data.
+
+Generate exactly {num_pairs} high-quality question-answer pairs from the following text.
 
 Text:
 {text_chunk}
 
-Format each Q&A pair as JSON:
-{{"instruction": "question here", "output": "answer here"}}
+Requirements:
+- Each pair must have a clear question and a detailed answer
+- Questions should be specific and answerable from the text
+- Answers should be complete and informative
+- Format as valid JSON array
 
-Return only valid JSON array with {num_pairs} Q&A pairs. Do not include markdown formatting or explanations."""
+Return ONLY a valid JSON array in this exact format:
+[
+  {{"instruction": "question 1", "output": "answer 1"}},
+  {{"instruction": "question 2", "output": "answer 2"}},
+  {{"instruction": "question 3", "output": "answer 3"}}
+]
+
+Do not include any text before or after the JSON array. Do not use markdown code blocks."""
 
         try:
             # Submit inference job
@@ -212,26 +225,88 @@ Return only valid JSON array with {num_pairs} Q&A pairs. Do not include markdown
         """
         qa_pairs = []
         
-        # Try to extract JSON array
+        if not response_text:
+            logger.warning("Empty response text")
+            return []
+        
+        logger.debug(f"Parsing response (first 500 chars): {response_text[:500]}")
+        
+        # Try multiple parsing strategies
+        # Strategy 1: Find JSON array in response
         try:
-            # Find JSON array in response
-            start_idx = response_text.find('[')
-            end_idx = response_text.rfind(']') + 1
+            import re
             
-            if start_idx >= 0 and end_idx > start_idx:
-                json_str = response_text[start_idx:end_idx]
+            # Look for JSON array: [...]
+            json_pattern = r'\[.*?\]'
+            matches = re.findall(json_pattern, response_text, re.DOTALL)
+            
+            if matches:
+                # Try the longest match (most likely to be complete)
+                json_str = max(matches, key=len)
                 pairs = json.loads(json_str)
                 
-                for pair in pairs:
-                    if isinstance(pair, dict) and "instruction" in pair and "output" in pair:
-                        qa_pairs.append({
-                            "instruction": pair["instruction"],
-                            "output": pair["output"]
-                        })
-        except json.JSONDecodeError:
-            # Fallback: try to extract pairs manually
-            logger.warning("Failed to parse JSON, trying manual extraction")
-            qa_pairs = self._extract_qa_manually(response_text)
+                if isinstance(pairs, list):
+                    for pair in pairs:
+                        if isinstance(pair, dict):
+                            # Handle different formats
+                            instruction = pair.get("instruction") or pair.get("question") or pair.get("q")
+                            output = pair.get("output") or pair.get("answer") or pair.get("a")
+                            
+                            if instruction and output:
+                                qa_pairs.append({
+                                    "instruction": str(instruction).strip(),
+                                    "output": str(output).strip()
+                                })
+                    
+                    if qa_pairs:
+                        logger.info(f"Successfully parsed {len(qa_pairs)} Q&A pairs from JSON array")
+                        return qa_pairs[:expected_pairs]
+            
+            # Strategy 2: Try to find individual JSON objects
+            json_obj_pattern = r'\{\s*"instruction"[^}]*"output"[^}]*\}'
+            obj_matches = re.findall(json_obj_pattern, response_text, re.DOTALL)
+            
+            if obj_matches:
+                for obj_str in obj_matches:
+                    try:
+                        pair = json.loads(obj_str)
+                        instruction = pair.get("instruction") or pair.get("question")
+                        output = pair.get("output") or pair.get("answer")
+                        
+                        if instruction and output:
+                            qa_pairs.append({
+                                "instruction": str(instruction).strip(),
+                                "output": str(output).strip()
+                            })
+                    except:
+                        continue
+                
+                if qa_pairs:
+                    logger.info(f"Successfully parsed {len(qa_pairs)} Q&A pairs from JSON objects")
+                    return qa_pairs[:expected_pairs]
+            
+            # Strategy 3: Try direct JSON parse
+            try:
+                parsed = json.loads(response_text.strip())
+                if isinstance(parsed, list):
+                    for item in parsed:
+                        if isinstance(item, dict) and "instruction" in item and "output" in item:
+                            qa_pairs.append({
+                                "instruction": str(item["instruction"]).strip(),
+                                "output": str(item["output"]).strip()
+                            })
+                    if qa_pairs:
+                        logger.info(f"Successfully parsed {len(qa_pairs)} Q&A pairs from direct JSON")
+                        return qa_pairs[:expected_pairs]
+            except:
+                pass
+                
+        except json.JSONDecodeError as e:
+            logger.warning(f"Failed to parse JSON: {e}")
+        
+        # Strategy 4: Fallback to manual extraction
+        logger.warning("Failed to parse JSON, trying manual extraction")
+        qa_pairs = self._extract_qa_manually(response_text)
         
         return qa_pairs[:expected_pairs]
     
