@@ -635,7 +635,55 @@ class VaultApp:
             alignment=ft.alignment.center,
         )
 
-        # Modern tag chips
+        # Extract training status from tags
+        training_status = None
+        training_job_id = None
+        for tag in tags:
+            if tag.startswith("training_status:"):
+                training_status = tag.split(":", 1)[1]
+            elif tag.startswith("training_job:"):
+                training_job_id = tag.split(":", 1)[1]
+        
+        # Training status badge
+        status_badge = None
+        if training_status:
+            status_colors = {
+                "pending": ModernTheme.ACCENT_WARNING,
+                "training": ModernTheme.ACCENT_PRIMARY,
+                "completed": ModernTheme.ACCENT_SUCCESS,
+                "failed": ModernTheme.ACCENT_ERROR
+            }
+            status_icons = {
+                "pending": ft.Icons.HOURGLASS_EMPTY_ROUNDED,
+                "training": ft.Icons.TRAIN_ROUNDED,
+                "completed": ft.Icons.CHECK_CIRCLE_ROUNDED,
+                "failed": ft.Icons.ERROR_ROUNDED
+            }
+            status_color = status_colors.get(training_status, ModernTheme.TEXT_MUTED)
+            status_icon = status_icons.get(training_status, ft.Icons.INFO_ROUNDED)
+            
+            status_badge = ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Icon(status_icon, size=12, color=status_color),
+                        ft.Text(
+                            training_status.title(),
+                            size=10,
+                            weight=ft.FontWeight.W_500,
+                            color=status_color
+                        )
+                    ],
+                    spacing=4,
+                    tight=True
+                ),
+                bgcolor=status_color + "20",  # 20% opacity
+                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                border_radius=8,
+                border=ft.border.all(1, status_color + "40"),
+            )
+
+        # Modern tag chips (exclude training status tags)
+        regular_tags = [t for t in tags if not t.startswith("training_")]
         tag_chips = [
             ft.Container(
                 content=ft.Text(tag, size=10, weight=ft.FontWeight.W_500, color=ModernTheme.TEXT_SECONDARY),
@@ -644,8 +692,13 @@ class VaultApp:
                 border_radius=8,
                 border=ft.border.all(1, ModernTheme.BORDER_COLOR),
             )
-            for tag in tags[:3]  # Show max 3 tags
+            for tag in regular_tags[:3]  # Show max 3 tags
         ]
+        
+        # Add status badge to tag row if present
+        tag_row_items = tag_chips.copy()
+        if status_badge:
+            tag_row_items.insert(0, status_badge)
 
         # Build action buttons with modern styling
         action_buttons = [
@@ -694,7 +747,7 @@ class VaultApp:
                                         color=ModernTheme.TEXT_PRIMARY
                                     ),
                                     ft.Container(height=6),
-                                    ft.Row(tag_chips, spacing=6) if tag_chips else ft.Container(),
+                                    ft.Row(tag_row_items, spacing=6) if tag_row_items else ft.Container(),
                                 ],
                                 spacing=0,
                                 expand=True,
@@ -790,9 +843,13 @@ class VaultApp:
                     description=description_field.value or None
                 )
 
-                # Sync to cloud in background
+                # Sync to cloud in background (non-critical)
                 if self.cloud_sync:
-                    self.cloud_sync.sync_entry_background(entry_id)
+                    try:
+                        self.cloud_sync.sync_entry_background(entry_id)
+                    except Exception as sync_err:
+                        logger.warning(f"Cloud sync failed (non-critical): {sync_err}")
+                        # Don't fail the operation - local storage succeeded
 
                 # Show success snackbar
                 self.page.snack_bar = ft.SnackBar(
@@ -1310,9 +1367,13 @@ class VaultApp:
                 
                 logger.info(f"Stored PDF as knowledge entry: {filename} (ID: {entry_id})")
                 
-                # Sync to cloud
+                # Sync to cloud (non-critical - don't fail if auth expires)
                 if self.cloud_sync:
-                    self.cloud_sync.sync_entry_background(entry_id)
+                    try:
+                        self.cloud_sync.sync_entry_background(entry_id)
+                    except Exception as sync_err:
+                        logger.warning(f"Cloud sync failed (non-critical): {sync_err}")
+                        # Don't show error to user - local storage succeeded
                 
                 # Update UI
                 self.page.snack_bar = ft.SnackBar(
@@ -1547,6 +1608,35 @@ class VaultApp:
                     batch_size=4
                 )
                 
+                # Store training job metadata in vault entry
+                # Find the entry by filename and update with job_id
+                try:
+                    # Search for the entry
+                    entries = self.vault.query(service=filename)
+                    if entries:
+                        entry = entries[0]
+                        # Get decrypted value to re-encrypt with new tags
+                        decrypted_value = self.vault.kv_store.get_by_id(entry.id)
+                        if decrypted_value:
+                            # Update tags to include training job info
+                            tags = list(entry.tags) if entry.tags else []
+                            # Remove old training tags
+                            tags = [t for t in tags if not t.startswith("training_")]
+                            # Add new training tags
+                            tags.append(f"training_job:{result['runpod_job_id']}")
+                            tags.append(f"training_status:pending")
+                            # Update entry with new tags
+                            self.vault.kv_store.put(
+                                service=entry.service,
+                                secret_value=decrypted_value,
+                                entry_type=entry.entry_type,
+                                tags=tags,
+                                description=entry.description,
+                                entry_id=entry.id
+                            )
+                except Exception as update_err:
+                    logger.warning(f"Failed to update entry with training metadata: {update_err}")
+                
                 # Update UI
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"✅ Training job submitted! Job ID: {result['runpod_job_id']}"),
@@ -1554,6 +1644,9 @@ class VaultApp:
                 )
                 self.page.snack_bar.open = True
                 self.page.update()
+                
+                # Reload secrets to show updated status
+                self.load_secrets()
                 
                 logger.info(f"Training workflow completed for {filename}")
                 
@@ -1573,38 +1666,134 @@ class VaultApp:
         """Show training jobs view."""
         self.secrets_list.controls.clear()
         
+        # Fetch training jobs from backend
+        jobs = []
+        if self.training_manager:
+            try:
+                response = requests.get(
+                    f"{self.backend_url}/api/adapters/adapters",
+                    headers=self.training_manager.headers,
+                    timeout=10
+                )
+                if response.status_code == 200:
+                    data = response.json()
+                    jobs = data.get("adapters", [])
+                else:
+                    logger.warning(f"Failed to fetch training jobs: {response.status_code}")
+            except Exception as e:
+                logger.warning(f"Error fetching training jobs: {e}")
+        
         # Training view content
+        content_items = [
+            ft.Row(
+                [
+                    ft.Text(
+                        "🤖 Training Jobs",
+                        size=24,
+                        weight=ft.FontWeight.BOLD,
+                        color=ModernTheme.TEXT_PRIMARY,
+                    ),
+                    ft.IconButton(
+                        ft.Icons.REFRESH_ROUNDED,
+                        tooltip="Refresh",
+                        on_click=lambda _: self.show_training_view(),
+                        icon_color=ModernTheme.TEXT_SECONDARY,
+                    ),
+                ],
+                alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+            ),
+            ft.Divider(color=ModernTheme.BORDER_COLOR),
+        ]
+        
+        if not jobs:
+            content_items.append(
+                ft.Text(
+                    "No training jobs yet. Upload a PDF and train a model to get started!",
+                    size=14,
+                    color=ModernTheme.TEXT_MUTED
+                )
+            )
+        else:
+            # Display jobs
+            for job in jobs:
+                status = job.get("status", "unknown")
+                adapter_id = job.get("adapter_id", "Unknown")
+                job_id = job.get("job_id", "N/A")
+                created_at = job.get("created_at", "")
+                
+                status_colors = {
+                    "pending": ModernTheme.ACCENT_WARNING,
+                    "training": ModernTheme.ACCENT_PRIMARY,
+                    "completed": ModernTheme.ACCENT_SUCCESS,
+                    "failed": ModernTheme.ACCENT_ERROR
+                }
+                status_color = status_colors.get(status, ModernTheme.TEXT_MUTED)
+                
+                job_card = ft.Container(
+                    content=ft.Card(
+                        content=ft.Container(
+                            content=ft.Column(
+                                [
+                                    ft.Row(
+                                        [
+                                            ft.Text(
+                                                f"Adapter: {adapter_id[:8]}...",
+                                                weight=ft.FontWeight.BOLD,
+                                                size=16,
+                                                color=ModernTheme.TEXT_PRIMARY
+                                            ),
+                                            ft.Container(
+                                                content=ft.Row(
+                                                    [
+                                                        ft.Icon(
+                                                            ft.Icons.TRAIN_ROUNDED if status == "training" else ft.Icons.CHECK_CIRCLE_ROUNDED,
+                                                            size=16,
+                                                            color=status_color
+                                                        ),
+                                                        ft.Text(
+                                                            status.title(),
+                                                            size=12,
+                                                            weight=ft.FontWeight.W_500,
+                                                            color=status_color
+                                                        )
+                                                    ],
+                                                    spacing=4,
+                                                    tight=True
+                                                ),
+                                                bgcolor=status_color + "20",
+                                                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                                border_radius=8,
+                                                border=ft.border.all(1, status_color + "40"),
+                                            ),
+                                        ],
+                                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                                    ),
+                                    ft.Container(height=8),
+                                    ft.Text(
+                                        f"Job ID: {job_id}",
+                                        size=12,
+                                        color=ModernTheme.TEXT_MUTED
+                                    ),
+                                    ft.Text(
+                                        f"Created: {created_at[:10] if created_at else 'N/A'}",
+                                        size=12,
+                                        color=ModernTheme.TEXT_MUTED
+                                    ),
+                                ],
+                                spacing=4,
+                            ),
+                            padding=16,
+                        ),
+                        elevation=2,
+                        color=ModernTheme.BG_ELEVATED,
+                    ),
+                    margin=ft.margin.only(bottom=12),
+                )
+                content_items.append(job_card)
+        
         self.secrets_list.controls.append(
             ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Row(
-                            [
-                                ft.Text(
-                                    "🤖 Training Jobs",
-                                    size=24,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=ModernTheme.TEXT_PRIMARY,
-                                ),
-                            ],
-                            alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                        ),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
-                        ft.Text(
-                            "Training jobs are submitted automatically after PDF processing.\n"
-                            "Check status and view completed adapters here.",
-                            size=14,
-                            color=ModernTheme.TEXT_MUTED
-                        ),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
-                        ft.Text(
-                            "No training jobs yet. Upload a PDF to get started!",
-                            size=14,
-                            color=ModernTheme.TEXT_MUTED
-                        ),
-                    ],
-                    spacing=10,
-                ),
+                content=ft.Column(content_items, spacing=10),
                 padding=20,
             )
         )
