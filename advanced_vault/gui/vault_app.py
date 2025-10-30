@@ -57,9 +57,10 @@ class VaultApp:
 
         # RunPod connectivity state
         self.runpod_status = "unknown"  # unknown, connected, disconnected
-        # Hardcoded RunPod endpoint for all users
-        self.runpod_endpoint = os.getenv("RUNPOD_ENDPOINT_ID", "ayi3s70ihlpbtg")
-        self.runpod_api_key = os.getenv("RUNPOD_API_KEY", "rpa_2U1UUIMCCU2CEOXGT7HOW1975SGDDSD4W29ULAN0kl4xnh")
+        # RunPod endpoint configured via environment variables
+        # Set RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY in launch script or environment
+        self.runpod_endpoint = os.getenv("RUNPOD_ENDPOINT_ID")
+        self.runpod_api_key = os.getenv("RUNPOD_API_KEY")
         self.last_check = None
 
         # Vault setup paths
