@@ -69,9 +69,9 @@ class TrainingManager:
             try:
                 self.supabase = create_client(supabase_url, supabase_anon_key)
                 # Set the session for authenticated storage operations
-                if self.access_token:
-                    # Set auth session manually
-                    self.supabase.auth.set_session(self.access_token)
+                # Note: Storage operations work with anon key + access token in headers
+                # We don't need to set_session here - the storage API uses the access token
+                # when making requests via the authenticated client
             except Exception as e:
                 logger.warning(f"Failed to initialize Supabase client: {e}")
                 self.supabase = None
@@ -330,22 +330,30 @@ class TrainingManager:
             logger.info(f"Uploading dataset to Supabase Storage: {bucket_name}/{storage_path} ({len(dataset_content)} bytes)")
             
             # Upload file to Supabase Storage
-            # The Supabase client is initialized with anon key, but we need to set auth
-            # Set the session auth token for authenticated requests
-            if self.access_token:
-                # Set auth header for this request
-                # Supabase Python client handles auth automatically when initialized with session
-                # But we need to ensure the client has the session token
-                pass  # Auth handled by client initialization
+            # For authenticated storage operations with RLS, we need to set the session
+            # Set session if we have both access_token and refresh_token
+            if self.access_token and self.session_data.get("refresh_token"):
+                try:
+                    self.supabase.auth.set_session(
+                        access_token=self.access_token,
+                        refresh_token=self.session_data.get("refresh_token")
+                    )
+                except Exception as session_error:
+                    logger.warning(f"Failed to set session (will try without): {session_error}")
             
-            response = self.supabase.storage.from_(bucket_name).upload(
-                path=storage_path,
-                file=dataset_content,
-                file_options={
-                    "content-type": "application/jsonl",
-                    "upsert": "false"  # Don't overwrite existing files
-                }
-            )
+            # Try upload
+            try:
+                response = self.supabase.storage.from_(bucket_name).upload(
+                    path=storage_path,
+                    file=dataset_content,
+                    file_options={
+                        "content-type": "application/jsonl",
+                        "upsert": "false"  # Don't overwrite existing files
+                    }
+                )
+            except Exception as upload_error:
+                logger.error(f"Upload failed: {upload_error}")
+                return None
             
             if response:
                 # Get signed URL (valid for 1 hour)
