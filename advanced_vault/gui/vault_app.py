@@ -1611,8 +1611,10 @@ class VaultApp:
                 # Store training job metadata in vault entry
                 # Find the entry by filename and update with job_id
                 try:
-                    # Search for the entry
-                    entries = self.vault.query(service=filename)
+                    # Search for the entry using QueryFilter
+                    from advanced_vault.encrypted_kv import QueryFilter
+                    filter = QueryFilter(service=filename, limit=1)
+                    entries = self.vault.kv_store.search(filter)
                     if entries:
                         entry = entries[0]
                         # Get decrypted value to re-encrypt with new tags
