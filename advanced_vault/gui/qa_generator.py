@@ -156,7 +156,22 @@ Return only valid JSON array with {num_pairs} Q&A pairs. Do not include markdown
                 status = status_data.get("status")
                 
                 if status == "COMPLETED":
-                    return status_data.get("output", {})
+                    output = status_data.get("output", {})
+                    # The response might be directly in output or nested in output.response
+                    # Check both formats
+                    if isinstance(output, dict):
+                        response_text = output.get("response", "")
+                        if not response_text and "text" in output:
+                            response_text = output.get("text", "")
+                        if not response_text:
+                            # Sometimes the response is the output itself
+                            logger.warning(f"Could not find response in output: {output}")
+                            return None
+                        
+                        return {"response": response_text}
+                    else:
+                        # Output might be a string directly
+                        return {"response": str(output)}
                 elif status == "FAILED":
                     error = status_data.get("error", "Unknown error")
                     logger.error(f"Job failed: {error}")
