@@ -100,9 +100,16 @@ class AuthScreen:
         self.on_auth_success = on_auth_success
 
         # Get Supabase credentials
-        self.supabase_url = os.getenv("SUPABASE_URL", "https://ibiapabkyskoazpgcymo.supabase.co")
-        self.supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
-
+        # Hardcoded Supabase credentials (env vars can override)
+        self.supabase_url = os.getenv(
+            "SUPABASE_URL",
+            "https://ibiapabkyskoazpgcymo.supabase.co"
+        )
+        self.supabase_anon_key = os.getenv(
+            "SUPABASE_ANON_KEY",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImliaWFwYWJreXNrb2F6cGdjeW1vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1MjI5MjksImV4cCI6MjA3NzA5ODkyOX0.9UzEO0CN-FCyloTAWHqg6MaoHxnd0CAvfLUh-2ZA05s"
+        )
+        
         if not self.supabase_anon_key:
             raise ValueError("SUPABASE_ANON_KEY environment variable not set")
 

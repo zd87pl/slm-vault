@@ -58,14 +58,20 @@ class TrainingManager:
         }
         
         # Initialize Supabase client for secure storage
-        supabase_url = os.getenv("SUPABASE_URL")
-        # For Supabase Storage, we need the anon key (not access token)
-        # The access token is used for authentication via headers
-        supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
+        # Hardcoded Supabase credentials (env vars can override)
+        supabase_url = os.getenv("SUPABASE_URL", "https://ibiapabkyskoazpgcymo.supabase.co")
+        supabase_anon_key = os.getenv(
+            "SUPABASE_ANON_KEY",
+            "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImliaWFwYWJreXNrb2F6cGdjeW1vIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjE1MjI5MjksImV4cCI6MjA3NzA5ODkyOX0.9UzEO0CN-FCyloTAWHqg6MaoHxnd0CAvfLUh-2ZA05s"
+        )
         
         if supabase_url and supabase_anon_key:
             try:
                 self.supabase = create_client(supabase_url, supabase_anon_key)
+                # Set the session for authenticated storage operations
+                if self.access_token:
+                    # Set auth session manually
+                    self.supabase.auth.set_session(self.access_token)
             except Exception as e:
                 logger.warning(f"Failed to initialize Supabase client: {e}")
                 self.supabase = None
