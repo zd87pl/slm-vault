@@ -115,8 +115,20 @@ Return only valid JSON array with {num_pairs} Q&A pairs. Do not include markdown
             # Parse response
             response_text = result.get("response", "")
             
+            # Log response for debugging
+            if response_text:
+                logger.info(f"Received response (first 500 chars): {response_text[:500]}")
+                logger.debug(f"Full response length: {len(response_text)} chars")
+            else:
+                logger.warning(f"Empty response from RunPod. Full result: {result}")
+                return []
+            
             # Try to extract JSON from response
             qa_pairs = self._parse_qa_response(response_text, num_pairs)
+            
+            if not qa_pairs:
+                logger.warning(f"No Q&A pairs extracted from response for chunk (length: {len(response_text)} chars)")
+                logger.debug(f"Response text: {response_text}")
             
             return qa_pairs
             
