@@ -50,6 +50,15 @@ class QAGenerator:
             logger.warning("RunPod not configured, skipping Q&A generation")
             return []
         
+        # Limit chunk length to prevent exceeding model context (2048 tokens)
+        # Rough estimate: ~4 chars per token, so limit to ~1200 chars for safety
+        # This leaves room for prompt template (~200 tokens) + response (~500 tokens)
+        max_chunk_length = 1200
+        
+        if len(text_chunk) > max_chunk_length:
+            logger.warning(f"Text chunk too long ({len(text_chunk)} chars), truncating to {max_chunk_length}")
+            text_chunk = text_chunk[:max_chunk_length] + "..."
+        
         # Create prompt for Q&A generation
         prompt = f"""Generate {num_pairs} high-quality question-answer pairs from the following text.
 
