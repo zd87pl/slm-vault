@@ -406,8 +406,6 @@ class VaultApp:
             min_width=80,
             min_extended_width=200,
             bgcolor=ModernTheme.BG_SECONDARY,
-            selected_index_color=ModernTheme.ACCENT_PRIMARY,
-            unselected_index_color=ModernTheme.TEXT_MUTED,
             destinations=[
                 ft.NavigationRailDestination(
                     icon=ft.Icons.KEY_OUTLINED,
