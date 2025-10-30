@@ -51,14 +51,6 @@ class QAGenerator:
             return []
         
         # Create prompt for Q&A generation
-        # Limit prompt length to avoid exceeding model context (2048 tokens)
-        # Rough estimate: ~4 chars per token, so limit to ~3000 chars for safety (leaving room for prompt + response)
-        max_chunk_length = 3000
-        
-        if len(text_chunk) > max_chunk_length:
-            logger.warning(f"Text chunk too long ({len(text_chunk)} chars), truncating to {max_chunk_length}")
-            text_chunk = text_chunk[:max_chunk_length] + "..."
-        
         prompt = f"""Generate {num_pairs} high-quality question-answer pairs from the following text.
 
 Text:
@@ -80,6 +72,8 @@ Return only valid JSON array with {num_pairs} Q&A pairs. Do not include markdown
                     "user_id": "qa_generator"  # Use system user_id for Q&A generation
                 }
             }
+            
+            logger.debug(f"Submitting Q&A generation job for chunk ({len(prompt)} chars)")
             
             response = requests.post(
                 f"{self.base_url}/run",
@@ -111,12 +105,6 @@ Return only valid JSON array with {num_pairs} Q&A pairs. Do not include markdown
             
             # Parse response
             response_text = result.get("response", "")
-            
-            # Log response for debugging
-            if response_text:
-                logger.info(f"Received response (first 200 chars): {response_text[:200]}")
-            else:
-                logger.warning("Empty response from RunPod")
             
             # Try to extract JSON from response
             qa_pairs = self._parse_qa_response(response_text, num_pairs)
@@ -188,88 +176,26 @@ Return only valid JSON array with {num_pairs} Q&A pairs. Do not include markdown
         """
         qa_pairs = []
         
-        if not response_text:
-            logger.warning("Empty response from model")
-            return []
-        
-        logger.debug(f"Parsing response (first 500 chars): {response_text[:500]}")
-        
         # Try to extract JSON array
         try:
-            # Look for JSON array patterns
-            import re
+            # Find JSON array in response
+            start_idx = response_text.find('[')
+            end_idx = response_text.rfind(']') + 1
             
-            # Try to find JSON array: [...]
-            json_pattern = r'\[.*?\]'
-            matches = re.findall(json_pattern, response_text, re.DOTALL)
-            
-            if matches:
-                # Try the longest match (most likely to be complete)
-                json_str = max(matches, key=len)
+            if start_idx >= 0 and end_idx > start_idx:
+                json_str = response_text[start_idx:end_idx]
                 pairs = json.loads(json_str)
                 
-                if isinstance(pairs, list):
-                    for pair in pairs:
-                        if isinstance(pair, dict):
-                            # Handle different formats
-                            instruction = pair.get("instruction") or pair.get("question") or pair.get("q")
-                            output = pair.get("output") or pair.get("answer") or pair.get("a")
-                            
-                            if instruction and output:
-                                qa_pairs.append({
-                                    "instruction": str(instruction).strip(),
-                                    "output": str(output).strip()
-                                })
-                    
-                    if qa_pairs:
-                        logger.info(f"Successfully parsed {len(qa_pairs)} Q&A pairs from JSON")
-                        return qa_pairs[:expected_pairs]
-            
-            # Try to find individual JSON objects
-            json_obj_pattern = r'\{[^{}]*"instruction"[^{}]*"output"[^{}]*\}'
-            obj_matches = re.findall(json_obj_pattern, response_text, re.DOTALL)
-            
-            if obj_matches:
-                for obj_str in obj_matches:
-                    try:
-                        pair = json.loads(obj_str)
-                        instruction = pair.get("instruction") or pair.get("question")
-                        output = pair.get("output") or pair.get("answer")
-                        
-                        if instruction and output:
-                            qa_pairs.append({
-                                "instruction": str(instruction).strip(),
-                                "output": str(output).strip()
-                            })
-                    except:
-                        continue
-                
-                if qa_pairs:
-                    logger.info(f"Successfully parsed {len(qa_pairs)} Q&A pairs from JSON objects")
-                    return qa_pairs[:expected_pairs]
-            
-            # Try direct JSON parse
-            try:
-                parsed = json.loads(response_text.strip())
-                if isinstance(parsed, list):
-                    for item in parsed:
-                        if isinstance(item, dict) and "instruction" in item and "output" in item:
-                            qa_pairs.append({
-                                "instruction": str(item["instruction"]).strip(),
-                                "output": str(item["output"]).strip()
-                            })
-                    if qa_pairs:
-                        logger.info(f"Successfully parsed {len(qa_pairs)} Q&A pairs from direct JSON")
-                        return qa_pairs[:expected_pairs]
-            except:
-                pass
-                
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse JSON: {e}, trying manual extraction")
-        
-        # Fallback: try to extract pairs manually
-        logger.warning("Failed to parse JSON, trying manual extraction")
-        qa_pairs = self._extract_qa_manually(response_text)
+                for pair in pairs:
+                    if isinstance(pair, dict) and "instruction" in pair and "output" in pair:
+                        qa_pairs.append({
+                            "instruction": pair["instruction"],
+                            "output": pair["output"]
+                        })
+        except json.JSONDecodeError:
+            # Fallback: try to extract pairs manually
+            logger.warning("Failed to parse JSON, trying manual extraction")
+            qa_pairs = self._extract_qa_manually(response_text)
         
         return qa_pairs[:expected_pairs]
     
@@ -332,6 +258,8 @@ Return only valid JSON array with {num_pairs} Q&A pairs. Do not include markdown
                 logger.info(f"Generated {len(qa_pairs)} Q&A pairs from chunk {i+1}")
             else:
                 logger.warning(f"Failed to generate Q&A pairs from chunk {i+1}")
+                # Log the chunk length for debugging
+                logger.debug(f"Chunk {i+1} length: {len(chunk)} chars")
             
             # Small delay between chunks
             time.sleep(1)
