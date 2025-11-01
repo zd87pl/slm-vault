@@ -96,7 +96,8 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
             - rank: DoRA rank (default: 16)
             - alpha: DoRA alpha (default: 32)
             - dropout: DoRA dropout (default: 0.05)
-            - dataset: HuggingFace dataset name
+            - dataset: HuggingFace dataset name OR URL to encrypted dataset
+            - encryption_key: Hex-encoded encryption key (required if dataset is URL)
             - epochs: Number of training epochs (default: 3)
             - batch_size: Per-device batch size (default: 4)
             - learning_rate: Learning rate (default: 2e-4)
@@ -113,7 +114,10 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         BitsAndBytesConfig
     )
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
-    from datasets import load_dataset
+    from datasets import load_dataset, Dataset
+    import requests
+    import json
+    import base64
 
     logger.info("Starting DoRA training...")
 
@@ -122,7 +126,8 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     rank = config.get('rank', 16)
     alpha = config.get('alpha', 32)
     dropout = config.get('dropout', 0.05)
-    dataset_name = config.get('dataset', 'yahma/alpaca-cleaned')
+    dataset_source = config.get('dataset', 'yahma/alpaca-cleaned')
+    encryption_key_hex = config.get('encryption_key')
     epochs = config.get('epochs', 3)
     batch_size = config.get('batch_size', 4)
     learning_rate = config.get('learning_rate', 2e-4)
@@ -178,35 +183,108 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     logger.info(f"Trainable params: {trainable_params:,} / {total_params:,} "
                f"({100 * trainable_params / total_params:.2f}%)")
 
-    # Load dataset
-    logger.info(f"Loading dataset: {dataset_name}")
-    
-    # Check if dataset is a URL (starts with http:// or https://)
-    if dataset_name.startswith(('http://', 'https://')):
-        # Download dataset from URL
-        logger.info(f"Downloading dataset from URL: {dataset_name}")
-        import tempfile
-        import urllib.request
+    # Load dataset - support both HuggingFace dataset names and encrypted URLs
+    if dataset_source.startswith('http://') or dataset_source.startswith('https://'):
+        # Encrypted dataset URL - download and decrypt
+        logger.info(f"Downloading encrypted dataset from URL: {dataset_source[:50]}...")
+        if not encryption_key_hex:
+            raise ValueError("encryption_key is required for encrypted dataset URLs")
         
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.jsonl', delete=False) as tmp_file:
-            tmp_path = tmp_file.name
-            
-            # Download file
-            urllib.request.urlretrieve(dataset_name, tmp_path)
-            logger.info(f"Downloaded dataset to: {tmp_path}")
-            
-            # Load from local JSONL file
-            dataset = load_dataset('json', data_files=tmp_path, split='train')
-            
-            # Cleanup
-            os.unlink(tmp_path)
-    elif dataset_name.endswith('.jsonl'):
-        # Local JSONL file (should exist on RunPod filesystem)
-        logger.info(f"Loading local JSONL file: {dataset_name}")
-        dataset = load_dataset('json', data_files=dataset_name, split='train')
+        # Download encrypted dataset
+        try:
+            response = requests.get(dataset_source, timeout=30)
+            response.raise_for_status()
+        except requests.exceptions.RequestException as e:
+            raise ValueError(f"Failed to download encrypted dataset: {e}")
+        
+        try:
+            encrypted_package = response.json()
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse encrypted dataset as JSON: {e}")
+        
+        if not isinstance(encrypted_package, dict):
+            raise ValueError(f"Expected encrypted package to be a dict, got {type(encrypted_package)}")
+        
+        # Validate encrypted package structure
+        required_fields = ['nonce', 'ciphertext', 'tag', 'algorithm']
+        missing_fields = [f for f in required_fields if f not in encrypted_package]
+        if missing_fields:
+            raise ValueError(f"Encrypted package missing required fields: {missing_fields}")
+        
+        # Decrypt dataset
+        logger.info("Decrypting dataset...")
+        encryption_key = bytes.fromhex(encryption_key_hex)
+        
+        # Decode base64 fields
+        try:
+            nonce = base64.b64decode(encrypted_package['nonce'])
+            ciphertext = base64.b64decode(encrypted_package['ciphertext'])
+            tag = base64.b64decode(encrypted_package['tag'])
+        except Exception as e:
+            raise ValueError(f"Failed to decode encrypted package fields: {e}")
+        
+        # Determine decryption method based on algorithm field
+        algorithm = encrypted_package.get('algorithm', 'XChaCha20-Poly1305')
+        
+        if algorithm == 'XChaCha20-Poly1305':
+            # Use PyCryptodome (XChaCha20-Poly1305 with 24-byte nonce)
+            try:
+                from Crypto.Cipher import ChaCha20_Poly1305
+                cipher = ChaCha20_Poly1305.new(key=encryption_key, nonce=nonce)
+                dataset_bytes = cipher.decrypt_and_verify(ciphertext, tag)
+            except ImportError:
+                raise ValueError("PyCryptodome required for XChaCha20-Poly1305 decryption. Install with: pip install pycryptodome")
+            except Exception as e:
+                raise ValueError(f"Decryption failed: {e}")
+        else:
+            # Use cryptography library (ChaCha20-Poly1305 with 12-byte nonce)
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+                cipher = ChaCha20Poly1305(encryption_key)
+                dataset_bytes = cipher.decrypt(nonce, ciphertext + tag, None)
+            except ImportError:
+                raise ValueError("cryptography library required for ChaCha20-Poly1305 decryption. Install with: pip install cryptography")
+            except Exception as e:
+                raise ValueError(f"Decryption failed: {e}")
+        
+        # Parse decrypted JSON (Q&A pairs)
+        try:
+            qa_pairs = json.loads(dataset_bytes.decode('utf-8'))
+        except json.JSONDecodeError as e:
+            raise ValueError(f"Failed to parse decrypted dataset as JSON: {e}")
+        
+        if not isinstance(qa_pairs, list):
+            raise ValueError(f"Expected Q&A pairs to be a list, got {type(qa_pairs)}")
+        
+        if len(qa_pairs) == 0:
+            raise ValueError("Decrypted dataset is empty")
+        
+        logger.info(f"Decrypted dataset with {len(qa_pairs)} Q&A pairs")
+        
+        # Validate format
+        if not all(isinstance(pair.get('instruction'), str) and isinstance(pair.get('output'), str) for pair in qa_pairs):
+            raise ValueError("Invalid Q&A pair format: missing 'instruction' or 'output' fields")
+        
+        # Convert to HuggingFace dataset format
+        # Q&A pairs have 'instruction' and 'output', may not have 'input'
+        dataset_dict = {
+            'instruction': [pair.get('instruction', '') for pair in qa_pairs],
+            'input': [pair.get('input', '') for pair in qa_pairs],  # Empty string if not present
+            'output': [pair.get('output', '') for pair in qa_pairs]
+        }
+        
+        # Create dataset and verify columns
+        dataset = Dataset.from_dict(dataset_dict)
+        logger.info(f"Created dataset with columns: {dataset.column_names}")
+        logger.info(f"Dataset sample: {dataset[0] if len(dataset) > 0 else 'empty'}")
+        
+        # Securely clear decrypted data from memory
+        del qa_pairs, dataset_bytes, encryption_key
+        
     else:
         # HuggingFace dataset name
-        dataset = load_dataset(dataset_name, split="train")
+        logger.info(f"Loading HuggingFace dataset: {dataset_source}")
+        dataset = load_dataset(dataset_source, split="train")
 
     if max_samples:
         dataset = dataset.select(range(min(max_samples, len(dataset))))
@@ -215,16 +293,26 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     # Tokenization function
     def tokenize_function(examples):
         # Handle different dataset formats
-        if 'instruction' in examples:
+        # When batched=True, examples is a dict with lists as values
+        logger.debug(f"Tokenizing batch with keys: {list(examples.keys())}")
+        
+        if 'instruction' in examples and 'output' in examples:
             # Alpaca format
-            texts = [
-                f"### Instruction: {inst}\n### Response: {resp}"
-                for inst, resp in zip(examples['instruction'], examples['output'])
-            ]
+            instructions = examples['instruction']
+            outputs = examples['output']
+            inputs = examples.get('input', [''] * len(instructions))
+            
+            texts = []
+            for inst, inp, resp in zip(instructions, inputs, outputs):
+                if inp:
+                    text = f"### Instruction: {inst}\n### Input: {inp}\n### Response: {resp}"
+                else:
+                    text = f"### Instruction: {inst}\n### Response: {resp}"
+                texts.append(text)
         elif 'text' in examples:
             texts = examples['text']
         else:
-            raise ValueError("Unknown dataset format")
+            raise ValueError(f"Unknown dataset format. Available keys: {list(examples.keys())}")
 
         # Tokenize and add labels for causal LM training
         tokenized = tokenizer(texts, truncation=True, padding='max_length', max_length=512)
