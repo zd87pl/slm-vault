@@ -60,8 +60,27 @@ class QAGenerator:
             text_chunk = text_chunk[:max_chunk_length] + "..."
         
         # Create prompt for Q&A generation
-        # Use a more structured prompt to get better JSON output
+        # Detect if text contains non-ASCII characters (likely non-English)
+        has_non_ascii = any(ord(c) > 127 for c in text_chunk[:200])
+        language_hint = ""
+        if has_non_ascii:
+            # Detect likely language based on common characters
+            if any(c in text_chunk for c in 'ąćęłńóśźżĄĆĘŁŃÓŚŹŻ'):
+                language_hint = "\nImportant: The text is in Polish. Generate questions and answers in Polish, preserving all Polish characters and medical terminology."
+            elif any(c in text_chunk for c in 'àáâãäåæçèéêëìíîïñòóôõöøùúûüýÿ'):
+                language_hint = "\nImportant: The text contains non-English characters. Generate questions and answers in the same language as the source text."
+        
+        # Add instruction for handling OCR artifacts
+        ocr_note = ""
+        if any(c in text_chunk for c in '!\"#$%&*()+=[]{}|;:,.<>?/@\\^_`~'):
+            # High proportion of special characters suggests OCR artifacts
+            special_char_ratio = sum(1 for c in text_chunk[:200] if c in '!\"#$%&*()+=[]{}|;:,.<>?/@\\^_`~') / min(200, len(text_chunk))
+            if special_char_ratio > 0.1:  # More than 10% special chars
+                ocr_note = "\nNote: The text may contain OCR artifacts. Focus on extracting meaningful information and ignore garbled characters."
+        
         prompt = f"""You are a helpful assistant that generates question-answer pairs for training data.
+{language_hint}
+{ocr_note}
 
 Generate exactly {num_pairs} high-quality question-answer pairs from the following text.
 
@@ -72,6 +91,8 @@ Requirements:
 - Each pair must have a clear question and a detailed answer
 - Questions should be specific and answerable from the text
 - Answers should be complete and informative
+- Preserve the original language of the text (do not translate)
+- If the text contains medical terminology, preserve it accurately
 - Format as valid JSON array
 
 Return ONLY a valid JSON array in this exact format:
