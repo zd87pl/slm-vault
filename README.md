@@ -120,13 +120,20 @@ See [RUNPOD_DEPLOYMENT.md](RUNPOD_DEPLOYMENT.md) for detailed deployment instruc
 
 ## 📚 Documentation
 
-- **Training**: See [scripts/train.sh](scripts/train.sh) and [config/tinyllama-dora.yml](config/tinyllama-dora.yml)
-- **Encryption**: See [scripts/encrypt_adapter.sh](scripts/encrypt_adapter.sh)
-- **Inference**: See [examples/complete_workflow.py](examples/complete_workflow.py)
-- **Deployment**: See [scripts/deploy_runpod.sh](scripts/deploy_runpod.sh)
-- **Testing**: Run `python3 tests/run_tests.py`
-- **Implementation Summary**: [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md)
-- **Real-World Applications**: [REAL_WORLD_APPLICATIONS.md](REAL_WORLD_APPLICATIONS.md)
+**📖 [Full Documentation Index](docs/README.md)** - Complete documentation organized by topic
+
+### Quick Links
+- **[Quick Start Guide](docs/guides/QUICK_START.md)** - Get started quickly
+- **[Implementation Status](docs/implementation/STATUS.md)** - Current status and completed phases
+- **[Architecture](docs/architecture/WDVA_ARCHITECTURE.md)** - System architecture
+- **[Deployment Guide](docs/deployment/RUNPOD_DEPLOYMENT.md)** - Deploy to RunPod
+- **[Testing Guide](docs/testing/TESTING_GUIDE.md)** - Testing documentation
+- **[Security Analysis](docs/security/SECURITY_ANALYSIS_PDF_QA.md)** - Security documentation
+
+### Development
+- **[Backlog](BACKLOG.md)** - Active development backlog
+- **[Roadmap](ROADMAP.md)** - High-level development roadmap
+- **[Next Steps](docs/guides/NEXT_STEPS.md)** - Immediate next steps
 
 ## 🏗️ Architecture
 
