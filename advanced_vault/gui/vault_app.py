@@ -28,6 +28,8 @@ from pdf_processor import PDFProcessor
 from qa_generator import QAGenerator
 from training_manager import TrainingManager
 from theme import ModernTheme
+from welcome_screen import WelcomeScreen
+from error_helper import make_user_friendly, format_error_snackbar
 
 logger = logging.getLogger(__name__)
 
@@ -75,12 +77,8 @@ class VaultApp:
         self.qa_generator = None
         self.training_manager = None
 
-        # RunPod connectivity state
-        self.runpod_status = "unknown"  # unknown, connected, disconnected
-        # RunPod endpoint configured via environment variables
-        # Set RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY in launch script or environment
-        self.runpod_endpoint = os.getenv("RUNPOD_ENDPOINT_ID")
-        self.runpod_api_key = os.getenv("RUNPOD_API_KEY")
+        # Backend connectivity state (for training service)
+        self.backend_status = "unknown"  # unknown, connected, disconnected
         self.last_check = None
 
         # Vault setup paths
@@ -94,6 +92,8 @@ class VaultApp:
         self.current_view = "secrets"
         self.search_query = ""
         self.selected_type = "all"
+        self._search_timer = None  # For debouncing search
+        self._is_processing = False  # Track if async operation is running
 
         # Check for existing session
         self.check_authentication()
@@ -133,10 +133,114 @@ class VaultApp:
         # Sync from cloud on login
         self.sync_from_cloud()
 
-        # Build main UI
+        # Check if first-time user
+        if self._is_first_time_user():
+            # Show welcome screen
+            self.show_welcome_screen()
+        else:
+            # Build main UI directly
+            self.page.clean()
+            self.build_ui()
+            self.page.update()
+    
+    def _is_first_time_user(self) -> bool:
+        """Check if user is first-time (no vault entries)."""
+        try:
+            if not self.vault:
+                return True
+            
+            # Check if vault has any entries
+            query_filter = QueryFilter()
+            result = self.vault.kv_store.search(query_filter)
+            
+            # Also check if database file is new (no entries)
+            if not self.db_path.exists() or self.db_path.stat().st_size == 0:
+                return True
+            
+            # Check if we have any entries after sync
+            return len(result) == 0
+        except Exception as e:
+            logger.warning(f"Error checking first-time user status: {e}")
+            return True  # Default to showing welcome screen on error
+    
+    def show_welcome_screen(self):
+        """Show welcome screen for first-time users."""
+        welcome = WelcomeScreen(
+            page=self.page,
+            on_start=self._on_welcome_complete,
+            on_add_sample=self._add_sample_data
+        )
+        
+        self.page.clean()
+        self.page.add(welcome.get_view())
+        self.page.update()
+    
+    def _on_welcome_complete(self):
+        """Called when welcome screen is dismissed."""
         self.page.clean()
         self.build_ui()
         self.page.update()
+    
+    def _add_sample_data(self):
+        """Add sample data for first-time users."""
+        try:
+            if not self.vault:
+                logger.error("Vault not initialized")
+                return
+            
+            sample_secrets = [
+                {
+                    "service": "GitHub",
+                    "content": "ghp_example_token_123456789",
+                    "tags": ["development", "version-control"],
+                    "description": "GitHub Personal Access Token"
+                },
+                {
+                    "service": "AWS",
+                    "content": "AKIAIOSFODNN7EXAMPLE",
+                    "tags": ["cloud", "infrastructure"],
+                    "description": "AWS Access Key"
+                },
+                {
+                    "service": "Stripe",
+                    "content": "sk_test_example_placeholder_key_not_real",
+                    "tags": ["payment", "production"],
+                    "description": "Stripe API Key (example)"
+                },
+            ]
+            
+            added_count = 0
+            for secret in sample_secrets:
+                try:
+                    self.vault.store(
+                        content=secret["content"],
+                        data_type="secret",
+                        service=secret["service"],
+                        tags=secret["tags"],
+                        description=secret["description"]
+                    )
+                    added_count += 1
+                except Exception as e:
+                    logger.warning(f"Failed to add sample secret {secret['service']}: {e}")
+            
+            logger.info(f"Added {added_count} sample secrets")
+            
+            # Show success message
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"✅ Added {added_count} sample secrets!"),
+                bgcolor=ModernTheme.ACCENT_SUCCESS,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            
+        except Exception as e:
+            logger.error(f"Error adding sample data: {e}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Error adding sample data: {str(e)}"),
+                bgcolor=ModernTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
 
     def initialize_vault(self):
         """Initialize vault after authentication."""
@@ -171,16 +275,22 @@ class VaultApp:
                 self.cloud_sync = None
             
             # Initialize Q&A generator and training manager
+            # Note: QAGenerator still uses RunPod directly for now (inference endpoint)
+            # TrainingManager uses backend API (backend manages RunPod credentials)
             try:
+                # TODO: QAGenerator should also use backend API
+                runpod_endpoint = os.getenv("RUNPOD_ENDPOINT_ID")
+                runpod_api_key = os.getenv("RUNPOD_API_KEY")
                 self.qa_generator = QAGenerator(
-                    runpod_endpoint_id=self.runpod_endpoint,
-                    runpod_api_key=self.runpod_api_key
-                )
+                    runpod_endpoint_id=runpod_endpoint,
+                    runpod_api_key=runpod_api_key
+                ) if runpod_endpoint and runpod_api_key else None
+                
                 self.training_manager = TrainingManager(
                     backend_url=self.backend_url,
                     session_data=self.session_data,
-                    runpod_endpoint_id=self.runpod_endpoint,
-                    runpod_api_key=self.runpod_api_key
+                    supabase_url=os.getenv("SUPABASE_URL"),
+                    supabase_anon_key=os.getenv("SUPABASE_ANON_KEY")
                 )
                 logger.info("Q&A generator and training manager initialized")
             except Exception as e:
@@ -217,29 +327,21 @@ class VaultApp:
         # Show auth screen
         self.show_auth_screen()
 
-    def check_runpod_connectivity(self):
-        """Check RunPod endpoint connectivity."""
-        if not self.runpod_endpoint or not self.runpod_api_key:
-            self.runpod_status = "not_configured"
-            if hasattr(self, 'connectivity_icon'):
-                self.update_connectivity_icon()
-                self.page.update()
-            return
-
+    def check_backend_connectivity(self):
+        """Check backend API connectivity."""
         # Run in background thread
         def _check():
             try:
                 response = requests.get(
-                    f"https://api.runpod.io/v2/{self.runpod_endpoint}/health",
-                    headers={"Authorization": f"Bearer {self.runpod_api_key}"},
+                    f"{self.backend_url}/health",
                     timeout=5.0
                 )
                 if response.status_code == 200:
-                    self.runpod_status = "connected"
+                    self.backend_status = "connected"
                 else:
-                    self.runpod_status = "error"
+                    self.backend_status = "error"
             except Exception as e:
-                self.runpod_status = "disconnected"
+                self.backend_status = "disconnected"
 
             self.last_check = datetime.now()
 
@@ -252,26 +354,22 @@ class VaultApp:
         thread.start()
 
     def update_connectivity_icon(self):
-        """Update the connectivity icon based on status."""
+        """Update the connectivity icon based on backend status."""
         if not hasattr(self, 'connectivity_icon'):
             return
         
-        if self.runpod_status == "connected":
+        if self.backend_status == "connected":
             self.connectivity_icon.icon = ft.Icons.CLOUD_DONE_ROUNDED
             self.connectivity_icon.icon_color = ModernTheme.ACCENT_SUCCESS
-            self.connectivity_icon.tooltip = "RunPod: Connected ✓"
-        elif self.runpod_status == "disconnected":
+            self.connectivity_icon.tooltip = "Backend: Connected ✓"
+        elif self.backend_status == "disconnected":
             self.connectivity_icon.icon = ft.Icons.CLOUD_OFF_ROUNDED
             self.connectivity_icon.icon_color = ModernTheme.ACCENT_ERROR
-            self.connectivity_icon.tooltip = "RunPod: Disconnected"
-        elif self.runpod_status == "not_configured":
-            self.connectivity_icon.icon = ft.Icons.CLOUD_QUEUE_ROUNDED
-            self.connectivity_icon.icon_color = ModernTheme.TEXT_MUTED
-            self.connectivity_icon.tooltip = "RunPod: Not configured"
+            self.connectivity_icon.tooltip = "Backend: Disconnected"
         else:
             self.connectivity_icon.icon = ft.Icons.CLOUD_SYNC_ROUNDED
             self.connectivity_icon.icon_color = ModernTheme.ACCENT_WARNING
-            self.connectivity_icon.tooltip = "RunPod: Checking..."
+            self.connectivity_icon.tooltip = "Backend: Checking..."
 
     def build_ui(self):
         """Build the main UI."""
@@ -279,8 +377,8 @@ class VaultApp:
         self.connectivity_icon = ft.IconButton(
             icon=ft.Icons.CLOUD_SYNC_ROUNDED,
             icon_color=ModernTheme.TEXT_MUTED,
-            tooltip="RunPod: Checking...",
-            on_click=lambda _: self.check_runpod_connectivity(),
+            tooltip="Backend: Checking...",
+            on_click=lambda _: self.check_backend_connectivity(),
             icon_size=24
         )
 
@@ -346,7 +444,7 @@ class VaultApp:
         )
 
         # Start initial connectivity check
-        self.check_runpod_connectivity()
+        self.check_backend_connectivity()
 
         # Modern search bar
         self.search_field = ft.TextField(
@@ -771,7 +869,7 @@ class VaultApp:
     def show_add_dialog(self, e):
         """Show add secret dialog."""
         try:
-            print("Opening add dialog...")  # Debug
+            logger.debug("Opening add dialog")
 
             # Close any existing dialogs in overlay
             for overlay_item in list(self.page.overlay):
@@ -861,7 +959,7 @@ class VaultApp:
                 close_dialog()
                 self.load_secrets()
 
-            print("Creating AlertDialog...")
+            logger.debug("Creating AlertDialog")
             # Create dialog content column with all fields - remove scroll, add width
             dialog_content = ft.Column(
                 [
@@ -910,23 +1008,17 @@ class VaultApp:
                 ],
                 actions_alignment=ft.MainAxisAlignment.END,
             )
-            print(f"Dialog created: {dialog}")
-
-            print("Adding dialog to page.overlay...")
+            
             # Add dialog to overlay (the correct way in Flet)
             self.page.overlay.append(dialog)
             dialog.open = True
-            print(f"Dialog added to overlay, open={dialog.open}, overlay length={len(self.page.overlay)}")
             self.page.update()
-            print("✓ Dialog should now be visible!")
 
         except Exception as ex:
-            print(f"Error opening add dialog: {ex}")
-            import traceback
-            traceback.print_exc()
-            # Show error to user
+            logger.error(f"Error opening add dialog: {ex}", exc_info=True)
+            user_msg, _ = make_user_friendly(str(ex), context="upload")
             self.page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"❌ Error: {str(ex)}"),
+                content=ft.Text(f"❌ {user_msg}"),
                 bgcolor=ModernTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
@@ -941,8 +1033,9 @@ class VaultApp:
         result = {"result": secret_value} if secret_value else {"error": "Secret not found"}
 
         if result.get('error'):
+            user_msg, _ = make_user_friendly(result['error'], context="vault")
             self.page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"❌ {result['error']}"),
+                content=ft.Text(f"❌ {user_msg}"),
                 bgcolor=ModernTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
@@ -1069,9 +1162,17 @@ class VaultApp:
         self.page.update()
 
     def on_search_change(self, e):
-        """Handle search query change."""
+        """Handle search query change with debouncing."""
         self.search_query = e.control.value
-        self.load_secrets()
+        
+        # Cancel existing timer
+        if self._search_timer:
+            self._search_timer.cancel()
+        
+        # Debounce search: wait 300ms before executing
+        import threading
+        self._search_timer = threading.Timer(0.3, self.load_secrets)
+        self._search_timer.start()
 
     def on_filter_change(self, e):
         """Handle filter change."""
@@ -1224,11 +1325,9 @@ class VaultApp:
 
     def _on_upload_click(self, e):
         """Handle upload button click."""
-        print(f"DEBUG: Upload button clicked! Event: {e}")
         logger.info("Upload PDF button clicked")
         try:
             if not hasattr(self, 'pdf_file_picker') or self.pdf_file_picker is None:
-                print("DEBUG: File picker not initialized!")
                 logger.error("PDF file picker not initialized")
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text("❌ File picker not initialized. Please restart the app."),
@@ -1238,9 +1337,7 @@ class VaultApp:
                 self.page.update()
                 return
             
-            print(f"DEBUG: File picker exists: {self.pdf_file_picker}")
-            print(f"DEBUG: Page overlay items: {len(self.page.overlay)}")
-            logger.info("Opening file picker...")
+            logger.debug("Opening file picker...")
             
             # Try to open file picker - on macOS this might need special handling
             try:
@@ -1250,7 +1347,7 @@ class VaultApp:
                 import json
                 
                 # Use macOS native file picker as fallback
-                print("DEBUG: Attempting macOS native file picker...")
+                logger.debug("Attempting macOS native file picker...")
                 result = subprocess.run(
                     [
                         'osascript', '-e',
@@ -1267,7 +1364,7 @@ class VaultApp:
                 
                 if result.returncode == 0:
                     file_path = result.stdout.strip()
-                    print(f"DEBUG: macOS file picker returned: {file_path}")
+                    logger.debug(f"macOS file picker returned: {file_path}")
                     
                     # Create a fake FilePickerResultEvent
                     class FakeFile:
@@ -1284,19 +1381,19 @@ class VaultApp:
                     self.on_pdf_selected(fake_event)
                     return
                 else:
-                    print(f"DEBUG: macOS file picker cancelled or error: {result.stderr}")
+                    logger.debug(f"macOS file picker cancelled or error: {result.stderr}")
                     
             except FileNotFoundError:
-                print("DEBUG: osascript not found, trying Flet FilePicker")
+                logger.debug("osascript not found, trying Flet FilePicker")
                 # Fall back to Flet FilePicker
                 self.pdf_file_picker.pick_files(
                     allowed_extensions=["pdf"],
                     dialog_title="Select PDF File"
                 )
             except subprocess.TimeoutExpired:
-                print("DEBUG: File picker timeout")
+                logger.debug("File picker timeout")
             except Exception as picker_error:
-                print(f"DEBUG: pick_files() error: {picker_error}")
+                logger.debug(f"pick_files() error: {picker_error}")
                 # Try Flet FilePicker as fallback
                 try:
                     self.pdf_file_picker.pick_files(
@@ -1304,22 +1401,19 @@ class VaultApp:
                         dialog_title="Select PDF File"
                     )
                 except Exception as fallback_error:
-                    print(f"DEBUG: Fallback also failed: {fallback_error}")
+                    logger.debug(f"Fallback also failed: {fallback_error}")
                     raise
                 
-            print("DEBUG: pick_files() called successfully")
+            logger.debug("pick_files() called successfully")
             logger.info("File picker opened")
             
             # Force page update
             self.page.update()
-            print("DEBUG: Page updated after pick_files()")
         except Exception as ex:
-            print(f"DEBUG: Exception occurred: {ex}")
-            import traceback
-            traceback.print_exc()
             logger.error(f"Error opening file picker: {ex}", exc_info=True)
+            user_msg, _ = make_user_friendly(str(ex), context="upload")
             self.page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"❌ Error: {str(ex)}"),
+                content=ft.Text(f"❌ {user_msg}"),
                 bgcolor=ModernTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
@@ -1375,46 +1469,72 @@ class VaultApp:
                         logger.warning(f"Cloud sync failed (non-critical): {sync_err}")
                         # Don't show error to user - local storage succeeded
                 
-                # Update UI
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"✅ Processed {filename}: {len(result['text_chunks'])} chunks"),
-                    bgcolor=ModernTheme.ACCENT_SUCCESS,
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
+                # Update UI from main thread (thread-safe)
+                def update_ui():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"✅ Processed {filename}: {len(result['text_chunks'])} chunks"),
+                        bgcolor=ModernTheme.ACCENT_SUCCESS,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                    self.load_secrets()
+                    
+                    # Offer to generate Q&A and train model
+                    if self.qa_generator and self.training_manager and len(result['text_chunks']) > 0:
+                        self._offer_training(filename, result['text_chunks'])
                 
-                # Reload secrets
-                self.load_secrets()
-                
-                # Offer to generate Q&A and train model
-                if self.qa_generator and self.training_manager and len(result['text_chunks']) > 0:
-                    self._offer_training(filename, result['text_chunks'])
+                # Schedule UI update on main thread
+                # Note: Flet's page.update() is thread-safe when called from background threads
+                # But we wrap it in a function to ensure proper execution
+                try:
+                    # Try run_task if available (some Flet versions)
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_ui)
+                    else:
+                        # Fallback: direct update (Flet handles thread safety)
+                        update_ui()
+                except Exception as ui_err:
+                    logger.warning(f"UI update error: {ui_err}, trying direct update")
+                    update_ui()
                 
             except Exception as ex:
                 logger.error(f"Error processing PDF: {ex}")
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"❌ Error processing PDF: {str(ex)}"),
-                    bgcolor=ModernTheme.ACCENT_ERROR,
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
+                user_msg, _ = make_user_friendly(str(ex), context="upload")
+                
+                # Thread-safe error update
+                def show_error():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ {user_msg}"),
+                        bgcolor=ModernTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(show_error)
+                    else:
+                        show_error()
+                except Exception as ui_err:
+                    logger.warning(f"UI update error: {ui_err}, trying direct update")
+                    show_error()
         
         thread = threading.Thread(target=process_pdf, daemon=True)
         thread.start()
 
     def _offer_training(self, filename: str, text_chunks: List[str]):
         """Offer to generate Q&A and train model after PDF processing."""
-        # Check if RunPod is configured
-        if not self.runpod_endpoint or not self.runpod_api_key:
+        # Check if training manager is initialized
+        if not self.training_manager:
             dialog = ft.AlertDialog(
                 modal=True,
-                title=ft.Text("RunPod Not Configured"),
+                title=ft.Text("Training Service Not Available"),
                 content=ft.Text(
-                    f"RunPod endpoint is not configured. Please set RUNPOD_ENDPOINT_ID and RUNPOD_API_KEY environment variables.\n\n"
-                    f"Training requires:\n"
-                    f"• RunPod endpoint ID\n"
-                    f"• RunPod API key\n"
-                    f"• These should be set in launch_enclave_gui.sh"
+                    f"Training service failed to initialize.\n\n"
+                    f"Please check:\n"
+                    f"• Backend API availability\n"
+                    f"• Network connection\n"
+                    f"• Your account status"
                 ),
                 actions=[
                     ft.TextButton("OK", on_click=lambda e: setattr(dialog, 'open', False) or self.page.update()),
@@ -1425,26 +1545,9 @@ class VaultApp:
             self.page.update()
             return
         
-        # Check if Q&A generator and training manager are initialized
-        if not self.qa_generator or not self.training_manager:
-            dialog = ft.AlertDialog(
-                modal=True,
-                title=ft.Text("Training Services Not Available"),
-                content=ft.Text(
-                    f"Q&A generator or training manager failed to initialize.\n\n"
-                    f"Please check:\n"
-                    f"• RunPod endpoint connectivity\n"
-                    f"• Backend API availability\n"
-                    f"• Network connection"
-                ),
-                actions=[
-                    ft.TextButton("OK", on_click=lambda e: setattr(dialog, 'open', False) or self.page.update()),
-                ],
-            )
-            self.page.overlay.append(dialog)
-            dialog.open = True
-            self.page.update()
-            return
+        # Q&A generator is optional (can train without it)
+        if not self.qa_generator:
+            logger.warning("Q&A generator not available - training will proceed without Q&A pairs")
         
         def on_yes(e):
             dialog.open = False
@@ -1512,6 +1615,7 @@ class VaultApp:
         tags = entry.get('tags', [])
         
         # Extract PDF data from entry
+        tmp_path = None
         try:
             secret_value = self.vault.kv_store.get(service)
             if not secret_value:
@@ -1541,32 +1645,46 @@ class VaultApp:
             
             result = self.pdf_processor.process_pdf(tmp_path)
             
-            # Cleanup temp file
-            os.unlink(tmp_path)
-            
             # Offer training with the extracted chunks
             self._offer_training(service, result['text_chunks'])
             
         except Exception as ex:
             logger.error(f"Error extracting PDF for training: {ex}")
+            user_msg, _ = make_user_friendly(str(ex), context="training")
             self.page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"❌ Error: {str(ex)}"),
-                bgcolor="#f44336",
+                content=ft.Text(f"❌ {user_msg}"),
+                bgcolor=ModernTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
             self.page.update()
+        finally:
+            # Always cleanup temp file
+            if tmp_path and os.path.exists(tmp_path):
+                try:
+                    os.unlink(tmp_path)
+                except Exception as cleanup_err:
+                    logger.warning(f"Failed to cleanup temp file: {cleanup_err}")
 
     def _start_training_workflow(self, filename: str, text_chunks: List[str]):
         """Start Q&A generation and training workflow."""
         def workflow():
             try:
                 # Step 1: Generate Q&A pairs
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text("📝 Generating Q&A pairs..."),
-                    bgcolor=ModernTheme.ACCENT_PRIMARY,
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
+                def update_step1():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("📝 Generating Q&A pairs..."),
+                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_step1)
+                    else:
+                        update_step1()
+                except Exception:
+                    update_step1()
                 
                 qa_pairs = self.qa_generator.generate_from_chunks(
                     text_chunks=text_chunks,
@@ -1575,30 +1693,55 @@ class VaultApp:
                 )
                 
                 if not qa_pairs:
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text("❌ Failed to generate Q&A pairs"),
-                        bgcolor=ModernTheme.ACCENT_ERROR,
-                    )
-                    self.page.snack_bar.open = True
-                    self.page.update()
+                    user_msg, _ = make_user_friendly("Failed to generate Q&A pairs from document", context="training")
+                    def show_error():
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text(f"❌ {user_msg}"),
+                            bgcolor=ModernTheme.ACCENT_ERROR,
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                    try:
+                        if hasattr(self.page, 'run_task'):
+                            self.page.run_task(show_error)
+                        else:
+                            show_error()
+                    except Exception:
+                        show_error()
                     return
                 
-                # Step 2: Save dataset
-                dataset_filename = f"{filename.replace('.pdf', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.jsonl"
-                dataset_path = self.training_manager.save_dataset(qa_pairs, dataset_filename)
-                
-                # Step 3: Generate encryption key
+                # Step 2: Generate encryption key BEFORE saving
                 import os
                 encryption_key = os.urandom(32)
                 encryption_key_hex = encryption_key.hex()
                 
-                # Step 4: Submit training job
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text("🚀 Submitting training job..."),
-                    bgcolor=ModernTheme.ACCENT_PRIMARY,
+                # Step 3: Save dataset ENCRYPTED (never persist plaintext)
+                # Encrypts immediately after generation - never saves plaintext
+                dataset_filename = f"{filename.replace('.pdf', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                dataset_path = self.training_manager.save_dataset(
+                    qa_pairs=qa_pairs,
+                    filename=dataset_filename,
+                    encryption_key=encryption_key  # Encrypt before saving
                 )
-                self.page.snack_bar.open = True
-                self.page.update()
+                
+                logger.info(f"Dataset encrypted and saved: {dataset_path}")
+                
+                # Step 4: Submit training job
+                def update_step4():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("🚀 Submitting training job..."),
+                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_step4)
+                    else:
+                        update_step4()
+                except Exception:
+                    update_step4()
                 
                 result = self.training_manager.submit_training_job(
                     dataset_path=dataset_path,
@@ -1625,7 +1768,7 @@ class VaultApp:
                             # Remove old training tags
                             tags = [t for t in tags if not t.startswith("training_")]
                             # Add new training tags
-                            tags.append(f"training_job:{result['runpod_job_id']}")
+                            tags.append(f"training_job:{result['adapter_id']}")
                             tags.append(f"training_status:pending")
                             # Update entry with new tags
                             self.vault.kv_store.put(
@@ -1639,27 +1782,45 @@ class VaultApp:
                 except Exception as update_err:
                     logger.warning(f"Failed to update entry with training metadata: {update_err}")
                 
-                # Update UI
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"✅ Training job submitted! Job ID: {result['runpod_job_id']}"),
-                    bgcolor=ModernTheme.ACCENT_SUCCESS,
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
+                # Update UI (thread-safe)
+                def update_success():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"✅ Training job submitted! Adapter ID: {result['adapter_id'][:8]}..."),
+                        bgcolor=ModernTheme.ACCENT_SUCCESS,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                    self.load_secrets()
                 
-                # Reload secrets to show updated status
-                self.load_secrets()
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_success)
+                    else:
+                        update_success()
+                except Exception:
+                    update_success()
                 
                 logger.info(f"Training workflow completed for {filename}")
                 
             except Exception as ex:
                 logger.error(f"Error in training workflow: {ex}")
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"❌ Error: {str(ex)}"),
-                    bgcolor=ModernTheme.ACCENT_ERROR,
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
+                user_msg, _ = make_user_friendly(str(ex), context="training")
+                
+                def show_error():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ {user_msg}"),
+                        bgcolor=ModernTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(show_error)
+                    else:
+                        show_error()
+                except Exception:
+                    show_error()
         
         thread = threading.Thread(target=workflow, daemon=True)
         thread.start()
