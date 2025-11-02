@@ -28,7 +28,7 @@ class CloudSyncService:
     - Background sync with retry logic
     """
     
-    def __init__(self, backend_url: str, session_data: dict, vault: EncryptedKVStore):
+    def __init__(self, backend_url: str, session_data: dict, vault: EncryptedKVStore, supabase_client=None):
         """
         Initialize cloud sync service.
         
@@ -36,12 +36,29 @@ class CloudSyncService:
             backend_url: Backend API base URL (e.g., "https://api.example.com")
             session_data: Session data with access_token and user_id
             vault: EncryptedKVStore instance for local operations
+            supabase_client: Optional Supabase client for token refresh
         """
         self.backend_url = backend_url.rstrip('/')
         self.session_data = session_data
         self.vault = vault
+        self.supabase_client = supabase_client
+        
+        # Extract access_token and user_id from session_data
+        # Handle different session_data formats
         self.access_token = session_data.get("access_token")
-        self.user_id = session_data.get("user_id")
+        if not self.access_token:
+            # Try alternative formats
+            if isinstance(session_data.get("session"), dict):
+                self.access_token = session_data["session"].get("access_token")
+        
+        # Extract user_id - try multiple locations
+        user_info = session_data.get("user", {})
+        self.user_id = (
+            session_data.get("user_id") or 
+            user_info.get("id") or 
+            user_info.get("user_id") or
+            (session_data.get("session", {}).get("user_id") if isinstance(session_data.get("session"), dict) else None)
+        )
         
         if not self.access_token:
             raise ValueError("access_token required in session_data")
@@ -52,6 +69,52 @@ class CloudSyncService:
         }
         
         logger.info(f"Initialized CloudSyncService for user: {self.user_id}")
+    
+    def _refresh_token_if_needed(self, response: Optional[requests.Response] = None) -> bool:
+        """
+        Refresh access token if needed (on 401 errors or proactively).
+        
+        Args:
+            response: Optional response object to check status code
+            
+        Returns:
+            True if token was refreshed or not needed, False if refresh failed
+        """
+        # Check if we need to refresh (401 error or no Supabase client)
+        if response and response.status_code != 401:
+            return True
+        
+        if not self.supabase_client:
+            logger.warning("No Supabase client available for token refresh")
+            return False
+        
+        refresh_token = self.session_data.get("refresh_token")
+        if not refresh_token:
+            logger.warning("No refresh token available")
+            return False
+        
+        try:
+            # Refresh session using Supabase
+            session = self.supabase_client.auth.refresh_session(refresh_token)
+            
+            # Update tokens
+            new_access_token = session.session.access_token
+            new_refresh_token = session.session.refresh_token
+            
+            # Update session data
+            self.session_data["access_token"] = new_access_token
+            self.session_data["refresh_token"] = new_refresh_token
+            self.access_token = new_access_token
+            
+            # Update headers
+            self.headers["Authorization"] = f"Bearer {self.access_token}"
+            
+            logger.info("Token refreshed successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to refresh token: {e}")
+            return False
     
     def _map_entry_type(self, entry_type: EntryType) -> str:
         """Map EntryType enum to backend data_type string."""
@@ -120,6 +183,12 @@ class CloudSyncService:
             url = f"{self.backend_url}/api/vault/store"
             response = requests.post(url, json=payload, headers=self.headers, timeout=10)
             
+            # Refresh token on 401 error
+            if response.status_code == 401:
+                if self._refresh_token_if_needed(response):
+                    # Retry with new token
+                    response = requests.post(url, json=payload, headers=self.headers, timeout=10)
+            
             if response.status_code == 200:
                 logger.info(f"Synced entry {entry_id} to cloud")
                 return True
@@ -184,6 +253,12 @@ class CloudSyncService:
         try:
             url = f"{self.backend_url}/api/vault/entries"
             response = requests.get(url, headers=self.headers, timeout=10)
+            
+            # Refresh token on 401 error
+            if response.status_code == 401:
+                if self._refresh_token_if_needed(response):
+                    # Retry with new token
+                    response = requests.get(url, headers=self.headers, timeout=10)
             
             if response.status_code == 200:
                 data = response.json()

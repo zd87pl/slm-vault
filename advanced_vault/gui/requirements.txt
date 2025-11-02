@@ -1,12 +1,28 @@
 # Enclave GUI Requirements
+# All packages listed here will be bundled into the macOS app bundle
 
 # GUI Framework
-flet==0.28.3
+flet>=0.28.3
 
 # Backend integration
 supabase==2.9.0
 gotrue==2.9.1
 requests==2.32.3
+
+# MCP Server (for Claude Desktop integration)
+# Required for MCP server setup in Settings
+mcp>=1.0.0
+
+# PDF Processing
+PyPDF2>=3.0.0
+pdf2image>=1.16.0  # For OCR (converting PDF pages to images)
+Pillow>=10.0.0  # Image processing for OCR
+
+# SmolDocling OCR (Apple Silicon optimized, ~500MB model)
+# Only installed/used on Apple Silicon Macs
+mlx>=0.18.0
+mlx-vlm>=0.1.0
+docling-core>=1.0.0
 
 # Encryption (already in main project)
 # cryptography

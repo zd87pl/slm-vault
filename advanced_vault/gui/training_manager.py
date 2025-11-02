@@ -1,8 +1,8 @@
 """
 Training Manager Service
 
-Manages training job submission to RunPod with user isolation.
-Handles adapter registration and tracking.
+Manages training job submission via backend API.
+Backend handles all RunPod communication - users never see RunPod credentials.
 """
 
 import logging
@@ -12,25 +12,45 @@ import time
 import uuid
 import hashlib
 import os
+import base64
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from datetime import datetime
-from supabase import create_client, Client
+# Supabase client no longer needed - backend handles storage
+
+# Encryption imports - use PyCryptodome for consistency with DoRA adapters
+CRYPTO_BACKEND = None
+try:
+    from Crypto.Cipher import ChaCha20_Poly1305
+    from Crypto.Random import get_random_bytes
+    CRYPTO_AVAILABLE = True
+    CRYPTO_BACKEND = "pycryptodome"
+except ImportError:
+    # Fallback to cryptography library if PyCryptodome not available
+    try:
+        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+        CRYPTO_AVAILABLE = True
+        CRYPTO_BACKEND = "cryptography"
+    except ImportError:
+        CRYPTO_AVAILABLE = False
+        CRYPTO_BACKEND = None
 
 logger = logging.getLogger(__name__)
 
 
 class TrainingManager:
     """
-    Service for submitting training jobs to RunPod with user isolation.
+    Service for submitting training jobs via backend API.
+    
+    Backend manages RunPod credentials - frontend never touches them.
     """
     
     def __init__(
         self,
         backend_url: str,
         session_data: dict,
-        runpod_endpoint_id: Optional[str] = None,
-        runpod_api_key: Optional[str] = None
+        supabase_url: Optional[str] = None,
+        supabase_anon_key: Optional[str] = None
     ):
         """
         Initialize training manager.
@@ -38,8 +58,8 @@ class TrainingManager:
         Args:
             backend_url: Backend API base URL
             session_data: Session data with access_token and user_id
-            runpod_endpoint_id: RunPod endpoint ID for training
-            runpod_api_key: RunPod API key
+            supabase_url: Supabase URL (for dataset storage)
+            supabase_anon_key: Supabase anon key (for dataset storage)
         """
         self.backend_url = backend_url.rstrip('/')
         self.session_data = session_data
@@ -48,37 +68,15 @@ class TrainingManager:
         self.user_id = session_data.get("user_id") or user_info.get("id") or user_info.get("user_id")
         self.access_token = session_data.get("access_token")
         
-        self.runpod_endpoint_id = runpod_endpoint_id or os.getenv("RUNPOD_ENDPOINT_ID")
-        self.runpod_api_key = runpod_api_key or os.getenv("RUNPOD_API_KEY")
-        self.runpod_base_url = f"https://api.runpod.ai/v2/{self.runpod_endpoint_id}" if self.runpod_endpoint_id else None
-        
         self.headers = {
             "Authorization": f"Bearer {self.access_token}",
             "Content-Type": "application/json"
         }
         
-        # Initialize Supabase client for secure storage
-        # Get Supabase credentials from environment variables
-        # Set SUPABASE_URL and SUPABASE_ANON_KEY in launch script or environment
-        supabase_url = os.getenv("SUPABASE_URL")
-        supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
-        
-        if supabase_url and supabase_anon_key:
-            try:
-                self.supabase = create_client(supabase_url, supabase_anon_key)
-                # Set the session for authenticated storage operations
-                # Note: Storage operations work with anon key + access token in headers
-                # We don't need to set_session here - the storage API uses the access token
-                # when making requests via the authenticated client
-            except Exception as e:
-                logger.warning(f"Failed to initialize Supabase client: {e}")
-                self.supabase = None
-        else:
-            self.supabase = None
-            if not supabase_url:
-                logger.warning("SUPABASE_URL not set - secure storage unavailable")
-            if not supabase_anon_key:
-                logger.warning("SUPABASE_ANON_KEY not set - secure storage unavailable")
+        # Note: We no longer initialize Supabase client here
+        # Dataset uploads go through backend API which uses service key
+        # This avoids RLS issues and token management in GUI
+        self.supabase = None  # Not needed - backend handles storage
         
         # Create datasets directory
         if self.user_id:
@@ -89,6 +87,64 @@ class TrainingManager:
             logger.warning("TrainingManager initialized without user_id - datasets directory not created")
         
         logger.info(f"Initialized TrainingManager for user: {self.user_id}")
+    
+    def _refresh_token_if_needed(self, response: Optional[requests.Response] = None) -> bool:
+        """
+        Refresh access token if needed (on 401 errors or proactively).
+        
+        Uses backend API /api/auth/refresh endpoint.
+        
+        Args:
+            response: Optional response object to check status code
+            
+        Returns:
+            True if token was refreshed or not needed, False if refresh failed
+        """
+        # Check if we need to refresh (401 error)
+        if response and response.status_code != 401:
+            return True
+        
+        refresh_token = self.session_data.get("refresh_token")
+        if not refresh_token:
+            logger.warning("No refresh token available")
+            return False
+        
+        try:
+            # Refresh via backend API
+            # Backend expects refresh_token as form data or query param
+            refresh_response = requests.post(
+                f"{self.backend_url}/api/auth/refresh",
+                params={"refresh_token": refresh_token},
+                timeout=10
+            )
+            
+            if refresh_response.status_code == 200:
+                data = refresh_response.json()
+                session_data = data.get("session", {})
+                new_access_token = session_data.get("access_token")
+                new_refresh_token = session_data.get("refresh_token")
+                
+                if new_access_token:
+                    # Update tokens
+                    self.session_data["access_token"] = new_access_token
+                    self.session_data["refresh_token"] = new_refresh_token or refresh_token
+                    self.access_token = new_access_token
+                    
+                    # Update headers
+                    self.headers["Authorization"] = f"Bearer {self.access_token}"
+                    
+                    logger.info("Token refreshed successfully via backend")
+                    return True
+                else:
+                    logger.error("Backend refresh response missing access_token")
+                    return False
+            else:
+                logger.error(f"Backend refresh failed: {refresh_response.status_code} - {refresh_response.text}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"Failed to refresh token via backend: {e}")
+            return False
     
     def hash_encryption_key(self, key_hex: str) -> str:
         """Hash encryption key for storage."""
@@ -123,6 +179,17 @@ class TrainingManager:
                 timeout=10
             )
             
+            # Refresh token on 401 error
+            if response.status_code == 401:
+                if self._refresh_token_if_needed(response):
+                    # Retry with new token
+                    response = requests.post(
+                        f"{self.backend_url}/api/adapters/register",
+                        headers=self.headers,
+                        json=payload,
+                        timeout=10
+                    )
+            
             if response.status_code == 200:
                 logger.info(f"Registered adapter intent: {adapter_id}")
                 return True
@@ -143,55 +210,41 @@ class TrainingManager:
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Submit training job to RunPod with user isolation.
+        Submit training job via backend API.
+        
+        Backend handles RunPod communication - users never see RunPod credentials.
         
         Args:
             dataset_path: Path to training dataset (JSONL)
             encryption_key_hex: Hex-encoded encryption key (generated client-side)
             adapter_id: Adapter UUID (auto-generated if None)
             model_name: Base model name
-            **kwargs: Additional training parameters
+            **kwargs: Additional training parameters (rank, alpha, epochs, etc.)
             
         Returns:
-            Dictionary with job_id, adapter_id, status
+            Dictionary with job_id (adapter_id), adapter_id, status
         """
-        if not self.runpod_endpoint_id or not self.runpod_api_key:
-            raise ValueError("RunPod endpoint not configured")
-        
         # Generate adapter_id if not provided
         if not adapter_id:
             adapter_id = str(uuid.uuid4())
         
-        # Try to register adapter intent with backend (non-blocking - don't fail if backend auth fails)
-        try:
-            registration_success = self.register_adapter_intent(adapter_id, encryption_key_hex)
-            if not registration_success:
-                logger.warning("Adapter registration failed (backend auth issue), continuing with training anyway")
-        except Exception as e:
-            logger.warning(f"Adapter registration error (non-critical): {e}")
-            # Continue anyway - training can proceed without backend registration
-        
-        # Upload dataset to secure Supabase Storage
+        # Upload dataset to secure Supabase Storage (required for backend to access)
         dataset_url = self._upload_dataset_to_supabase_storage(dataset_path)
         
         if not dataset_url:
             logger.error(f"Failed to upload dataset to secure storage. Dataset saved locally at: {dataset_path}")
             raise ValueError(
                 "Failed to upload dataset to secure storage. "
-                "RunPod requires a URL-accessible dataset file. "
+                "Training requires a URL-accessible dataset file. "
                 "Please ensure Supabase Storage is configured and accessible."
             )
         
-        # Prepare training config
-        training_config = {
-            "task": "train_and_encrypt",
-            "user_id": self.user_id,
+        # Prepare training request for backend API
+        payload = {
+            "dataset_url": dataset_url,  # Signed URL to Supabase Storage
+            "encryption_key_hex": encryption_key_hex,
             "adapter_id": adapter_id,
-            "dataset": dataset_url,  # Signed URL to secure Supabase Storage
             "model_name": model_name,
-            "encryption_key": encryption_key_hex,
-            "output_dir": f"/workspace/adapters/{self.user_id}/{adapter_id}/",
-            "encrypted_output_path": f"/workspace/encrypted/{self.user_id}/{adapter_id}.json",
             "rank": kwargs.get("rank", 16),
             "alpha": kwargs.get("alpha", 32),
             "epochs": kwargs.get("epochs", 3),
@@ -200,180 +253,302 @@ class TrainingManager:
             "enable_compression": kwargs.get("enable_compression", True),
         }
         
-        # Submit job to RunPod
-        payload = {
-            "input": training_config
-        }
-        
+        # Submit job via backend API (backend handles RunPod)
         try:
             response = requests.post(
-                f"{self.runpod_base_url}/run",
-                headers={
-                    "Authorization": f"Bearer {self.runpod_api_key}",
-                    "Content-Type": "application/json"
-                },
+                f"{self.backend_url}/api/training/submit",
+                headers=self.headers,
                 json=payload,
                 timeout=30
             )
             
+            # Refresh token on 401 error
+            if response.status_code == 401:
+                if self._refresh_token_if_needed(response):
+                    # Retry with new token
+                    response = requests.post(
+                        f"{self.backend_url}/api/training/submit",
+                        headers=self.headers,
+                        json=payload,
+                        timeout=30
+                    )
+            
             if response.status_code != 200:
-                raise Exception(f"Failed to submit training job: {response.status_code} {response.text}")
+                error_text = response.text
+                logger.error(f"Backend API error: {response.status_code} {error_text}")
+                
+                # Provide user-friendly error messages
+                if response.status_code == 503:
+                    raise ValueError(
+                        "Training service is not configured. Please contact support."
+                    )
+                elif response.status_code == 502:
+                    raise ValueError(
+                        "Training service is temporarily unavailable. Please try again later."
+                    )
+                else:
+                    raise ValueError(f"Failed to submit training job: {response.status_code}")
             
-            job_data = response.json()
-            runpod_job_id = job_data.get('id')
+            result = response.json()
             
-            if not runpod_job_id:
-                raise Exception(f"No job ID in response: {job_data}")
-            
-            logger.info(f"Submitted training job {runpod_job_id} for adapter {adapter_id}")
+            logger.info(f"Submitted training job for adapter {adapter_id}")
             
             return {
                 "success": True,
-                "runpod_job_id": runpod_job_id,
+                "job_id": result.get("job_id", adapter_id),  # Backend uses adapter_id as job_id
                 "adapter_id": adapter_id,
+                "runpod_job_id": result.get("runpod_job_id"),  # For reference
                 "user_id": self.user_id,
-                "status": "pending",
-                "submitted_at": datetime.now().isoformat()
+                "status": result.get("status", "pending"),
+                "submitted_at": result.get("submitted_at", datetime.now().isoformat())
             }
             
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error submitting training job: {e}")
+            raise ValueError("Failed to connect to training service. Please check your connection.")
+        except ValueError:
+            raise  # Re-raise ValueError as-is
         except Exception as e:
             logger.error(f"Error submitting training job: {e}")
-            raise
+            raise ValueError(f"Failed to submit training job: {str(e)}")
     
-    def get_job_status(self, runpod_job_id: str) -> Dict[str, Any]:
+    def get_job_status(self, adapter_id: str) -> Dict[str, Any]:
         """
-        Get status of RunPod training job.
+        Get status of training job via backend API.
+        
+        Backend queries RunPod internally and returns status.
         
         Args:
-            runpod_job_id: RunPod job ID
+            adapter_id: Adapter UUID (used as job identifier)
             
         Returns:
-            Job status dictionary
+            Job status dictionary with status, output (if completed), etc.
         """
-        if not self.runpod_endpoint_id or not self.runpod_api_key:
-            raise ValueError("RunPod endpoint not configured")
-        
         try:
             response = requests.get(
-                f"{self.runpod_base_url}/status/{runpod_job_id}",
-                headers={
-                    "Authorization": f"Bearer {self.runpod_api_key}"
-                },
+                f"{self.backend_url}/api/training/status/{adapter_id}",
+                headers=self.headers,
                 timeout=10
             )
             
-            if response.status_code != 200:
-                raise Exception(f"Failed to get job status: {response.status_code}")
+            # Refresh token on 401 error
+            if response.status_code == 401:
+                if self._refresh_token_if_needed(response):
+                    # Retry with new token
+                    response = requests.get(
+                        f"{self.backend_url}/api/training/status/{adapter_id}",
+                        headers=self.headers,
+                        timeout=10
+                    )
+            
+            if response.status_code == 404:
+                raise ValueError(f"Training job not found: {adapter_id}")
+            elif response.status_code != 200:
+                error_text = response.text
+                logger.error(f"Backend API error: {response.status_code} {error_text}")
+                
+                if response.status_code == 503:
+                    raise ValueError("Training service is not configured")
+                else:
+                    raise ValueError(f"Failed to get job status: {response.status_code}")
             
             return response.json()
             
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error getting job status: {e}")
+            raise ValueError("Failed to connect to training service. Please check your connection.")
+        except ValueError:
+            raise  # Re-raise ValueError as-is
         except Exception as e:
             logger.error(f"Error getting job status: {e}")
-            raise
+            raise ValueError(f"Failed to get job status: {str(e)}")
     
-    def save_dataset(self, qa_pairs: List[Dict[str, str]], filename: str) -> str:
+    def encrypt_dataset_in_memory(
+        self, 
+        qa_pairs: List[Dict[str, str]], 
+        encryption_key: bytes
+    ) -> Dict[str, Any]:
         """
-        Save training dataset to local storage.
+        Encrypt dataset in memory using XChaCha20-Poly1305.
+        
+        NEVER persists plaintext - encrypts immediately after generation.
         
         Args:
-            qa_pairs: List of Q&A pairs
-            filename: Dataset filename
+            qa_pairs: List of Q&A pairs (plaintext in memory only)
+            encryption_key: 32-byte encryption key
             
         Returns:
-            Path to saved dataset file
+            Encrypted dataset package (dict with nonce, ciphertext, tag, etc.)
+        """
+        if not CRYPTO_AVAILABLE:
+            raise ValueError("Encryption library not available. Install pycryptodome or cryptography.")
+        
+        if len(encryption_key) != 32:
+            raise ValueError("Encryption key must be exactly 32 bytes")
+        
+        # Validate Q&A pairs format
+        if not isinstance(qa_pairs, list):
+            raise ValueError(f"Q&A pairs must be a list, got {type(qa_pairs)}")
+        
+        if len(qa_pairs) == 0:
+            raise ValueError("Cannot encrypt empty Q&A pairs list")
+        
+        # Validate each pair has required fields
+        for i, pair in enumerate(qa_pairs):
+            if not isinstance(pair, dict):
+                raise ValueError(f"Q&A pair {i} must be a dict, got {type(pair)}")
+            if 'instruction' not in pair or 'output' not in pair:
+                raise ValueError(f"Q&A pair {i} missing required fields: 'instruction' or 'output'")
+        
+        # Serialize Q&A pairs to JSON
+        dataset_json = json.dumps(qa_pairs, ensure_ascii=False)
+        dataset_bytes = dataset_json.encode('utf-8')
+        
+        # Generate nonce and encrypt based on backend
+        if CRYPTO_BACKEND == "cryptography":
+            # Use cryptography library (ChaCha20-Poly1305 with 12-byte nonce)
+            nonce = os.urandom(12)  # 12 bytes for ChaCha20Poly1305
+            cipher = ChaCha20Poly1305(encryption_key)
+            # encrypt() returns ciphertext + tag concatenated
+            ciphertext_with_tag = cipher.encrypt(nonce, dataset_bytes, None)
+            # Extract tag (last 16 bytes) and ciphertext
+            tag = ciphertext_with_tag[-16:]
+            ciphertext_only = ciphertext_with_tag[:-16]
+            algorithm = "ChaCha20-Poly1305"
+        else:
+            # Use PyCryptodome (XChaCha20-Poly1305 with 24-byte nonce)
+            nonce = get_random_bytes(24)  # 192-bit nonce for XChaCha20
+            cipher = ChaCha20_Poly1305.new(key=encryption_key, nonce=nonce)
+            ciphertext, tag = cipher.encrypt_and_digest(dataset_bytes)
+            ciphertext_only = ciphertext
+            algorithm = "XChaCha20-Poly1305"
+        
+        # Package encrypted data
+        encrypted_package = {
+            'nonce': base64.b64encode(nonce).decode('utf-8'),
+            'ciphertext': base64.b64encode(ciphertext_only).decode('utf-8'),
+            'tag': base64.b64encode(tag).decode('utf-8'),
+            'algorithm': algorithm,
+            'version': '1.0',
+            'num_pairs': len(qa_pairs)  # Metadata only
+        }
+        
+        logger.info(f"Encrypted dataset with {len(qa_pairs)} Q&A pairs")
+        return encrypted_package
+    
+    def save_dataset(
+        self, 
+        qa_pairs: List[Dict[str, str]], 
+        filename: str,
+        encryption_key: Optional[bytes] = None
+    ) -> str:
+        """
+        Save training dataset - ENCRYPTED ONLY.
+        
+        NEVER persists plaintext datasets. Encrypts immediately after generation.
+        
+        Args:
+            qa_pairs: List of Q&A pairs (plaintext in memory only)
+            filename: Dataset filename (without extension)
+            encryption_key: 32-byte encryption key (generated if not provided)
+            
+        Returns:
+            Path to saved encrypted dataset file
         """
         if not self.datasets_dir:
             raise ValueError("Cannot save dataset: datasets_dir not initialized (user_id missing)")
         
-        dataset_path = self.datasets_dir / filename
+        # Generate encryption key if not provided
+        if encryption_key is None:
+            encryption_key = os.urandom(32)
+            logger.info("Generated new encryption key for dataset")
         
-        with open(dataset_path, 'w') as f:
-            for pair in qa_pairs:
-                record = {
-                    "instruction": pair.get("instruction", ""),
-                    "input": "",
-                    "output": pair.get("output", "")
-                }
-                f.write(json.dumps(record) + '\n')
+        # Encrypt dataset in memory (never persist plaintext)
+        encrypted_package = self.encrypt_dataset_in_memory(qa_pairs, encryption_key)
         
-        logger.info(f"Saved dataset with {len(qa_pairs)} pairs to {dataset_path}")
-        return str(dataset_path)
+        # Save encrypted dataset only
+        encrypted_filename = f"{filename}.encrypted"
+        encrypted_path = self.datasets_dir / encrypted_filename
+        
+        with open(encrypted_path, 'w') as f:
+            json.dump(encrypted_package, f, indent=2)
+        
+        logger.info(f"Saved encrypted dataset to {encrypted_path}")
+        
+        # Store encryption key separately (for later use in training)
+        # The key will be sent to backend along with dataset URL
+        # We don't store the key here - it's passed to submit_training_job
+        
+        return str(encrypted_path)
     
     def _upload_dataset_to_supabase_storage(self, dataset_path: str) -> Optional[str]:
         """
-        Upload dataset to Supabase Storage securely.
+        Upload encrypted dataset to Supabase Storage via backend API.
         
-        Files are stored in: datasets/{user_id}/{filename}
-        Access is controlled via RLS policies set in Supabase dashboard.
+        Backend uses service key to bypass RLS - no need for user tokens.
+        This is the correct approach: GUI should not directly access Supabase Storage.
         
         Args:
-            dataset_path: Local path to dataset file
+            dataset_path: Local path to encrypted dataset file
             
         Returns:
-            Signed URL to download the dataset (valid for 1 hour) or None if failed
+            Signed URL to download the encrypted dataset (valid for 1 hour) or None if failed
         """
-        if not self.supabase or not self.user_id:
-            logger.error("Supabase client not initialized or user_id missing")
+        if not self.backend_url or not self.user_id:
+            logger.error("Backend URL or user_id missing")
             return None
         
         try:
-            # Read dataset file
+            # Read encrypted dataset file
             with open(dataset_path, 'rb') as f:
-                dataset_content = f.read()
+                encrypted_blob = f.read()
             
             filename = os.path.basename(dataset_path)
-            storage_path = f"{self.user_id}/{filename}"
-            bucket_name = "datasets"
             
-            logger.info(f"Uploading dataset to Supabase Storage: {bucket_name}/{storage_path} ({len(dataset_content)} bytes)")
+            logger.info(f"Uploading encrypted dataset via backend: {filename} ({len(encrypted_blob)} bytes)")
             
-            # Upload file to Supabase Storage
-            # For authenticated storage operations with RLS, we need to set the session
-            # Set session if we have both access_token and refresh_token
-            if self.access_token and self.session_data.get("refresh_token"):
-                try:
-                    self.supabase.auth.set_session(
-                        access_token=self.access_token,
-                        refresh_token=self.session_data.get("refresh_token")
+            # Encode as base64 for JSON transport
+            encrypted_data_b64 = base64.b64encode(encrypted_blob).decode('utf-8')
+            
+            # Upload via backend API
+            payload = {
+                "encrypted_data": encrypted_data_b64,
+                "filename": filename
+            }
+            
+            response = requests.post(
+                f"{self.backend_url}/api/training/upload-dataset",
+                headers=self.headers,
+                json=payload,
+                timeout=60
+            )
+            
+            # Refresh token on 401 error
+            if response.status_code == 401:
+                if self._refresh_token_if_needed(response):
+                    # Retry with new token
+                    response = requests.post(
+                        f"{self.backend_url}/api/training/upload-dataset",
+                        headers=self.headers,
+                        json=payload,
+                        timeout=60
                     )
-                except Exception as session_error:
-                    logger.warning(f"Failed to set session (will try without): {session_error}")
             
-            # Try upload
-            try:
-                response = self.supabase.storage.from_(bucket_name).upload(
-                    path=storage_path,
-                    file=dataset_content,
-                    file_options={
-                        "content-type": "application/jsonl",
-                        "upsert": "false"  # Don't overwrite existing files
-                    }
-                )
-            except Exception as upload_error:
-                logger.error(f"Upload failed: {upload_error}")
-                return None
-            
-            if response:
-                # Get signed URL (valid for 1 hour)
-                signed_url_response = self.supabase.storage.from_(bucket_name).create_signed_url(
-                    path=storage_path,
-                    expires_in=3600  # 1 hour
-                )
-                
-                if signed_url_response and 'signedURL' in signed_url_response:
-                    signed_url = signed_url_response['signedURL']
-                    logger.info(f"Dataset uploaded successfully to Supabase Storage")
-                    logger.info(f"Signed URL expires in 1 hour")
-                    return signed_url
+            if response.status_code == 200:
+                result = response.json()
+                dataset_url = result.get("dataset_url")
+                if dataset_url:
+                    logger.info(f"Dataset uploaded successfully via backend: {dataset_url}")
+                    return dataset_url
                 else:
-                    logger.error(f"Failed to create signed URL: {signed_url_response}")
+                    logger.error(f"Backend response missing dataset_url: {result}")
                     return None
             else:
-                logger.error(f"Upload failed: {response}")
+                logger.error(f"Backend upload failed: {response.status_code} - {response.text}")
                 return None
                 
         except Exception as e:
-            logger.error(f"Error uploading dataset to Supabase Storage: {e}")
+            logger.error(f"Error uploading dataset via backend: {e}")
             return None
     
     def update_adapter_status(
@@ -407,6 +582,18 @@ class TrainingManager:
                 json=payload if training_metrics else None,
                 timeout=10
             )
+            
+            # Refresh token on 401 error
+            if response.status_code == 401:
+                if self._refresh_token_if_needed(response):
+                    # Retry with new token
+                    response = requests.patch(
+                        f"{self.backend_url}/api/adapters/{adapter_id}/status",
+                        headers=self.headers,
+                        params={"status": status},
+                        json=payload if training_metrics else None,
+                        timeout=10
+                    )
             
             if response.status_code == 200:
                 logger.info(f"Updated adapter {adapter_id} status to {status}")

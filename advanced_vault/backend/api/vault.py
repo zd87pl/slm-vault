@@ -16,7 +16,7 @@ router = APIRouter()
 class StoreEntryRequest(BaseModel):
     """Request to store encrypted entry."""
     entry_id: str
-    encrypted_data: bytes
+    encrypted_data: str  # Base64-encoded encrypted data (nonce + ciphertext)
     data_type: str  # 'secret' or 'knowledge'
     service: Optional[str] = None
     tags: Optional[List[str]] = None

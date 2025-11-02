@@ -1,7 +1,7 @@
 """
 Q&A Generator Service
 
-Generates Q&A pairs from PDF text chunks using RunPod inference.
+Generates Q&A pairs from PDF text chunks using RunPod inference (with Ollama fallback).
 Formats output as Alpaca training dataset (JSONL).
 """
 
@@ -9,8 +9,9 @@ import logging
 import requests
 import json
 import time
-from typing import List, Dict, Any, Optional
 import os
+from typing import List, Dict, Any, Optional, Tuple, Callable
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -18,105 +19,378 @@ logger = logging.getLogger(__name__)
 class QAGenerator:
     """
     Service for generating Q&A pairs from PDF chunks using RunPod inference.
+    Falls back to local Ollama if RunPod fails or returns echo.
     """
     
-    def __init__(self, runpod_endpoint_id: Optional[str] = None, runpod_api_key: Optional[str] = None):
+    def __init__(self, runpod_endpoint_id: Optional[str] = None, runpod_api_key: Optional[str] = None,
+                 ollama_base_url: Optional[str] = None, ollama_model: Optional[str] = None):
         """
         Initialize Q&A generator.
         
         Args:
             runpod_endpoint_id: RunPod endpoint ID for inference
             runpod_api_key: RunPod API key
+            ollama_base_url: Optional Ollama base URL for fallback (defaults to http://localhost:11434)
+            ollama_model: Optional Ollama model for fallback (defaults to tinyllama, can upgrade to llama3.2:3b)
         """
         self.endpoint_id = runpod_endpoint_id or os.getenv("RUNPOD_ENDPOINT_ID")
         self.api_key = runpod_api_key or os.getenv("RUNPOD_API_KEY")
         self.base_url = f"https://api.runpod.ai/v2/{self.endpoint_id}" if self.endpoint_id else None
         
+        # Ollama fallback configuration
+        self.ollama_base_url = ollama_base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+        self.ollama_model = ollama_model or os.getenv("OLLAMA_QA_MODEL", "tinyllama")  # Use TinyLlama for Q&A generation
+        
         if not self.endpoint_id or not self.api_key:
-            logger.warning("RunPod endpoint not configured. Q&A generation will be disabled.")
+            logger.warning("RunPod endpoint not configured. Q&A generation will use Ollama fallback if available.")
+    
+    def is_ollama_available(self) -> bool:
+        """
+        Check if Ollama is available for Q&A generation.
+        
+        Returns:
+            True if Ollama is running and accessible
+        """
+        try:
+            response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
+            return response.status_code == 200
+        except Exception:
+            return False
+    
+    def is_qa_model_available(self) -> bool:
+        """
+        Check if Q&A model (TinyLlama) is available.
+        
+        Returns:
+            True if TinyLlama or fallback model is available
+        """
+        if not self.is_ollama_available():
+            return False
+        
+        try:
+            response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
+            if response.status_code == 200:
+                models = response.json().get("models", [])
+                model_names = [m.get("name", "").lower() for m in models]
+                
+                # Check for TinyLlama
+                if any("tinyllama" in name for name in model_names):
+                    return True
+                
+                # Check for Llama3.2 fallback
+                if any("llama3.2" in name and "vision" not in name for name in model_names):
+                    return True
+        except Exception:
+            pass
+        
+        return False
+    
+    def setup_qa_model(self, progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None) -> Tuple[bool, str]:
+        """
+        Setup Q&A model (TinyLlama) with progress tracking.
+        
+        Args:
+            progress_callback: Optional callback(message, percent, time_remaining) for progress updates
+        
+        Returns:
+            (success: bool, message: str)
+        """
+        if not self.is_ollama_available():
+            return False, "Ollama server is not running. Please start Ollama first."
+        
+        if self.is_qa_model_available():
+            logger.info("Q&A model already available")
+            if progress_callback:
+                progress_callback("Q&A model już dostępny", 100.0, None)
+            return True, "Q&A model already available"
+        
+        try:
+            if progress_callback:
+                progress_callback(f"Pobieranie modelu {self.ollama_model}...", 0.0, None)
+            
+            logger.info(f"Downloading Q&A model {self.ollama_model}...")
+            
+            # Use Ollama API to pull model
+            response = requests.post(
+                f"{self.ollama_base_url}/api/pull",
+                json={"name": self.ollama_model},
+                stream=True,
+                timeout=600  # 10 minutes timeout
+            )
+            
+            if response.status_code == 200:
+                import json
+                
+                # Track progress
+                start_time = time.time()
+                last_update_time = start_time
+                last_completed = 0
+                download_speeds = []
+                last_time_remaining_str = None
+                last_time_remaining_update = 0
+                
+                # Stream progress updates
+                for line in response.iter_lines():
+                    if line:
+                        try:
+                            data = json.loads(line)
+                            status = data.get("status", "")
+                            completed = data.get("completed", 0)
+                            total = data.get("total", 0)
+                            
+                            # Calculate progress percentage
+                            percent = None
+                            if total > 0:
+                                percent = min(100.0, (completed / total) * 100.0)
+                            
+                            # Calculate download speed and time remaining
+                            time_remaining = None
+                            current_time = time.time()
+                            
+                            if completed > 0 and total > 0 and completed > last_completed:
+                                time_diff = current_time - last_update_time
+                                if time_diff > 0.5:
+                                    bytes_diff = completed - last_completed
+                                    speed = bytes_diff / time_diff
+                                    download_speeds.append(speed)
+                                    
+                                    if len(download_speeds) > 10:
+                                        download_speeds.pop(0)
+                                    
+                                    if download_speeds:
+                                        avg_speed = sum(download_speeds) / len(download_speeds)
+                                        remaining_bytes = total - completed
+                                        if avg_speed > 0:
+                                            remaining_seconds = remaining_bytes / avg_speed
+                                            
+                                            time_since_last_update = current_time - last_time_remaining_update
+                                            if time_since_last_update >= 3.0:
+                                                if remaining_seconds < 60:
+                                                    time_remaining = f"{int(remaining_seconds)}s"
+                                                elif remaining_seconds < 3600:
+                                                    minutes = int(remaining_seconds // 60)
+                                                    seconds = int((remaining_seconds % 60) // 5) * 5
+                                                    time_remaining = f"{minutes}m {seconds}s"
+                                                else:
+                                                    hours = int(remaining_seconds // 3600)
+                                                    minutes = int((remaining_seconds % 3600) // 60)
+                                                    time_remaining = f"{hours}h {minutes}m"
+                                                
+                                                last_time_remaining_str = time_remaining
+                                                last_time_remaining_update = current_time
+                                            else:
+                                                time_remaining = last_time_remaining_str
+                            
+                            # Update progress callback
+                            if progress_callback:
+                                status_msg = status if status else f"Pobieranie {self.ollama_model}..."
+                                progress_callback(status_msg, percent, time_remaining)
+                            
+                            last_update_time = current_time
+                            last_completed = completed
+                            
+                        except json.JSONDecodeError:
+                            continue
+                
+                # Verify model is available
+                time.sleep(2)  # Give Ollama time to register the model
+                if self.is_qa_model_available():
+                    if progress_callback:
+                        progress_callback(f"Model {self.ollama_model} pobrany pomyślnie", 100.0, None)
+                    logger.info(f"Model {self.ollama_model} downloaded successfully")
+                    return True, f"Model {self.ollama_model} downloaded successfully"
+                else:
+                    if progress_callback:
+                        progress_callback(f"Model pobrany, ale nie dostępny", None, None)
+                    logger.warning(f"Model {self.ollama_model} downloaded but not available")
+                    return False, f"Model downloaded but not available"
+            else:
+                error_msg = f"Failed to download model: {response.status_code} {response.text}"
+                logger.error(error_msg)
+                if progress_callback:
+                    progress_callback(f"Błąd pobierania modelu: {response.status_code}", None, None)
+                return False, error_msg
+                
+        except Exception as e:
+            logger.error(f"Error downloading Q&A model: {e}")
+            if progress_callback:
+                progress_callback(f"Błąd pobierania modelu: {str(e)}", None, None)
+            return False, f"Error downloading model: {str(e)}"
+    
+    def get_qa_status(self) -> dict:
+        """
+        Get current Q&A generation status.
+        
+        Returns:
+            Dictionary with status information
+        """
+        return {
+            "ollama_available": self.is_ollama_available(),
+            "qa_model_available": self.is_qa_model_available(),
+            "model_name": self.ollama_model,
+            "ollama_base_url": self.ollama_base_url
+        }
+    
+    def _is_chunk_valid(self, text_chunk: str) -> bool:
+        """
+        Validate if a text chunk is suitable for Q&A generation.
+        
+        Filters out:
+        - Empty or very short chunks
+        - Chunks that are just page separators
+        - Footer/copyright content
+        - Social media comments/metadata
+        - Chunks with mostly special characters
+        
+        Args:
+            text_chunk: Text chunk to validate
+            
+        Returns:
+            True if chunk is valid for Q&A generation
+        """
+        if not text_chunk or len(text_chunk.strip()) < 100:
+            return False
+        
+        chunk_lower = text_chunk.lower().strip()
+        
+        # Filter out chunks that start with page separator and have minimal content after
+        # Common patterns: "--- Page X ---", "--- Page X ---\n\n"
+        if chunk_lower.startswith("---"):
+            # Remove page separator patterns
+            remaining = chunk_lower.replace("---", "").replace("page", "").strip()
+            # Remove common punctuation and numbers
+            remaining_clean = ''.join(c for c in remaining if c.isalpha() or c.isspace())
+            remaining_clean = ' '.join(remaining_clean.split())  # Normalize whitespace
+            
+            # If very little content after separator, reject
+            if len(remaining_clean) < 50 or len(remaining_clean.split()) < 8:
+                logger.debug(f"Skipping chunk: Starts with page separator, minimal content ({len(remaining_clean)} chars)")
+                return False
+        
+        # Filter out common footer/copyright patterns
+        footer_patterns = [
+            "copyright", "©", "all rights reserved",
+            "privacy policy", "terms of service",
+            "substack", "write a comment", "liked by",
+            "discussion about this post", "collection notice"
+        ]
+        if any(pattern in chunk_lower for pattern in footer_patterns):
+            # Check if it's mostly footer (more than 50% matches)
+            matches = sum(1 for pattern in footer_patterns if pattern in chunk_lower)
+            if matches >= 2:  # Multiple footer patterns = likely footer
+                logger.debug("Skipping chunk: Footer/copyright content")
+                return False
+        
+        # Filter out social media comments
+        if ("like" in chunk_lower and "reply" in chunk_lower) or \
+           ("likes" in chunk_lower and "restacks" in chunk_lower) or \
+           ("comments" in chunk_lower and "comment..." in chunk_lower):
+            logger.debug("Skipping chunk: Social media comments")
+            return False
+        
+        # Filter out chunks with too many special characters (likely OCR artifacts or metadata)
+        text_only = ''.join(c for c in text_chunk if c.isalnum() or c.isspace())
+        if len(text_only) < len(text_chunk) * 0.5:  # Less than 50% alphanumeric
+            logger.debug("Skipping chunk: Too many special characters")
+            return False
+        
+        # Must have meaningful words (at least 10 words)
+        words = chunk_lower.split()
+        meaningful_words = [w for w in words if len(w) > 2]  # Exclude very short "words"
+        if len(meaningful_words) < 10:
+            logger.debug(f"Skipping chunk: Too few meaningful words ({len(meaningful_words)})")
+            return False
+        
+        return True
     
     def generate_qa_pairs(self, text_chunk: str, num_pairs: int = 3) -> List[Dict[str, str]]:
         """
         Generate Q&A pairs from a text chunk.
         
+        Uses local Ollama if available (preferred for privacy), falls back to RunPod.
+        
         Args:
-            text_chunk: Text to generate Q&A from
-            num_pairs: Number of Q&A pairs to generate (default: 3)
+            text_chunk: Text chunk to generate Q&A from
+            num_pairs: Number of Q&A pairs to generate
             
         Returns:
-            List of Q&A pairs in format: [{"instruction": "...", "output": "..."}]
+            List of Q&A pairs in format [{"instruction": "question", "output": "answer"}, ...]
         """
-        if not self.endpoint_id or not self.api_key:
-            logger.warning("RunPod not configured, skipping Q&A generation")
+        if not text_chunk or not text_chunk.strip():
             return []
         
-        # Limit chunk length to prevent exceeding model context (2048 tokens)
-        # Rough estimate: ~4 chars per token, so limit to ~1200 chars for safety
-        # This leaves room for prompt template (~200 tokens) + response (~500 tokens)
-        max_chunk_length = 1200
+        # Validate chunk
+        if not self._is_chunk_valid(text_chunk):
+            logger.debug(f"Skipping invalid chunk (length: {len(text_chunk)})")
+            return []
         
-        if len(text_chunk) > max_chunk_length:
-            logger.warning(f"Text chunk too long ({len(text_chunk)} chars), truncating to {max_chunk_length}")
-            text_chunk = text_chunk[:max_chunk_length] + "..."
+        # Try Ollama first (local, privacy-preserving)
+        try:
+            ollama_pairs = self._generate_qa_with_ollama(text_chunk, num_pairs)
+            if ollama_pairs:
+                logger.info(f"Ollama generated {len(ollama_pairs)} Q&A pairs")
+                return ollama_pairs
+        except Exception as e:
+            logger.debug(f"Ollama generation failed: {e}")
         
-        # Create prompt for Q&A generation
-        # Detect if text contains non-ASCII characters (likely non-English)
-        has_non_ascii = any(ord(c) > 127 for c in text_chunk[:200])
-        language_hint = ""
-        if has_non_ascii:
-            # Detect likely language based on common characters
+        # Fallback to RunPod if Ollama not available
+        if self.base_url and self.api_key:
+            logger.info("Falling back to RunPod for Q&A generation...")
+            return self._generate_qa_with_runpod(text_chunk, num_pairs)
+        else:
+            logger.warning("No Q&A generation method available (Ollama and RunPod both unavailable)")
+            return []
+    
+    def _generate_qa_with_runpod(self, text_chunk: str, num_pairs: int) -> List[Dict[str, str]]:
+        """
+        Generate Q&A pairs using RunPod inference.
+        
+        Args:
+            text_chunk: Text to generate Q&A from
+            num_pairs: Number of Q&A pairs to generate
+            
+        Returns:
+            List of Q&A pairs
+        """
+        try:
+            # Limit chunk length
+            max_chunk_length = 1200
+            if len(text_chunk) > max_chunk_length:
+                logger.warning(f"Text chunk too long ({len(text_chunk)} chars), truncating to {max_chunk_length}")
+                text_chunk = text_chunk[:max_chunk_length] + "..."
+            
+            # Detect language
+            language_hint = ""
             if any(c in text_chunk for c in 'ąćęłńóśźżĄĆĘŁŃÓŚŹŻ'):
-                language_hint = "\nImportant: The text is in Polish. Generate questions and answers in Polish, preserving all Polish characters and medical terminology."
+                language_hint = "\nImportant: The text is in Polish. Generate questions and answers in Polish."
             elif any(c in text_chunk for c in 'àáâãäåæçèéêëìíîïñòóôõöøùúûüýÿ'):
-                language_hint = "\nImportant: The text contains non-English characters. Generate questions and answers in the same language as the source text."
-        
-        # Add instruction for handling OCR artifacts
-        ocr_note = ""
-        if any(c in text_chunk for c in '!\"#$%&*()+=[]{}|;:,.<>?/@\\^_`~'):
-            # High proportion of special characters suggests OCR artifacts
-            special_char_ratio = sum(1 for c in text_chunk[:200] if c in '!\"#$%&*()+=[]{}|;:,.<>?/@\\^_`~') / min(200, len(text_chunk))
-            if special_char_ratio > 0.1:  # More than 10% special chars
-                ocr_note = "\nNote: The text may contain OCR artifacts. Focus on extracting meaningful information and ignore garbled characters."
-        
-        prompt = f"""You are a helpful assistant that generates question-answer pairs for training data.
-{language_hint}
-{ocr_note}
+                language_hint = "\nImportant: Generate questions and answers in the same language as the source text."
+            
+            # Create concise prompt
+            prompt = f"""Create {num_pairs} Q&A pairs from:
 
-Generate exactly {num_pairs} high-quality question-answer pairs from the following text.
-
-Text:
 {text_chunk}
 
-Requirements:
-- Each pair must have a clear question and a detailed answer
-- Questions should be specific and answerable from the text
-- Answers should be complete and informative
-- Preserve the original language of the text (do not translate)
-- If the text contains medical terminology, preserve it accurately
-- Format as valid JSON array
+{language_hint}
 
-Return ONLY a valid JSON array in this exact format:
+JSON format:
 [
-  {{"instruction": "question 1", "output": "answer 1"}},
-  {{"instruction": "question 2", "output": "answer 2"}},
-  {{"instruction": "question 3", "output": "answer 3"}}
-]
-
-Do not include any text before or after the JSON array. Do not use markdown code blocks."""
-
-        try:
+  {{"instruction": "question", "output": "answer"}},
+  {{"instruction": "question", "output": "answer"}},
+  {{"instruction": "question", "output": "answer"}}
+]"""
+            
             # Submit inference job
             payload = {
                 "input": {
                     "task": "inference",
                     "prompt": prompt,
-                    "max_tokens": 512,
-                    "temperature": 0.7,
-                    "user_id": "qa_generator"  # Use system user_id for Q&A generation
+                    "max_tokens": 1024,
+                    "temperature": 0.3,
+                    "top_p": 0.9,
+                    "user_id": "qa_generator"
                 }
             }
-            
-            logger.debug(f"Submitting Q&A generation job for chunk ({len(prompt)} chars)")
             
             response = requests.post(
                 f"{self.base_url}/run",
@@ -146,28 +420,146 @@ Do not include any text before or after the JSON array. Do not use markdown code
                 logger.error(f"Q&A generation failed: {result}")
                 return []
             
-            # Parse response
             response_text = result.get("response", "")
             
-            # Log response for debugging
-            if response_text:
-                logger.info(f"Received response (first 500 chars): {response_text[:500]}")
-                logger.debug(f"Full response length: {len(response_text)} chars")
-            else:
-                logger.warning(f"Empty response from RunPod. Full result: {result}")
+            if not response_text:
+                logger.warning(f"Empty response from RunPod")
                 return []
             
-            # Try to extract JSON from response
-            qa_pairs = self._parse_qa_response(response_text, num_pairs)
-            
-            if not qa_pairs:
-                logger.warning(f"No Q&A pairs extracted from response for chunk (length: {len(response_text)} chars)")
-                logger.debug(f"Response text: {response_text}")
-            
+            # Parse response
+            qa_pairs = self._parse_qa_response(response_text, num_pairs, text_chunk)
             return qa_pairs
             
         except Exception as e:
-            logger.error(f"Error generating Q&A pairs: {e}")
+            logger.error(f"Error generating Q&A pairs with RunPod: {e}")
+            return []
+    
+    def _generate_qa_with_ollama(self, text_chunk: str, num_pairs: int) -> List[Dict[str, str]]:
+        """
+        Generate Q&A pairs using local Ollama as fallback.
+        
+        Args:
+            text_chunk: Text to generate Q&A from
+            num_pairs: Number of Q&A pairs to generate
+            
+        Returns:
+            List of Q&A pairs
+        """
+        try:
+            # Check if Ollama is available
+            try:
+                response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
+                if response.status_code != 200:
+                    logger.debug("Ollama not available for fallback")
+                    return []
+            except Exception:
+                logger.debug("Ollama not available for fallback")
+                return []
+            
+            # Check if model is available
+            models_response = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
+            if models_response.status_code == 200:
+                models = models_response.json().get("models", [])
+                model_names = [m.get("name", "") for m in models]
+                
+                # Try to find a suitable text model (not vision)
+                available_model = None
+                
+                # First try: exact match or TinyLlama
+                for model_name in model_names:
+                    if self.ollama_model in model_name.lower() or "tinyllama" in model_name.lower():
+                        if "vision" not in model_name.lower():
+                            available_model = model_name
+                            break
+                
+                # Fallback: try Llama3.2 models if TinyLlama not found
+                if not available_model:
+                    for model_name in model_names:
+                        if "llama3.2" in model_name.lower():
+                            if "vision" not in model_name.lower():
+                                available_model = model_name
+                                break
+                
+                if not available_model:
+                    logger.debug(f"No suitable Ollama model found. Available: {model_names}")
+                    return []
+                
+                logger.info(f"Using Ollama model: {available_model} for Q&A generation")
+            else:
+                logger.debug("Could not check Ollama models")
+                return []
+            
+            # Limit chunk length for Ollama (TinyLlama has smaller context window)
+            max_chunk_length = 800
+            truncated_chunk = text_chunk[:max_chunk_length] if len(text_chunk) > max_chunk_length else text_chunk
+            
+            # Detect language
+            language_hint = ""
+            if any(c in text_chunk for c in 'ąćęłńóśźżĄĆĘŁŃÓŚŹŻ'):
+                language_hint = "\nImportant: The text is in Polish. Generate questions and answers in Polish."
+            elif any(c in text_chunk for c in 'àáâãäåæçèéêëìíîïñòóôõöøùúûüýÿ'):
+                language_hint = "\nImportant: Generate questions and answers in the same language as the source text."
+            
+            # Create simpler prompt for TinyLlama (text format instead of JSON)
+            # TinyLlama struggles with JSON, so use a simpler format
+            prompt = f"""Create {num_pairs} question-answer pairs from this text:
+
+{truncated_chunk}
+
+{language_hint}
+
+IMPORTANT: Each pair must have BOTH a question AND an answer.
+
+Format:
+Q: question here
+A: answer here
+
+Q: question here
+A: answer here
+
+Q: question here
+A: answer here"""
+            
+            # Call Ollama API with slightly higher temperature for TinyLlama
+            response = requests.post(
+                f"{self.ollama_base_url}/api/generate",
+                json={
+                    "model": available_model,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.7,  # Higher temperature for more creative output
+                        "num_predict": 1500,  # Much more tokens for complete Q&A pairs (TinyLlama needs space for 3 pairs)
+                        "top_p": 0.9,
+                        "repeat_penalty": 1.1,  # Prevent repetition
+                    }
+                },
+                timeout=60
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                response_text = result.get("response", "")
+                
+                if response_text:
+                    logger.debug(f"Ollama response received ({len(response_text)} chars)")
+                    logger.debug(f"Ollama response preview: {response_text[:300]}")
+                    # Parse Q&A pairs
+                    qa_pairs = self._parse_qa_response(response_text, num_pairs, text_chunk)
+                    if qa_pairs:
+                        logger.info(f"Ollama generated {len(qa_pairs)} Q&A pairs")
+                        # Small delay after successful generation to prevent rate limiting
+                        time.sleep(0.5)
+                        return qa_pairs
+                    else:
+                        logger.warning(f"Ollama returned response but no Q&A pairs extracted. Response: {response_text[:500]}")
+                        # If we got a response but no pairs, wait a bit before retry or fallback
+                        time.sleep(1)
+            
+            return []
+            
+        except Exception as e:
+            logger.debug(f"Ollama fallback error: {e}")
             return []
     
     def _wait_for_completion(self, job_id: str, timeout: int = 120) -> Optional[Dict[str, Any]]:
@@ -233,13 +625,95 @@ Do not include any text before or after the JSON array. Do not use markdown code
         logger.error(f"Job timed out after {timeout}s")
         return None
     
-    def _parse_qa_response(self, response_text: str, expected_pairs: int) -> List[Dict[str, str]]:
+    def _is_valid_qa_pair(self, instruction: str, output: str, original_text: str = "") -> bool:
+        """
+        Validate if a Q&A pair is actually valid (not echo, not empty, meaningful).
+        
+        Args:
+            instruction: Question text
+            output: Answer text
+            original_text: Original chunk text (optional, for validation)
+            
+        Returns:
+            True if pair is valid
+        """
+        if not instruction or not output:
+            logger.debug("Rejected Q&A pair: Empty instruction or output")
+            return False
+        
+        instruction = str(instruction).strip()
+        output = str(output).strip()
+        
+        # Check minimum length
+        if len(instruction) < 10 or len(output) < 10:
+            logger.debug(f"Rejected Q&A pair: Too short (instruction: {len(instruction)}, output: {len(output)})")
+            return False
+        
+        # Check if it's echo of the prompt (common patterns)
+        prompt_phrases = [
+            "you are a helpful assistant",
+            "generate exactly",
+            "high-quality question-answer pairs",
+            "requirements:",
+            "each pair must have",
+            "format as valid json",
+            "return only a valid json"
+        ]
+        
+        combined = (instruction + " " + output).lower()
+        prompt_matches = sum(1 for phrase in prompt_phrases if phrase in combined)
+        
+        # If too many prompt phrases, it's likely echo
+        if prompt_matches >= 3:
+            logger.warning(f"Rejected Q&A pair: Too many prompt phrases detected (echo) - instruction: '{instruction[:60]}...'")
+            return False
+        
+        # More lenient check for questions - accept imperative forms, statements that could be questions
+        # Check if question is actually a question (more lenient)
+        question_words = ["what", "who", "where", "when", "why", "how", "which", 
+                         "czy", "co", "kto", "gdzie", "kiedy", "dlaczego", "jak",
+                         "?", "pytanie"]
+        question_indicators = any(word in instruction.lower() for word in question_words)
+        
+        # Also accept imperative/statement forms that are valid questions
+        imperative_starters = ["explain", "describe", "tell", "list", "name", "define",
+                              "wyjaśnij", "opisz", "powiedz", "wymień", "zdefiniuj",
+                              "what is", "what are", "what does", "what do",
+                              "co to", "czym jest", "jak działa"]
+        
+        starts_with_imperative = any(instruction.lower().startswith(word) for word in imperative_starters)
+        
+        # Accept if it has question indicators OR starts with imperative/question starter
+        if not question_indicators and not starts_with_imperative:
+            # Very lenient - accept if it contains any of the original text's key terms
+            # This handles cases where question might be phrased differently
+            if original_text:
+                # Extract key words from original text (simple heuristic)
+                original_words = set(word.lower() for word in original_text.split() if len(word) > 4)
+                instruction_words = set(word.lower() for word in instruction.split())
+                # If instruction shares significant words with original, it's probably valid
+                if len(original_words.intersection(instruction_words)) < 1:
+                    logger.debug(f"Rejected Q&A pair: Doesn't look like a question and no keyword overlap - '{instruction[:60]}...'")
+                    return False
+            else:
+                logger.debug(f"Rejected Q&A pair: Doesn't look like a question - '{instruction[:60]}...'")
+                return False
+        
+        # Check if answer is too generic or empty (more lenient - at least 3 words)
+        if len(output.split()) < 3:
+            logger.debug(f"Rejected Q&A pair: Answer too short ({len(output.split())} words)")
+            return False
+        
+        return True
+    
+    def _parse_qa_response(self, response_text: str, expected_pairs: int, original_chunk: str = "") -> List[Dict[str, str]]:
         """
         Parse Q&A pairs from model response.
         
         Args:
             response_text: Raw response from model
             expected_pairs: Expected number of pairs
+            original_chunk: Original text chunk (for validation)
             
         Returns:
             List of Q&A pairs
@@ -248,6 +722,23 @@ Do not include any text before or after the JSON array. Do not use markdown code
         
         if not response_text:
             logger.warning("Empty response text")
+            return []
+        
+        # Check if response is just echo of prompt
+        prompt_indicators = [
+            "you are a helpful assistant",
+            "generate exactly",
+            "high-quality question-answer pairs",
+            "text:",
+            "requirements:",
+            "format as valid json array"
+        ]
+        
+        response_lower = response_text.lower()
+        echo_score = sum(1 for indicator in prompt_indicators if indicator in response_lower)
+        
+        if echo_score >= 4:
+            logger.warning(f"Response appears to be echo of prompt (detected {echo_score} indicators). Skipping.")
             return []
         
         logger.debug(f"Parsing response (first 500 chars): {response_text[:500]}")
@@ -274,10 +765,14 @@ Do not include any text before or after the JSON array. Do not use markdown code
                             output = pair.get("output") or pair.get("answer") or pair.get("a")
                             
                             if instruction and output:
-                                qa_pairs.append({
-                                    "instruction": str(instruction).strip(),
-                                    "output": str(output).strip()
-                                })
+                                # Validate Q&A pair before adding
+                                if self._is_valid_qa_pair(instruction, output, original_chunk):
+                                    qa_pairs.append({
+                                        "instruction": str(instruction).strip(),
+                                        "output": str(output).strip()
+                                    })
+                                else:
+                                    logger.warning(f"Rejected invalid Q&A pair: instruction='{instruction[:80]}...', output='{output[:80]}...'")
                     
                     if qa_pairs:
                         logger.info(f"Successfully parsed {len(qa_pairs)} Q&A pairs from JSON array")
@@ -295,10 +790,14 @@ Do not include any text before or after the JSON array. Do not use markdown code
                         output = pair.get("output") or pair.get("answer")
                         
                         if instruction and output:
-                            qa_pairs.append({
-                                "instruction": str(instruction).strip(),
-                                "output": str(output).strip()
-                            })
+                            # Validate Q&A pair before adding
+                            if self._is_valid_qa_pair(instruction, output, original_chunk):
+                                qa_pairs.append({
+                                    "instruction": str(instruction).strip(),
+                                    "output": str(output).strip()
+                                })
+                            else:
+                                logger.warning(f"Rejected invalid Q&A pair (strategy 2): instruction='{instruction[:60]}...'")
                     except:
                         continue
                 
@@ -312,10 +811,16 @@ Do not include any text before or after the JSON array. Do not use markdown code
                 if isinstance(parsed, list):
                     for item in parsed:
                         if isinstance(item, dict) and "instruction" in item and "output" in item:
-                            qa_pairs.append({
-                                "instruction": str(item["instruction"]).strip(),
-                                "output": str(item["output"]).strip()
-                            })
+                            instruction = str(item["instruction"]).strip()
+                            output = str(item["output"]).strip()
+                            # Validate Q&A pair before adding
+                            if self._is_valid_qa_pair(instruction, output, original_chunk):
+                                qa_pairs.append({
+                                    "instruction": instruction,
+                                    "output": output
+                                })
+                            else:
+                                logger.warning(f"Rejected invalid Q&A pair (strategy 3): instruction='{instruction[:60]}...'")
                     if qa_pairs:
                         logger.info(f"Successfully parsed {len(qa_pairs)} Q&A pairs from direct JSON")
                         return qa_pairs[:expected_pairs]
@@ -325,42 +830,371 @@ Do not include any text before or after the JSON array. Do not use markdown code
         except json.JSONDecodeError as e:
             logger.warning(f"Failed to parse JSON: {e}")
         
-        # Strategy 4: Fallback to manual extraction
+        # Strategy 4: Fallback to manual extraction (for Q:/A: format)
         logger.warning("Failed to parse JSON, trying manual extraction")
         qa_pairs = self._extract_qa_manually(response_text)
         
+        # Validate manual extraction results
+        if qa_pairs:
+            validated_pairs = []
+            for pair in qa_pairs:
+                # More lenient validation for TinyLlama output
+                instruction = pair.get("instruction", "").strip()
+                output = pair.get("output", "").strip()
+                
+                # Basic checks: not empty, minimum length, not echo
+                if (len(instruction) >= 5 and len(output) >= 10 and 
+                    instruction.lower() != output.lower()):
+                    # Check for obvious echo phrases
+                    combined = (instruction + " " + output).lower()
+                    echo_phrases = ["question here", "answer here", "create", "format:", "json array"]
+                    if not any(phrase in combined for phrase in echo_phrases):
+                        validated_pairs.append({
+                            "instruction": instruction,
+                            "output": output
+                        })
+                        if len(validated_pairs) >= expected_pairs:
+                            break
+            qa_pairs = validated_pairs
+        
+        # If we still have no valid pairs, try a lenient fallback (but limit to expected_pairs)
+        if not qa_pairs:
+            logger.warning("No Q&A pairs found with standard parsing. Attempting lenient fallback...")
+            qa_pairs = self._extract_qa_lenient_fallback(response_text, original_chunk)
+            # Limit lenient fallback to expected_pairs
+            qa_pairs = qa_pairs[:expected_pairs]
+        
         return qa_pairs[:expected_pairs]
     
-    def _extract_qa_manually(self, text: str) -> List[Dict[str, str]]:
-        """Fallback manual extraction of Q&A pairs."""
+    def _extract_qa_lenient_fallback(self, response_text: str, original_chunk: str = "") -> List[Dict[str, str]]:
+        """
+        Fallback extraction with very lenient validation - only filters obvious echo/empty.
+        Used when standard parsing rejects all pairs.
+        
+        Args:
+            response_text: Raw response text
+            original_chunk: Original chunk text
+            
+        Returns:
+            List of Q&A pairs (with minimal validation)
+        """
         qa_pairs = []
         
-        # Look for Q: and A: patterns
+        try:
+            import re
+            import json
+            
+            # Try to find ANY JSON-like structures
+            json_pattern = r'\[.*?\]'
+            matches = re.findall(json_pattern, response_text, re.DOTALL)
+            
+            for json_str in matches:
+                try:
+                    pairs = json.loads(json_str)
+                    if isinstance(pairs, list):
+                        for pair in pairs:
+                            if isinstance(pair, dict):
+                                instruction = pair.get("instruction") or pair.get("question") or pair.get("q")
+                                output = pair.get("output") or pair.get("answer") or pair.get("a")
+                                
+                                if instruction and output:
+                                    instruction = str(instruction).strip()
+                                    output = str(output).strip()
+                                    
+                                    # Very lenient validation - only check:
+                                    # 1. Not empty
+                                    # 2. Not obvious echo (check for prompt phrases)
+                                    # 3. Minimum length (10 chars each - more strict)
+                                    if len(instruction) >= 10 and len(output) >= 10:
+                                        # Check for obvious echo
+                                        combined = (instruction + " " + output).lower()
+                                        echo_phrases = ["you are a helpful assistant", "generate exactly", 
+                                                       "high-quality question-answer pairs", "format as valid json",
+                                                       "return json", "json array", "question here", "answer here"]
+                                        if not any(phrase in combined for phrase in echo_phrases):
+                                            # Basic validation: instruction should not be identical to output
+                                            if instruction.lower() != output.lower():
+                                                qa_pairs.append({
+                                                    "instruction": instruction,
+                                                    "output": output
+                                                })
+                                                logger.info(f"Accepted Q&A pair via lenient fallback: '{instruction[:50]}...'")
+                                                # Limit to prevent accepting too many pairs
+                                                if len(qa_pairs) >= 10:  # Safety limit
+                                                    break
+                except:
+                    continue
+            
+            if qa_pairs:
+                logger.info(f"Lenient fallback extracted {len(qa_pairs)} Q&A pairs")
+            
+        except Exception as e:
+            logger.debug(f"Lenient fallback extraction failed: {e}")
+        
+        return qa_pairs
+    
+    def _extract_qa_manually(self, text: str) -> List[Dict[str, str]]:
+        """Fallback manual extraction of Q&A pairs - handles multiple formats."""
+        qa_pairs = []
+        
+        # Look for Q: and A: patterns in various formats
         lines = text.split('\n')
         current_q = None
         current_a = []
         
         for line in lines:
             line = line.strip()
-            if line.startswith('Q:') or line.startswith('Question:'):
+            # Skip empty lines
+            if not line:
+                continue
+            
+            line_lower = line.lower()
+            
+            # Detect question patterns (multiple formats)
+            # Format 1: "1. Q: question" or "1. question"
+            # Format 2: "Q: question" or "Question: question"
+            # Format 3: "- Q: question" or "- question"
+            is_question = False
+            question_text = None
+            
+            # Check for numbered format: "1. Q: ..." or "1. ..." or "1. Q: ... A: ..."
+            # Also handle "Question 1:" format
+            if line_lower and line_lower[0].isdigit() and '.' in line:
+                parts = line.split('.', 1)
+                if len(parts) == 2:
+                    rest = parts[1].strip()
+                    
+                    # Check for format "1. Q: question A: answer" (both in one line)
+                    if 'Q:' in rest and 'A:' in rest:
+                        q_parts = rest.split('Q:', 1)
+                        if len(q_parts) == 2:
+                            qa_part = q_parts[1].strip()
+                            if 'A:' in qa_part:
+                                a_parts = qa_part.split('A:', 1)
+                                if len(a_parts) == 2:
+                                    question_text = a_parts[0].strip()
+                                    answer_text = a_parts[1].strip()
+                                    # Remove "Answer:" prefix if present
+                                    if answer_text.lower().startswith('answer:'):
+                                        answer_text = answer_text.split(':', 1)[1].strip()
+                                    
+                                    if question_text and answer_text and len(answer_text) >= 10:
+                                        # Save previous pair if exists
+                                        if current_q and current_a:
+                                            prev_answer = ' '.join(current_a).strip()
+                                            if len(prev_answer) >= 10:
+                                                qa_pairs.append({
+                                                    "instruction": current_q,
+                                                    "output": prev_answer
+                                                })
+                                        # Add current pair
+                                        qa_pairs.append({
+                                            "instruction": question_text,
+                                            "output": answer_text
+                                        })
+                                        current_q = None
+                                        current_a = []
+                                        continue
+                    
+                    # Check if it has Q: or question marker
+                    if rest.lower().startswith('q:') or rest.lower().startswith('question:'):
+                        question_text = rest.split(':', 1)[1].strip() if ':' in rest else rest
+                        is_question = True
+                    # Check if it contains embedded Q: pattern (e.g., "question Q: ...")
+                    elif 'Q:' in rest or 'q:' in rest:
+                        # Extract question after Q:
+                        if 'Q:' in rest:
+                            q_parts = rest.split('Q:', 1)
+                            if len(q_parts) == 2:
+                                question_text = q_parts[1].strip()
+                                is_question = True
+                        elif 'q:' in rest:
+                            q_parts = rest.split('q:', 1)
+                            if len(q_parts) == 2:
+                                question_text = q_parts[1].strip()
+                                is_question = True
+                    # Check if it's just a question without Q: prefix
+                    elif rest and not rest.lower().startswith('a:') and not rest.lower().startswith('answer:'):
+                        # If it ends with '?' or starts with question word, it's likely a question
+                        if rest.endswith('?') or any(rest.lower().startswith(word + ' ') for word in 
+                                                   ['how', 'what', 'why', 'when', 'where', 'which', 'who', 'do', 'does', 'did', 'are', 'is']):
+                            question_text = rest
+                            is_question = True
+            
+            # Check for "Question N:" format (e.g., "Question 1:", "Question 2:")
+            elif line_lower.startswith('question ') and ':' in line:
+                # Extract number and question text
+                # Format: "Question 1: question text" or "Question 1: question text Answer: answer text"
+                colon_pos = line.find(':')
+                if colon_pos > 0:
+                    rest = line[colon_pos + 1:].strip()
+                    # Check if answer is in the same line
+                    if 'Answer:' in rest or 'answer:' in rest or rest.lower().endswith('answer:'):
+                        # Handle case where "Answer:" is at the end (answer in next line)
+                        if rest.lower().endswith('answer:') or rest.lower().endswith('answer'):
+                            # Answer will be in next line(s)
+                            question_text = rest.rstrip('Answer:').rstrip('answer:').strip()
+                            is_question = True
+                        else:
+                            # Split by Answer: or answer:
+                            if 'Answer:' in rest:
+                                parts = rest.split('Answer:', 1)
+                            else:
+                                parts = rest.split('answer:', 1)
+                            if len(parts) == 2:
+                                question_text = parts[0].strip()
+                                answer_text = parts[1].strip()
+                                # Remove "Answer:" prefix if present
+                                if answer_text.lower().startswith('answer:'):
+                                    answer_text = answer_text.split(':', 1)[1].strip()
+                                
+                                if question_text and answer_text and len(answer_text) >= 10:
+                                    # Save previous pair if exists
+                                    if current_q and current_a:
+                                        prev_answer = ' '.join(current_a).strip()
+                                        if len(prev_answer) >= 10:
+                                            qa_pairs.append({
+                                                "instruction": current_q,
+                                                "output": prev_answer
+                                            })
+                                    # Add current pair
+                                    qa_pairs.append({
+                                        "instruction": question_text,
+                                        "output": answer_text
+                                    })
+                                    current_q = None
+                                    current_a = []
+                                    continue
+                    else:
+                        # Just question, answer will be in next line(s)
+                        question_text = rest
+                        is_question = True
+            
+            # Check for Q: or Question: prefix
+            elif line_lower.startswith('q:') or (line_lower.startswith('question:') and not line_lower.startswith('question ')):
+                question_text = line.split(':', 1)[1].strip() if ':' in line else line
+                is_question = True
+            
+            # Check for dash format: "- Q: ..." or "- ..."
+            elif line.startswith('-') and len(line) > 2:
+                rest = line[1:].strip()
+                if rest.lower().startswith('q:') or rest.lower().startswith('question:'):
+                    question_text = rest.split(':', 1)[1].strip() if ':' in rest else rest
+                    is_question = True
+                elif rest and not rest.lower().startswith('a:'):
+                    # Might be a question without Q: prefix
+                    question_text = rest
+                    is_question = True
+            
+            if is_question and question_text:
+                # Save previous pair if exists
                 if current_q and current_a:
-                    qa_pairs.append({
-                        "instruction": current_q,
-                        "output": ' '.join(current_a)
-                    })
-                current_q = line.replace('Q:', '').replace('Question:', '').strip()
+                    answer_text = ' '.join(current_a).strip()
+                    if len(answer_text) >= 10:  # Minimum answer length
+                        qa_pairs.append({
+                            "instruction": current_q,
+                            "output": answer_text
+                        })
+                # Start new question
+                current_q = question_text
                 current_a = []
-            elif line.startswith('A:') or line.startswith('Answer:'):
-                if current_q:
-                    current_a.append(line.replace('A:', '').replace('Answer:', '').strip())
-            elif current_q and line:
-                current_a.append(line)
+                continue
+            
+            # Detect answer patterns
+            if current_q:
+                # Format 1: "A: answer" or "Answer: answer" (standalone line)
+                # Also handle indented "   A: answer" format
+                line_stripped = line.strip()
+                if line_stripped.lower().startswith('a:') or line_stripped.lower().startswith('answer:'):
+                    answer_part = line_stripped.split(':', 1)[1].strip() if ':' in line_stripped else line_stripped.strip()
+                    if answer_part:
+                        current_a.append(answer_part)
+                        continue  # Don't process further
+                # Format 2: Numbered answer "1. A: ..." or "2. ..."
+                elif line_lower and line_lower[0].isdigit() and '.' in line:
+                    parts = line.split('.', 1)
+                    if len(parts) == 2:
+                        rest = parts[1].strip()
+                        # Check if it's an answer (starts with A: or just text after number)
+                        if rest.lower().startswith('a:') or rest.lower().startswith('answer:'):
+                            answer_part = rest.split(':', 1)[1].strip() if ':' in rest else rest
+                            if answer_part:
+                                current_a.append(answer_part)
+                        elif rest and not rest.lower().startswith('q:'):
+                            # If it's not a question, it might be an answer continuation
+                            # But only if it doesn't look like a new numbered question
+                            if not any(word in rest.lower() for word in ['how', 'what', 'why', 'when', 'where', 'which']):
+                                current_a.append(rest)
+                # Format 2b: Dash after numbered question (e.g., "1. Question\n- Answer")
+                elif line.startswith('-') and len(line) > 2 and current_q:
+                    # If we have a current question, dash line is likely the answer
+                    rest = line[1:].strip()
+                    # Remove quotes if present (e.g., '- "Answer text"')
+                    if rest.startswith('"') and rest.endswith('"'):
+                        rest = rest[1:-1].strip()
+                    if rest:
+                        current_a.append(rest)
+                # Format 3: Dash format "- A: ..." or "- Answer: ..." or continuation
+                elif line.startswith('-') and len(line) > 2:
+                    rest = line[1:].strip()
+                    # Handle "- Answer: ..." format (common in TinyLlama output)
+                    if rest.lower().startswith('answer:'):
+                        answer_part = rest.split(':', 1)[1].strip() if ':' in rest else rest
+                        if answer_part:
+                            current_a.append(answer_part)
+                    elif rest.lower().startswith('a:'):
+                        answer_part = rest.split(':', 1)[1].strip() if ':' in rest else rest
+                        if answer_part:
+                            current_a.append(answer_part)
+                    elif rest:
+                        # Continue answer if it doesn't look like a question
+                        if not rest.lower().startswith('q:'):
+                            current_a.append(rest)
+                # Format 4: Answer embedded in line with "A: ..." pattern (e.g., "1. Q: question A: answer")
+                elif 'A:' in line or 'Answer:' in line_lower:
+                    # Extract answer part after A: or Answer:
+                    if 'A:' in line:
+                        parts = line.split('A:', 1)
+                        if len(parts) == 2:
+                            answer_text = parts[1].strip()
+                            # Remove "Answer:" prefix if present
+                            if answer_text.lower().startswith('answer:'):
+                                answer_text = answer_text.split(':', 1)[1].strip()
+                            if answer_text:
+                                current_a.append(answer_text)
+                    elif 'Answer:' in line_lower:
+                        parts = line_lower.split('answer:', 1)
+                        if len(parts) == 2:
+                            answer_text = parts[1].strip()
+                            # Remove another "Answer:" prefix if present
+                            if answer_text.lower().startswith('answer:'):
+                                answer_text = answer_text.split(':', 1)[1].strip()
+                            if answer_text:
+                                current_a.append(answer_text)
+                # Format 5: Continue answer if not JSON-like and not a new question
+                elif line and not line.startswith('[') and not line.startswith('{'):
+                    # Don't continue if it looks like a new question
+                    if not (line_lower.startswith('q:') or line_lower.startswith('question:') or 
+                           (line_lower and line_lower[0].isdigit() and '.' in line)):
+                        # Also check if line contains question words at start (likely new question)
+                        question_starters = ['how', 'what', 'why', 'when', 'where', 'which', 'who']
+                        if not any(line_lower.startswith(starter + ' ') for starter in question_starters):
+                            current_a.append(line)
         
+        # Save last pair
         if current_q and current_a:
-            qa_pairs.append({
-                "instruction": current_q,
-                "output": ' '.join(current_a)
-            })
+            answer_text = ' '.join(current_a).strip()
+            if len(answer_text) >= 10:  # Minimum answer length
+                qa_pairs.append({
+                    "instruction": current_q,
+                    "output": answer_text
+                })
+        
+        # Debug: log what we found
+        if qa_pairs:
+            logger.debug(f"Manual extraction found {len(qa_pairs)} Q&A pairs")
+        else:
+            logger.debug(f"Manual extraction found no pairs. Response preview: {text[:300]}")
         
         return qa_pairs
     
@@ -380,22 +1214,34 @@ Do not include any text before or after the JSON array. Do not use markdown code
         
         logger.info(f"Generating Q&A pairs from {len(text_chunks)} chunks for user {user_id}")
         
+        valid_chunks = 0
+        skipped_chunks = 0
+        
         for i, chunk in enumerate(text_chunks):
             logger.info(f"Processing chunk {i+1}/{len(text_chunks)}")
             
+            # Validate chunk before processing
+            if not self._is_chunk_valid(chunk):
+                logger.debug(f"Skipping chunk {i+1}: Invalid or low-quality content (length: {len(chunk)} chars)")
+                skipped_chunks += 1
+                continue
+            
+            valid_chunks += 1
             qa_pairs = self.generate_qa_pairs(chunk, num_pairs_per_chunk)
             
             if qa_pairs:
                 all_qa_pairs.extend(qa_pairs)
                 logger.info(f"Generated {len(qa_pairs)} Q&A pairs from chunk {i+1}")
             else:
-                logger.warning(f"Failed to generate Q&A pairs from chunk {i+1}")
+                logger.warning(f"Failed to generate Q&A pairs from chunk {i+1} (valid chunk but generation failed)")
                 # Log the chunk length for debugging
                 logger.debug(f"Chunk {i+1} length: {len(chunk)} chars")
             
-            # Small delay between chunks
-            time.sleep(1)
+            # Delay between chunks to give TinyLlama time to process
+            # Small models need more time between requests
+            time.sleep(2)
         
+        logger.info(f"Q&A generation complete: {valid_chunks} valid chunks processed, {skipped_chunks} skipped")
         logger.info(f"Total Q&A pairs generated: {len(all_qa_pairs)}")
         return all_qa_pairs
     

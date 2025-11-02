@@ -1,7 +1,7 @@
 """Backend configuration."""
 
 from pydantic_settings import BaseSettings
-from typing import List
+from typing import List, Optional
 
 
 class Settings(BaseSettings):
@@ -35,6 +35,10 @@ class Settings(BaseSettings):
 
     # Logging
     log_level: str = "INFO"
+
+    # RunPod (backend-managed, users never see these)
+    runpod_api_key: Optional[str] = None
+    runpod_endpoint_id: Optional[str] = None
 
     class Config:
         env_file = ".env"

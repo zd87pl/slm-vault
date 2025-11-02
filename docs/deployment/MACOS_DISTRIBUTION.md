@@ -40,16 +40,19 @@ On macOS, users expect:
 
 ### Option 1: Flet CLI (Recommended)
 
-Flet provides native macOS packaging:
+Flet provides native macOS packaging and **automatically bundles all dependencies** from `requirements.txt`:
 
 ```bash
-# Install Flet CLI (if not already installed)
-pip install flet
-
 # Build macOS app bundle
 cd advanced_vault/gui
 flet build macos
 ```
+
+**What Gets Bundled:**
+- ✅ All packages from `requirements.txt` (including MCP)
+- ✅ Python runtime
+- ✅ All transitive dependencies
+- ✅ App code and resources
 
 **Requirements:**
 - **Rosetta 2** (for Apple Silicon): `sudo softwareupdate --install-rosetta --agree-to-license`
@@ -59,7 +62,8 @@ flet build macos
 **Output:**
 - Creates `.app` bundle in `build/macos/`
 - Universal binary (Apple Silicon + Intel)
-- Ready to distribute
+- Self-contained (no Python installation needed)
+- **All dependencies included** (users don't need to install anything)
 
 ### Option 2: PyInstaller (Alternative)
 

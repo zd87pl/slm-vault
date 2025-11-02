@@ -13,11 +13,12 @@ from enum import Enum
 
 class EntryType(Enum):
     """Type of stored entry."""
+    SECRET = "secret"
     API_KEY = "api_key"
     PASSWORD = "password"
     TOKEN = "token"
-    SECRET = "secret"
     CREDENTIAL = "credential"
+    FOLDER = "folder"  # Folder with optional password protection
     OTHER = "other"
 
 
@@ -46,6 +47,7 @@ class EncryptedEntry:
     # Optional metadata fields (with defaults must come after required fields)
     tags: List[str] = field(default_factory=list)
     description: Optional[str] = None
+    folder: Optional[str] = None  # Folder name (if entry belongs to a folder)
 
     # Timestamps
     created_at: datetime = field(default_factory=datetime.utcnow)
@@ -63,6 +65,7 @@ class EncryptedEntry:
             "service": self.service,
             "tags": ",".join(self.tags),  # Store as comma-separated
             "description": self.description,
+            "folder": self.folder,  # Folder name
             "encrypted_data": self.encrypted_data.hex(),
             "nonce": self.nonce.hex(),
             "created_at": self.created_at.isoformat(),
@@ -80,6 +83,7 @@ class EncryptedEntry:
             service=data["service"],
             tags=data["tags"].split(",") if data["tags"] else [],
             description=data.get("description"),
+            folder=data.get("folder"),  # Folder name (optional)
             encrypted_data=bytes.fromhex(data["encrypted_data"]),
             nonce=bytes.fromhex(data["nonce"]),
             created_at=datetime.fromisoformat(data["created_at"]),
@@ -100,6 +104,7 @@ class QueryFilter:
     # Exact match filters
     service: Optional[str] = None
     entry_type: Optional[EntryType] = None
+    folder: Optional[str] = None  # Filter by folder name
 
     # Tag filtering
     tags: Optional[List[str]] = None  # Match ANY tag

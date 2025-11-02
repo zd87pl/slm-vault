@@ -15,6 +15,8 @@ from mcp.types import Tool, TextContent
 from pydantic import AnyUrl
 
 from advanced_vault.core import HybridVault
+from advanced_vault.mcp_server.consent import ConsentManager
+from advanced_vault.mcp_server.activity_logger import ActivityLogger
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -41,6 +43,12 @@ class VaultMCPServer:
         # Initialize vault (will be lazy-loaded when needed)
         self.vault = None
         self._master_key = None
+        
+        # Initialize consent manager
+        self.consent_manager = ConsentManager(vault_path=str(self.vault_path))
+        
+        # Initialize activity logger
+        self.activity_logger = ActivityLogger(vault_path=str(self.vault_path))
 
         # Create MCP server
         self.server = Server("personal-vault")
@@ -179,20 +187,80 @@ class VaultMCPServer:
         async def call_tool(name: str, arguments: Any) -> Sequence[TextContent]:
             """Handle tool calls."""
             try:
+                # Request consent before allowing vault access
+                query_preview = ""
+                if name == "vault_recall":
+                    query_preview = arguments.get("query", "")
+                elif name == "vault_list_entries":
+                    query_preview = f"List entries"
+                elif name == "vault_delete":
+                    query_preview = f"Delete {arguments.get('service', 'entry')}"
+                elif name == "vault_store":
+                    query_preview = f"Store {arguments.get('data_type', 'data')}"
+                
+                # Get app identifier for logging
+                app_identifier = self.consent_manager._get_app_identifier()
+                
+                # Request consent
+                granted = self.consent_manager.request_consent(
+                    tool_name=name,
+                    query_preview=query_preview
+                )
+                
+                if not granted:
+                    # Log denied access
+                    self.activity_logger.log_access(
+                        tool_name=name,
+                        app_identifier=app_identifier,
+                        query_preview=query_preview,
+                        granted=False
+                    )
+                    return [TextContent(
+                        type="text",
+                        text=f"❌ Access denied: You did not grant permission for {name}. Please approve the notification to access your vault."
+                    )]
+                
                 vault = self._get_vault()
 
+                # Execute tool and capture result summary
+                result_summary = None
                 if name == "vault_store":
-                    return await self._handle_store(vault, arguments)
+                    result = await self._handle_store(vault, arguments)
+                    result_summary = f"Stored {arguments.get('data_type', 'data')}"
                 elif name == "vault_recall":
-                    return await self._handle_recall(vault, arguments)
+                    result = await self._handle_recall(vault, arguments)
+                    result_summary = "Query executed"
                 elif name == "vault_list_entries":
-                    return await self._handle_list(vault, arguments)
+                    result = await self._handle_list(vault, arguments)
+                    # Extract count from result
+                    result_text = result[0].text if result else ""
+                    if "Found" in result_text:
+                        try:
+                            count = result_text.split("Found")[1].split("entries")[0].strip()
+                            result_summary = f"Found {count} entries"
+                        except:
+                            result_summary = "Listed entries"
+                    else:
+                        result_summary = "Listed entries"
                 elif name == "vault_delete":
-                    return await self._handle_delete(vault, arguments)
+                    result = await self._handle_delete(vault, arguments)
+                    result_summary = f"Deleted {arguments.get('service', 'entry')}"
                 elif name == "vault_stats":
-                    return await self._handle_stats(vault, arguments)
+                    result = await self._handle_stats(vault, arguments)
+                    result_summary = "Retrieved statistics"
                 else:
                     raise ValueError(f"Unknown tool: {name}")
+                
+                # Log successful access
+                self.activity_logger.log_access(
+                    tool_name=name,
+                    app_identifier=app_identifier,
+                    query_preview=query_preview,
+                    granted=True,
+                    result_summary=result_summary
+                )
+                
+                return result
 
             except Exception as e:
                 logger.error(f"Tool call failed: {e}", exc_info=True)

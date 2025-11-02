@@ -22,14 +22,19 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from advanced_vault.core import HybridVault
 from advanced_vault.encrypted_kv import QueryFilter, EntryType
+from advanced_vault.mcp_server.activity_logger import ActivityLogger
 from auth_screen import AuthScreen
 from cloud_sync import CloudSyncService
 from pdf_processor import PDFProcessor
 from qa_generator import QAGenerator
 from training_manager import TrainingManager
+from folder_manager import FolderManager
 from theme import ModernTheme
+from sleek_theme import SleekTheme
 from welcome_screen import WelcomeScreen
 from error_helper import make_user_friendly, format_error_snackbar
+from mcp_setup import MCPSetupHelper
+from modern_sidebar import ModernSidebar
 
 logger = logging.getLogger(__name__)
 
@@ -44,23 +49,23 @@ class VaultApp:
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.padding = 0
         
-        # Set up modern theme
+        # Set up sleek theme
         self.page.theme = ft.Theme(
-            color_scheme_seed=ModernTheme.ACCENT_PRIMARY,
+            color_scheme_seed=SleekTheme.ACCENT_PRIMARY,
             font_family="System",
             text_theme=ft.TextTheme(
-                display_large=ft.TextStyle(size=57, weight=ft.FontWeight.BOLD),
-                display_medium=ft.TextStyle(size=45, weight=ft.FontWeight.BOLD),
-                headline_large=ft.TextStyle(size=32, weight=ft.FontWeight.BOLD),
-                title_large=ft.TextStyle(size=22, weight=ft.FontWeight.BOLD),
-                body_large=ft.TextStyle(size=16),
-                body_medium=ft.TextStyle(size=14),
-                label_large=ft.TextStyle(size=14, weight=ft.FontWeight.W_500),
+                display_large=ft.TextStyle(size=32, weight=ft.FontWeight.BOLD),
+                display_medium=ft.TextStyle(size=24, weight=ft.FontWeight.BOLD),
+                headline_large=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD),
+                title_large=ft.TextStyle(size=16, weight=ft.FontWeight.BOLD),
+                body_large=ft.TextStyle(size=13),
+                body_medium=ft.TextStyle(size=12),
+                label_large=ft.TextStyle(size=12, weight=ft.FontWeight.W_500),
             ),
         )
         
         # Set page background
-        self.page.bgcolor = ModernTheme.BG_PRIMARY
+        self.page.bgcolor = SleekTheme.BG_PRIMARY
 
         # Backend configuration
         self.backend_url = os.getenv(
@@ -72,7 +77,9 @@ class VaultApp:
         self.session_data = None
         self.vault = None
         self.cloud_sync = None
-        self.pdf_processor = PDFProcessor()
+        self.folder_manager = None  # Will be initialized after vault
+        # Initialize PDF processor - will setup Ollama when GUI is ready
+        self.pdf_processor = None  # Will be initialized after GUI is ready
         self.pdf_file_picker = None  # Will be created when Knowledge view is shown
         self.qa_generator = None
         self.training_manager = None
@@ -87,13 +94,24 @@ class VaultApp:
 
         self.key_path = self.vault_path / "master.key"
         self.db_path = self.vault_path / "vault.db"
+        
+        # Initialize MCP setup helper (after vault_path is set)
+        self.mcp_setup = MCPSetupHelper(vault_path=str(self.vault_path))
 
         # UI state
         self.current_view = "secrets"
         self.search_query = ""
         self.selected_type = "all"
-        self._search_timer = None  # For debouncing search
-        self._is_processing = False  # Track if async operation is running
+        # Track component status for UI
+        self._component_status = {
+            "ocr": {"status": "checking", "message": "Checking..."},  # checking, ready, installing, error
+            "vault": {"status": "ready", "message": "Ready"},
+            "cloud_sync": {"status": "ready", "message": "Ready"},
+            "training": {"status": "ready", "message": "Ready"},
+            "qa": {"status": "checking", "message": "Checking..."},  # checking, ready, installing, error
+        }
+        # Flag to prevent infinite refresh loops
+        self._refreshing_settings = False
 
         # Check for existing session
         self.check_authentication()
@@ -107,6 +125,9 @@ class VaultApp:
             # User is authenticated, initialize vault
             self.initialize_vault()
             self.build_ui()
+            
+            # Initialize PDF processor after GUI is ready
+            self._initialize_pdf_processor()
         else:
             # Show authentication screen
             self.show_auth_screen()
@@ -142,9 +163,427 @@ class VaultApp:
             self.page.clean()
             self.build_ui()
             self.page.update()
+        
+        # Initialize PDF processor after GUI is ready
+        self._initialize_pdf_processor()
+    
+    def _setup_qa_model_with_progress(self):
+        """
+        Setup TinyLlama Q&A model with visible progress dialog showing percentage and time remaining.
+        """
+        if not self.qa_generator:
+            logger.error("Q&A generator not initialized")
+            return
+        
+        progress_text = ft.Text("Przygotowywanie Q&A Generation...")
+        progress_percent = ft.Text("0%", size=14, weight=ft.FontWeight.W_500, color=SleekTheme.ACCENT_PRIMARY)
+        time_remaining_text = ft.Text("", size=12, color=SleekTheme.TEXT_MUTED)
+        progress_bar = ft.ProgressBar(width=400, value=0.0, color=SleekTheme.ACCENT_PRIMARY, bgcolor=SleekTheme.BG_ELEVATED)
+        
+        progress_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("🔧 Setting up Q&A Generation"),
+            content=ft.Column(
+                [
+                    progress_text,
+                    ft.Container(height=12),
+                    progress_bar,
+                    ft.Container(height=8),
+                    ft.Row(
+                        [
+                            progress_percent,
+                            ft.Container(width=16),
+                            time_remaining_text,
+                        ],
+                        spacing=0,
+                    ),
+                ],
+                tight=True,
+                width=400,
+            ),
+            actions=[],
+        )
+        
+        self.page.overlay.append(progress_dialog)
+        progress_dialog.open = True
+        self.page.update()
+        
+        def update_progress(message: str, percent: Optional[float] = None, time_remaining: Optional[str] = None):
+            """Update progress in dialog and component status."""
+            try:
+                if progress_dialog and progress_dialog.open and progress_text and progress_bar and progress_percent:
+                    progress_text.value = message
+                    
+                    if percent is not None:
+                        progress_bar.value = percent / 100.0
+                        progress_percent.value = f"{percent:.1f}%"
+                    else:
+                        progress_bar.value = None
+                        progress_percent.value = ""
+                    
+                    if time_remaining_text:
+                        if time_remaining:
+                            time_remaining_text.value = f"⏱️ {time_remaining} remaining"
+                    
+                    self.page.update()
+                    
+                    # Update component status
+                    if "Pobieranie" in message or "Downloading" in message:
+                        self._component_status["qa"]["status"] = "installing"
+                        if percent is not None:
+                            self._component_status["qa"]["message"] = f"Downloading TinyLlama... {percent:.1f}%"
+                        else:
+                            self._component_status["qa"]["message"] = "Downloading TinyLlama..."
+                    elif "gotowe" in message.lower() or "ready" in message.lower() or "available" in message.lower():
+                        self._component_status["qa"]["status"] = "ready"
+                        self._component_status["qa"]["message"] = "Ready (TinyLlama)"
+                    
+                    # Refresh Settings if visible
+                    if hasattr(self, 'current_view') and self.current_view == "settings" and not self._refreshing_settings:
+                        import threading
+                        def delayed_refresh():
+                            threading.Event().wait(0.5)
+                            if hasattr(self, 'page') and self.page and not self._refreshing_settings:
+                                try:
+                                    self._refreshing_settings = True
+                                    self.show_settings()
+                                except Exception:
+                                    pass
+                                finally:
+                                    self._refreshing_settings = False
+                        threading.Thread(target=delayed_refresh, daemon=True).start()
+            except Exception as e:
+                logger.debug(f"Could not update progress: {e}")
+        
+        # Setup Q&A model with progress callback
+        try:
+            success, message = self.qa_generator.setup_qa_model(progress_callback=update_progress)
+            if success:
+                self._component_status["qa"]["status"] = "ready"
+                self._component_status["qa"]["message"] = "Ready (TinyLlama)"
+                progress_text.value = "✅ Q&A Generation ready!"
+                progress_bar.value = 1.0
+                progress_percent.value = "100%"
+                time_remaining_text.value = ""
+                progress_dialog.actions = [
+                    ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                ]
+            else:
+                progress_text.value = f"❌ {message}"
+                progress_bar.value = None
+                progress_percent.value = ""
+                time_remaining_text.value = ""
+                self._component_status["qa"]["status"] = "error"
+                self._component_status["qa"]["message"] = message
+                progress_dialog.actions = [
+                    ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                ]
+        except Exception as e:
+            logger.error(f"Error setting up Q&A model: {e}")
+            progress_text.value = f"❌ Error: {str(e)}"
+            progress_bar.value = None
+            progress_percent.value = ""
+            time_remaining_text.value = ""
+            self._component_status["qa"]["status"] = "error"
+            self._component_status["qa"]["message"] = f"Error: {str(e)}"
+            progress_dialog.actions = [
+                ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+            ]
+        
+        self.page.update()
+
+    def _setup_ollama_with_progress(self):
+        """
+        Setup Ollama OCR with visible progress dialog showing percentage and time remaining.
+        """
+        # Create progress dialog with progress bar
+        progress_text = ft.Text("Przygotowywanie OCR...")
+        progress_percent = ft.Text("0%", size=14, weight=ft.FontWeight.W_500, color=SleekTheme.ACCENT_PRIMARY)
+        time_remaining_text = ft.Text("", size=12, color=SleekTheme.TEXT_MUTED)
+        progress_bar = ft.ProgressBar(width=400, value=0.0, color=SleekTheme.ACCENT_PRIMARY, bgcolor=SleekTheme.BG_ELEVATED)
+        
+        progress_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("🔧 Setting up AI Knowledge Extraction"),
+            content=ft.Column(
+                [
+                    progress_text,
+                    ft.Container(height=12),
+                    progress_bar,
+                    ft.Container(height=8),
+                    ft.Row(
+                        [
+                            progress_percent,
+                            ft.Container(width=16),
+                            time_remaining_text,
+                        ],
+                        spacing=0,
+                    ),
+                ],
+                tight=True,
+                width=400,
+            ),
+            actions=[],
+        )
+        
+        self.page.overlay.append(progress_dialog)
+        progress_dialog.open = True
+        self.page.update()
+        
+        def update_progress(message: str, percent: Optional[float] = None, time_remaining: Optional[str] = None):
+            """Update progress dialog with message, percentage, and time remaining."""
+            try:
+                if progress_dialog.open:
+                    # Update message
+                    progress_text.value = message
+                    
+                    # Update progress bar and percentage
+                    if percent is not None:
+                        progress_bar.value = percent / 100.0
+                        progress_percent.value = f"{percent:.1f}%"
+                    else:
+                        # Indeterminate progress
+                        progress_bar.value = None  # Shows indeterminate progress
+                        progress_percent.value = ""
+                    
+                    # Update time remaining - only update if we have a value
+                    # Keep previous value if None to prevent flickering
+                    if time_remaining:
+                        time_remaining_text.value = f"⏱️ {time_remaining} remaining"
+                    
+                    self.page.update()
+            except Exception as e:
+                logger.debug(f"Could not update progress: {e}")
+        
+        # Setup Ollama with progress callback
+        try:
+            success, message = self.pdf_processor.ollama_setup.setup_ollama(progress_callback=update_progress)
+            if success:
+                self.pdf_processor.ollama_available = self.pdf_processor._test_ollama_connection()
+                progress_text.value = "✅ AI Knowledge Extraction ready!"
+                progress_bar.value = 1.0
+                progress_percent.value = "100%"
+                time_remaining_text.value = ""
+                progress_dialog.actions = [
+                    ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                ]
+            else:
+                progress_text.value = f"❌ {message}"
+                progress_bar.value = None
+                progress_percent.value = ""
+                time_remaining_text.value = ""
+                progress_dialog.actions = [
+                    ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                ]
+        except Exception as e:
+            logger.error(f"Error setting up Ollama: {e}")
+            progress_text.value = f"❌ Error: {str(e)}"
+            progress_bar.value = None
+            progress_percent.value = ""
+            time_remaining_text.value = ""
+            progress_dialog.actions = [
+                ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+            ]
+        
+        self.page.update()
+    
+    def _initialize_pdf_processor(self):
+        """Initialize PDF processor after GUI is ready (for progress callbacks)."""
+        if self.pdf_processor is None:
+            # Check if Ollama needs setup BEFORE initializing PDFProcessor
+            # This allows us to show progress dialog immediately
+            temp_ollama_setup = None
+            try:
+                from advanced_vault.gui.ollama_setup import OllamaSetup
+                temp_ollama_setup = OllamaSetup()
+                needs_setup = not temp_ollama_setup.is_ollama_installed() or not temp_ollama_setup.is_ollama_running() or not temp_ollama_setup.is_model_available()
+            except Exception:
+                needs_setup = True
+            
+            # Create progress dialog if setup is needed
+            progress_dialog = None
+            progress_text = None
+            progress_percent = None
+            time_remaining_text = None
+            progress_bar = None
+            
+            if needs_setup:
+                # Create progress dialog with progress bar
+                progress_text = ft.Text("Checking AI Knowledge Extraction...")
+                progress_percent = ft.Text("0%", size=14, weight=ft.FontWeight.W_500, color=SleekTheme.ACCENT_PRIMARY)
+                time_remaining_text = ft.Text("", size=12, color=SleekTheme.TEXT_MUTED)
+                progress_bar = ft.ProgressBar(width=400, value=0.0, color=SleekTheme.ACCENT_PRIMARY, bgcolor=SleekTheme.BG_ELEVATED)
+                
+                progress_dialog = ft.AlertDialog(
+                    modal=True,
+                    title=ft.Text("🔧 Setting up AI Knowledge Extraction"),
+                    content=ft.Column(
+                        [
+                            progress_text,
+                            ft.Container(height=12),
+                            progress_bar,
+                            ft.Container(height=8),
+                            ft.Row(
+                                [
+                                    progress_percent,
+                                    ft.Container(width=16),
+                                    time_remaining_text,
+                                ],
+                                spacing=0,
+                            ),
+                        ],
+                        tight=True,
+                        width=400,
+                    ),
+                    actions=[],
+                )
+                
+                self.page.overlay.append(progress_dialog)
+                progress_dialog.open = True
+                self.page.update()
+            
+            def progress_callback(message: str, percent: Optional[float] = None, time_remaining: Optional[str] = None):
+                """Update progress in snackbar, component status, and dialog."""
+                try:
+                    # Update progress dialog if it exists
+                    if progress_dialog and progress_dialog.open and progress_text and progress_bar and progress_percent:
+                        try:
+                            progress_text.value = message
+                            
+                            if percent is not None:
+                                progress_bar.value = percent / 100.0
+                                progress_percent.value = f"{percent:.1f}%"
+                            else:
+                                progress_bar.value = None  # Indeterminate
+                                progress_percent.value = ""
+                            
+                            if time_remaining_text:
+                                if time_remaining:
+                                    time_remaining_text.value = f"⏱️ {time_remaining} remaining"
+                                # Don't clear the text - keep last value to prevent flickering
+                                # Only update if we have a new value
+                            
+                            self.page.update()
+                        except Exception as e:
+                            logger.debug(f"Could not update progress dialog: {e}")
+                    
+                    # Update component status
+                    if "Instalowanie" in message or "Installing" in message:
+                        self._component_status["ocr"]["status"] = "installing"
+                        self._component_status["ocr"]["message"] = "Installing AI Knowledge Extraction..."
+                    elif "Pobieranie" in message or "Downloading" in message or "pull" in message.lower():
+                        self._component_status["ocr"]["status"] = "installing"
+                        # Include percentage in message if available
+                        if percent is not None:
+                            self._component_status["ocr"]["message"] = f"Downloading AI models... {percent:.1f}%"
+                            if time_remaining:
+                                self._component_status["ocr"]["message"] += f" ({time_remaining} remaining)"
+                        else:
+                            self._component_status["ocr"]["message"] = "Downloading AI models..."
+                    elif "Uruchamianie" in message or "Starting" in message:
+                        self._component_status["ocr"]["status"] = "installing"
+                        self._component_status["ocr"]["message"] = "Starting AI services..."
+                    elif "SmolDocling" in message:
+                        self._component_status["ocr"]["status"] = "installing"
+                        self._component_status["ocr"]["message"] = "Initializing SmolDocling OCR (~500MB)..."
+                    elif "gotowe" in message.lower() or "ready" in message.lower() or "available" in message.lower():
+                        self._component_status["ocr"]["status"] = "ready"
+                        # Check which OCR engine is being used
+                        if hasattr(self, 'pdf_processor') and self.pdf_processor:
+                            if self.pdf_processor.smoldocling_available:
+                                self._component_status["ocr"]["message"] = "Ready (SmolDocling ~500MB)"
+                            elif self.pdf_processor.ollama_available:
+                                self._component_status["ocr"]["message"] = "Ready (Ollama)"
+                            else:
+                                self._component_status["ocr"]["message"] = "Ready"
+                        else:
+                            self._component_status["ocr"]["message"] = "Ready"
+                    else:
+                        self._component_status["ocr"]["message"] = message
+                    
+                    # Update UI if Settings page is visible
+                    if hasattr(self, 'page') and self.page:
+                        # Update snackbar (with percentage if available)
+                        snackbar_text = f"🔧 {message}"
+                        if percent is not None:
+                            snackbar_text = f"🔧 {message} ({percent:.1f}%)"
+                        if time_remaining:
+                            snackbar_text += f" ⏱️ {time_remaining}"
+                        
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text(snackbar_text),
+                            bgcolor=SleekTheme.ACCENT_PRIMARY,
+                            duration=3000,
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                        
+                        # Refresh Settings if visible (but prevent infinite loop)
+                        # Only refresh if Settings is actually visible and not already refreshing
+                        if (hasattr(self, 'current_view') and self.current_view == "settings" 
+                            and not self._refreshing_settings):
+                            # Use a small delay to prevent rapid refreshes
+                            import threading
+                            def delayed_refresh():
+                                threading.Event().wait(0.5)  # Wait 500ms
+                                if hasattr(self, 'page') and self.page and not self._refreshing_settings:
+                                    try:
+                                        self._refreshing_settings = True
+                                        self.show_settings()
+                                    except Exception:
+                                        pass  # Ignore errors during refresh
+                                    finally:
+                                        self._refreshing_settings = False
+                            
+                            threading.Thread(target=delayed_refresh, daemon=True).start()
+                except Exception:
+                    pass
+            
+            self.pdf_processor = PDFProcessor(
+                auto_setup=True,  # Enable auto-setup now that GUI is ready
+                progress_callback=progress_callback
+            )
+            
+            # Update status based on availability
+            if self.pdf_processor.smoldocling_available:
+                self._component_status["ocr"]["status"] = "ready"
+                self._component_status["ocr"]["message"] = "Ready (SmolDocling ~500MB)"
+            elif self.pdf_processor.ollama_available:
+                self._component_status["ocr"]["status"] = "ready"
+                self._component_status["ocr"]["message"] = "Ready (Ollama)"
+            else:
+                self._component_status["ocr"]["status"] = "checking"
+                self._component_status["ocr"]["message"] = "Setting up..."
+                
+                # Close progress dialog if setup failed
+                if progress_dialog and progress_dialog.open:
+                    progress_text.value = "⚠️ Setup in progress... Check Settings for details."
+                    if progress_bar:
+                        progress_bar.value = None
+                    if progress_percent:
+                        progress_percent.value = ""
+                    if time_remaining_text:
+                        time_remaining_text.value = ""
+                    progress_dialog.actions = [
+                        ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                    ]
+                    self.page.update()
+            
+            # Close progress dialog if OCR is ready
+            if (self.pdf_processor.smoldocling_available or self.pdf_processor.ollama_available) and progress_dialog and progress_dialog.open:
+                progress_text.value = "✅ AI Knowledge Extraction ready!"
+                if progress_bar:
+                    progress_bar.value = 1.0
+                if progress_percent:
+                    progress_percent.value = "100%"
+                if time_remaining_text:
+                    time_remaining_text.value = ""
+                progress_dialog.actions = [
+                    ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                ]
+                self.page.update()
     
     def _is_first_time_user(self) -> bool:
-        """Check if user is first-time (no vault entries)."""
         try:
             if not self.vault:
                 return True
@@ -180,6 +619,9 @@ class VaultApp:
         self.page.clean()
         self.build_ui()
         self.page.update()
+        
+        # Initialize PDF processor after GUI is ready
+        self._initialize_pdf_processor()
     
     def _add_sample_data(self):
         """Add sample data for first-time users."""
@@ -244,15 +686,38 @@ class VaultApp:
 
     def initialize_vault(self):
         """Initialize vault after authentication."""
+        # Show loading indicator if GUI is ready
+        if hasattr(self, 'page') and self.page:
+            try:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("🔐 Inicjalizacja Enclave Vault..."),
+                    bgcolor=SleekTheme.ACCENT_PRIMARY,
+                    duration=3000,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+            except Exception:
+                pass  # Ignore if UI not ready
+        
         # Load or generate master key
         if self.key_path.exists():
             with open(self.key_path, "rb") as f:
                 self.master_key = f.read()
+            logger.info("Loaded existing master key")
         else:
             self.master_key = os.urandom(32)
             with open(self.key_path, "wb") as f:
                 f.write(self.master_key)
             os.chmod(self.key_path, 0o600)
+            logger.info("Generated new master key")
+        
+        # Update progress
+        if hasattr(self, 'page') and self.page:
+            try:
+                self.page.snack_bar.content.value = "🔐 Tworzenie vault..."
+                self.page.update()
+            except Exception:
+                pass
 
         # Initialize vault
         self.vault = HybridVault(
@@ -261,13 +726,36 @@ class VaultApp:
             enable_router_logging=False
         )
         
+        # Initialize folder manager
+        self.folder_manager = FolderManager(self.vault.kv_store)
+        
+        # Update progress
+        if hasattr(self, 'page') and self.page:
+            try:
+                self.page.snack_bar.content.value = "☁️ Konfiguracja synchronizacji..."
+                self.page.update()
+            except Exception:
+                pass
+        
+        # Initialize Supabase client for token refresh
+        supabase_client = None
+        try:
+            supabase_url = os.getenv("SUPABASE_URL")
+            supabase_anon_key = os.getenv("SUPABASE_ANON_KEY")
+            if supabase_url and supabase_anon_key:
+                from supabase import create_client
+                supabase_client = create_client(supabase_url, supabase_anon_key)
+        except Exception as e:
+            logger.warning(f"Failed to create Supabase client for token refresh: {e}")
+        
         # Initialize cloud sync service
         if self.session_data:
             try:
                 self.cloud_sync = CloudSyncService(
                     backend_url=self.backend_url,
                     session_data=self.session_data,
-                    vault=self.vault.kv_store
+                    vault=self.vault.kv_store,
+                    supabase_client=supabase_client
                 )
                 logger.info("Cloud sync service initialized")
             except Exception as e:
@@ -275,16 +763,20 @@ class VaultApp:
                 self.cloud_sync = None
             
             # Initialize Q&A generator and training manager
-            # Note: QAGenerator still uses RunPod directly for now (inference endpoint)
+            # Note: QAGenerator uses Ollama locally (TinyLlama) for Q&A generation
             # TrainingManager uses backend API (backend manages RunPod credentials)
             try:
-                # TODO: QAGenerator should also use backend API
-                runpod_endpoint = os.getenv("RUNPOD_ENDPOINT_ID")
-                runpod_api_key = os.getenv("RUNPOD_API_KEY")
-                self.qa_generator = QAGenerator(
-                    runpod_endpoint_id=runpod_endpoint,
-                    runpod_api_key=runpod_api_key
-                ) if runpod_endpoint and runpod_api_key else None
+                self.qa_generator = QAGenerator()
+                logger.info("Q&A generator initialized")
+                
+                # Check if Q&A model needs setup
+                if not self.qa_generator.is_qa_model_available():
+                    logger.info("Q&A model (TinyLlama) not available, will setup when needed")
+                    self._component_status["qa"]["status"] = "checking"
+                    self._component_status["qa"]["message"] = "TinyLlama not downloaded"
+                else:
+                    self._component_status["qa"]["status"] = "ready"
+                    self._component_status["qa"]["message"] = "Ready (TinyLlama)"
                 
                 self.training_manager = TrainingManager(
                     backend_url=self.backend_url,
@@ -297,6 +789,8 @@ class VaultApp:
                 logger.error(f"Failed to initialize training services: {e}")
                 self.qa_generator = None
                 self.training_manager = None
+                self._component_status["qa"]["status"] = "error"
+                self._component_status["qa"]["message"] = f"Error: {str(e)}"
 
     def sync_from_cloud(self):
         """Sync entries from cloud on login."""
@@ -328,7 +822,7 @@ class VaultApp:
         self.show_auth_screen()
 
     def check_backend_connectivity(self):
-        """Check backend API connectivity."""
+        """Check Compute Pipeline (backend API) connectivity."""
         # Run in background thread
         def _check():
             try:
@@ -346,40 +840,40 @@ class VaultApp:
             self.last_check = datetime.now()
 
             # Update UI
-            if hasattr(self, 'connectivity_icon'):
-                self.update_connectivity_icon()
+            if hasattr(self, 'compute_pipeline_icon'):
+                self.update_compute_pipeline_icon()
                 self.page.update()
 
         thread = threading.Thread(target=_check, daemon=True)
         thread.start()
 
-    def update_connectivity_icon(self):
-        """Update the connectivity icon based on backend status."""
-        if not hasattr(self, 'connectivity_icon'):
+    def update_compute_pipeline_icon(self):
+        """Update the Compute Pipeline (backend) icon based on status."""
+        if not hasattr(self, 'compute_pipeline_icon'):
             return
         
         if self.backend_status == "connected":
-            self.connectivity_icon.icon = ft.Icons.CLOUD_DONE_ROUNDED
-            self.connectivity_icon.icon_color = ModernTheme.ACCENT_SUCCESS
-            self.connectivity_icon.tooltip = "Backend: Connected ✓"
+            self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
+            self.compute_pipeline_icon.icon_color = ModernTheme.ACCENT_SUCCESS
+            self.compute_pipeline_icon.tooltip = "Compute Pipeline: Connected ✓"
         elif self.backend_status == "disconnected":
-            self.connectivity_icon.icon = ft.Icons.CLOUD_OFF_ROUNDED
-            self.connectivity_icon.icon_color = ModernTheme.ACCENT_ERROR
-            self.connectivity_icon.tooltip = "Backend: Disconnected"
+            self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
+            self.compute_pipeline_icon.icon_color = ModernTheme.ACCENT_ERROR
+            self.compute_pipeline_icon.tooltip = "Compute Pipeline: Disconnected"
         else:
-            self.connectivity_icon.icon = ft.Icons.CLOUD_SYNC_ROUNDED
-            self.connectivity_icon.icon_color = ModernTheme.ACCENT_WARNING
-            self.connectivity_icon.tooltip = "Backend: Checking..."
+            self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
+            self.compute_pipeline_icon.icon_color = ModernTheme.ACCENT_WARNING
+            self.compute_pipeline_icon.tooltip = "Compute Pipeline: Checking..."
 
     def build_ui(self):
         """Build the main UI."""
-        # Create connectivity indicator
-        self.connectivity_icon = ft.IconButton(
-            icon=ft.Icons.CLOUD_SYNC_ROUNDED,
-            icon_color=ModernTheme.TEXT_MUTED,
-            tooltip="Backend: Checking...",
+        # Create Compute Pipeline (backend) connectivity indicator
+        self.compute_pipeline_icon = ft.IconButton(
+            icon=ft.Icons.SCIENCE_ROUNDED,
+            icon_color=SleekTheme.TEXT_MUTED,
+            tooltip="Compute Pipeline: Checking...",
             on_click=lambda _: self.check_backend_connectivity(),
-            icon_size=24
+            icon_size=20
         )
 
         # User info for app bar
@@ -415,7 +909,7 @@ class VaultApp:
                 ft.Container(width=8),
                 ft.VerticalDivider(width=1, color=ModernTheme.BORDER_COLOR),
                 ft.Container(width=8),
-                self.connectivity_icon,
+                self.compute_pipeline_icon,
                 ft.Container(width=8),
                 ft.VerticalDivider(width=1, color=ModernTheme.BORDER_COLOR),
                 ft.Container(width=8),
@@ -423,6 +917,13 @@ class VaultApp:
                     ft.Icons.ADD_CIRCLE_ROUNDED,
                     tooltip="Add Secret",
                     on_click=self.show_add_dialog,
+                    icon_size=28,
+                    icon_color=ModernTheme.ACCENT_PRIMARY,
+                ),
+                ft.IconButton(
+                    ft.Icons.CREATE_NEW_FOLDER_ROUNDED,
+                    tooltip="New Folder",
+                    on_click=lambda _: self._show_create_folder_dialog(),
                     icon_size=28,
                     icon_color=ModernTheme.ACCENT_PRIMARY,
                 ),
@@ -446,25 +947,25 @@ class VaultApp:
         # Start initial connectivity check
         self.check_backend_connectivity()
 
-        # Modern search bar
+        # Sleek search bar
         self.search_field = ft.TextField(
             hint_text="Search secrets...",
             prefix_icon=ft.Icons.SEARCH_ROUNDED,
-            border_radius=12,
+            border_radius=8,
             filled=True,
-            bgcolor=ModernTheme.BG_ELEVATED,
-            border_color=ModernTheme.BORDER_COLOR,
-            focused_border_color=ModernTheme.ACCENT_PRIMARY,
-            color=ModernTheme.TEXT_PRIMARY,
-            text_size=14,
+            bgcolor=SleekTheme.BG_ELEVATED,
+            border_color=SleekTheme.BORDER_COLOR,
+            focused_border_color=SleekTheme.ACCENT_PRIMARY,
+            color=SleekTheme.TEXT_PRIMARY,
+            text_size=SleekTheme.FONT_SIZE_BASE,
             on_change=self.on_search_change,
             expand=True,
-            height=48,
+            height=SleekTheme.INPUT_HEIGHT,
         )
 
-        # Modern filter dropdown
+        # Sleek filter dropdown
         self.type_filter = ft.Dropdown(
-            width=150,
+            width=120,
             value="all",
             options=[
                 ft.dropdown.Option("all", "All"),
@@ -472,10 +973,11 @@ class VaultApp:
                 ft.dropdown.Option("knowledge", "Knowledge"),
             ],
             on_change=self.on_filter_change,
-            border_radius=12,
-            bgcolor=ModernTheme.BG_ELEVATED,
-            color=ModernTheme.TEXT_PRIMARY,
-            focused_border_color=ModernTheme.ACCENT_PRIMARY,
+            border_radius=8,
+            bgcolor=SleekTheme.BG_ELEVATED,
+            color=SleekTheme.TEXT_PRIMARY,
+            focused_border_color=SleekTheme.ACCENT_PRIMARY,
+            text_size=SleekTheme.FONT_SIZE_BASE,
         )
 
         # Search row
@@ -484,84 +986,49 @@ class VaultApp:
                 self.search_field,
                 self.type_filter,
             ],
-            spacing=10,
+            spacing=SleekTheme.SPACING_MD,
         )
 
         # Secrets list
         self.secrets_list = ft.Column(
-            spacing=10,
+            spacing=SleekTheme.SPACING_MD,
             scroll=ft.ScrollMode.AUTO,
             expand=True,
         )
 
         # Stats row
-        self.stats_text = ft.Text("", size=12, color=ModernTheme.TEXT_MUTED, weight=ft.FontWeight.W_500)
+        self.stats_text = ft.Text("", size=SleekTheme.FONT_SIZE_XS, color=SleekTheme.TEXT_MUTED, weight=ft.FontWeight.W_500)
 
-        # Modern navigation rail
-        self.nav_rail = ft.NavigationRail(
-            selected_index=0,
-            label_type=ft.NavigationRailLabelType.ALL,
-            min_width=80,
-            min_extended_width=200,
-            bgcolor=ModernTheme.BG_SECONDARY,
-            destinations=[
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.KEY_OUTLINED,
-                    selected_icon=ft.Icons.KEY_ROUNDED,
-                    label="Secrets",
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.LIGHTBULB_OUTLINED,
-                    selected_icon=ft.Icons.LIGHTBULB_ROUNDED,
-                    label="Knowledge",
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.TRAIN_OUTLINED,
-                    selected_icon=ft.Icons.TRAIN_ROUNDED,
-                    label="Training",
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.BAR_CHART_OUTLINED,
-                    selected_icon=ft.Icons.BAR_CHART_ROUNDED,
-                    label="Statistics",
-                ),
-                ft.NavigationRailDestination(
-                    icon=ft.Icons.SETTINGS_OUTLINED,
-                    selected_icon=ft.Icons.SETTINGS_ROUNDED,
-                    label="Settings",
-                ),
-            ],
-            on_change=self.on_nav_change,
+        # Modern sidebar navigation
+        self.sidebar = ModernSidebar(
+            on_nav_change=self.on_nav_change,
+            selected_index=0
         )
+        sidebar_container = self.sidebar.build()
 
-        # Main content with modern styling
+        # Main content with sleek styling
         main_content = ft.Container(
             content=ft.Column(
                 [
                     search_row,
-                    ft.Container(height=8),
-                    ft.Divider(height=1, color=ModernTheme.BORDER_COLOR),
-                    ft.Container(height=8),
+                    ft.Container(height=SleekTheme.SPACING_LG),
                     self.secrets_list,
-                    ft.Container(height=8),
-                    ft.Divider(height=1, color=ModernTheme.BORDER_COLOR),
-                    ft.Container(height=8),
+                    ft.Container(height=SleekTheme.SPACING_LG),
                     self.stats_text,
                 ],
                 spacing=0,
                 expand=True,
             ),
-            padding=ft.padding.all(24),
+            padding=ft.padding.all(SleekTheme.PADDING_XL),
             expand=True,
-            bgcolor=ModernTheme.BG_PRIMARY,
+            bgcolor=SleekTheme.BG_PRIMARY,
         )
 
         # Layout with modern divider
         self.page.add(
             ft.Row(
                 [
-                    self.nav_rail,
-                    ft.VerticalDivider(width=1, color=ModernTheme.BORDER_COLOR),
+                    sidebar_container,
                     main_content,
                 ],
                 spacing=0,
@@ -606,52 +1073,92 @@ class VaultApp:
 
         result = self.vault.kv_store.search(query_filter)
 
-        # Convert EncryptedEntry objects to dicts
+        # Convert EncryptedEntry objects to dicts and group by folder
         entries = []
+        folders_dict = {}  # folder_name -> [entries]
+        root_entries = []  # Entries without folder
+        
         for entry in result:
+            # Skip folder entries themselves
+            if entry.entry_type == EntryType.FOLDER:
+                continue
+            
+            entry_dict = {
+                'id': entry.id,
+                'service': entry.service,
+                'data_type': 'knowledge' if ("knowledge" in entry.tags or "pdf" in entry.tags or "document" in entry.tags) else 'secret',
+                'tags': entry.tags,
+                'timestamp': entry.updated_at.timestamp() if entry.updated_at else 0,
+                'description': entry.description,
+                'folder': entry.folder  # Include folder name
+            }
+            
             # Filter knowledge entries if in knowledge view
             if self.selected_type == "knowledge":
-                # Check if entry has knowledge tag or is marked as knowledge
-                # Knowledge entries are typically tagged with "pdf", "document", or "knowledge"
-                if "knowledge" in entry.tags or "pdf" in entry.tags or "document" in entry.tags:
-                    entries.append({
-                        'id': entry.id,
-                        'service': entry.service,
-                        'data_type': 'knowledge',
-                        'tags': entry.tags,
-                        'timestamp': entry.updated_at.timestamp() if entry.updated_at else 0,
-                        'description': entry.description
-                    })
-            else:
-                entries.append({
-                    'id': entry.id,
-                    'service': entry.service,
-                    'data_type': 'secret',  # All KV entries are secrets for now
-                    'tags': entry.tags,
-                    'timestamp': entry.updated_at.timestamp() if entry.updated_at else 0,
-                    'description': entry.description
-                })
+                if entry_dict['data_type'] == 'knowledge':
+                    if entry.folder:
+                        if entry.folder not in folders_dict:
+                            folders_dict[entry.folder] = []
+                        folders_dict[entry.folder].append(entry_dict)
+                    else:
+                        root_entries.append(entry_dict)
+            elif self.selected_type == "secret":
+                if entry_dict['data_type'] == 'secret':
+                    if entry.folder:
+                        if entry.folder not in folders_dict:
+                            folders_dict[entry.folder] = []
+                        folders_dict[entry.folder].append(entry_dict)
+                    else:
+                        root_entries.append(entry_dict)
+            else:  # "all"
+                if entry.folder:
+                    if entry.folder not in folders_dict:
+                        folders_dict[entry.folder] = []
+                    folders_dict[entry.folder].append(entry_dict)
+                else:
+                    root_entries.append(entry_dict)
 
         # Filter by search query
         if self.search_query:
-            entries = [
-                e for e in entries
-                if self.search_query.lower() in e.get('service', '').lower()
-                or self.search_query.lower() in ' '.join(e.get('tags', [])).lower()
-            ]
+            def filter_entry(e):
+                return (
+                    self.search_query.lower() in e.get('service', '').lower()
+                    or self.search_query.lower() in ' '.join(e.get('tags', [])).lower()
+                )
+            
+            root_entries = [e for e in root_entries if filter_entry(e)]
+            for folder_name in list(folders_dict.keys()):
+                folders_dict[folder_name] = [e for e in folders_dict[folder_name] if filter_entry(e)]
+                if not folders_dict[folder_name]:
+                    del folders_dict[folder_name]
 
-        # Sort by timestamp (newest first)
-        entries.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+        # Sort entries by timestamp (newest first)
+        root_entries.sort(key=lambda x: x.get('timestamp', 0), reverse=True)
+        for folder_name in folders_dict:
+            folders_dict[folder_name].sort(key=lambda x: x.get('timestamp', 0), reverse=True)
 
-        # Create cards
-        if entries:
-            for entry in entries:
+        # Create UI: folders first, then root entries
+        if folders_dict or root_entries:
+            # Add folder sections
+            if self.folder_manager:
+                folders = self.folder_manager.list_folders()
+                folder_names = {f["name"]: f for f in folders}
+                
+                for folder_name in sorted(folders_dict.keys()):
+                    if folder_name in folder_names:
+                        folder_info = folder_names[folder_name]
+                        # Create collapsible folder section
+                        folder_section = self._create_folder_section(folder_info, folders_dict[folder_name])
+                        self.secrets_list.controls.append(folder_section)
+            
+            # Add root entries
+            for entry in root_entries:
                 card = self.create_secret_card(entry)
                 self.secrets_list.controls.append(card)
         else:
             # Only show empty message if not in knowledge view (knowledge view has its own header)
             if self.selected_type != "knowledge":
-                # Modern empty state
+                # Sleek empty state
                 self.secrets_list.controls.append(
                     ft.Container(
                         content=ft.Column(
@@ -659,41 +1166,39 @@ class VaultApp:
                                 ft.Container(
                                     content=ft.Icon(
                                         ft.Icons.LOCK_OPEN_ROUNDED,
-                                        size=80,
-                                        color=ModernTheme.ACCENT_PRIMARY,
+                                        size=48,
+                                        color=SleekTheme.TEXT_MUTED,
                                     ),
-                                    padding=20,
-                                    border_radius=20,
-                                    bgcolor=ModernTheme.BG_ELEVATED,
+                                    padding=16,
+                                    border_radius=12,
+                                    bgcolor=SleekTheme.BG_ELEVATED,
                                 ),
-                                ft.Container(height=24),
+                                ft.Container(height=SleekTheme.SPACING_LG),
                                 ft.Text(
                                     "Your vault is empty",
-                                    size=24,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=ModernTheme.TEXT_PRIMARY,
+                                    size=SleekTheme.FONT_SIZE_LG,
+                                    weight=ft.FontWeight.W_600,
+                                    color=SleekTheme.TEXT_PRIMARY,
                                 ),
-                                ft.Container(height=8),
+                                ft.Container(height=SleekTheme.SPACING_SM),
                                 ft.Text(
                                     "Add your first secret to get started",
-                                    size=14,
-                                    color=ModernTheme.TEXT_MUTED,
+                                    size=SleekTheme.FONT_SIZE_BASE,
+                                    color=SleekTheme.TEXT_SECONDARY,
+                                    text_align=ft.TextAlign.CENTER,
                                 ),
-                                ft.Container(height=24),
-                                ft.Container(
-                                    content=ft.ElevatedButton(
-                                        "Add Secret",
-                                        icon=ft.Icons.ADD_CIRCLE_ROUNDED,
-                                        style=ft.ButtonStyle(
-                                            bgcolor=ModernTheme.ACCENT_PRIMARY,
-                                            color="white",
-                                            shape=ft.RoundedRectangleBorder(radius=12),
-                                            padding=ft.padding.symmetric(horizontal=24, vertical=12),
-                                        ),
-                                        on_click=self.show_add_dialog,
+                                ft.Container(height=SleekTheme.SPACING_XL),
+                                ft.ElevatedButton(
+                                    "Add Secret",
+                                    icon=ft.Icons.ADD_ROUNDED,
+                                    on_click=self.show_add_dialog,
+                                    style=ft.ButtonStyle(
+                                        bgcolor=SleekTheme.ACCENT_PRIMARY,
+                                        color="white",
+                                        shape=ft.RoundedRectangleBorder(radius=8),
+                                        padding=ft.padding.symmetric(horizontal=SleekTheme.PADDING_LG, vertical=SleekTheme.PADDING_SM),
                                     ),
-                                    gradient=ModernTheme.get_gradient(ModernTheme.GRADIENT_PRIMARY),
-                                    border_radius=12,
+                                    height=SleekTheme.BUTTON_HEIGHT_MD,
                                 ),
                             ],
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -713,23 +1218,22 @@ class VaultApp:
         self.page.update()
 
     def create_secret_card(self, entry):
-        """Create a modern card with elevation and hover effects."""
+        """Create a sleek card with compact styling."""
         service = entry.get('service', 'Unknown')
         data_type = entry.get('data_type', 'secret')
         tags = entry.get('tags', [])
 
-        # Modern icon with gradient background
-        icon_colors = ModernTheme.GRADIENT_PRIMARY if data_type == 'secret' else ModernTheme.GRADIENT_SECONDARY
+        # Compact icon with subtle background
         icon_bg = ft.Container(
             content=ft.Icon(
                 ft.Icons.KEY_ROUNDED if data_type == 'secret' else ft.Icons.LIGHTBULB_ROUNDED,
-                color=ModernTheme.TEXT_PRIMARY,
-                size=24
+                color=SleekTheme.TEXT_PRIMARY,
+                size=SleekTheme.ICON_SIZE_SM
             ),
-            width=48,
-            height=48,
-            border_radius=12,
-            gradient=ModernTheme.get_gradient(icon_colors),
+            width=36,
+            height=36,
+            border_radius=8,
+            bgcolor=SleekTheme.BG_ELEVATED,
             alignment=ft.alignment.center,
         )
 
@@ -746,10 +1250,10 @@ class VaultApp:
         status_badge = None
         if training_status:
             status_colors = {
-                "pending": ModernTheme.ACCENT_WARNING,
-                "training": ModernTheme.ACCENT_PRIMARY,
-                "completed": ModernTheme.ACCENT_SUCCESS,
-                "failed": ModernTheme.ACCENT_ERROR
+                "pending": SleekTheme.ACCENT_WARNING,
+                "training": SleekTheme.ACCENT_PRIMARY,
+                "completed": SleekTheme.ACCENT_SUCCESS,
+                "failed": SleekTheme.ACCENT_ERROR
             }
             status_icons = {
                 "pending": ft.Icons.HOURGLASS_EMPTY_ROUNDED,
@@ -757,38 +1261,38 @@ class VaultApp:
                 "completed": ft.Icons.CHECK_CIRCLE_ROUNDED,
                 "failed": ft.Icons.ERROR_ROUNDED
             }
-            status_color = status_colors.get(training_status, ModernTheme.TEXT_MUTED)
+            status_color = status_colors.get(training_status, SleekTheme.TEXT_MUTED)
             status_icon = status_icons.get(training_status, ft.Icons.INFO_ROUNDED)
             
             status_badge = ft.Container(
                 content=ft.Row(
                     [
-                        ft.Icon(status_icon, size=12, color=status_color),
+                        ft.Icon(status_icon, size=10, color=status_color),
                         ft.Text(
                             training_status.title(),
-                            size=10,
+                            size=SleekTheme.FONT_SIZE_XS,
                             weight=ft.FontWeight.W_500,
                             color=status_color
                         )
                     ],
-                    spacing=4,
+                    spacing=3,
                     tight=True
                 ),
-                bgcolor=status_color + "20",  # 20% opacity
-                padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                border_radius=8,
-                border=ft.border.all(1, status_color + "40"),
+                bgcolor=status_color + "15",
+                padding=ft.padding.symmetric(horizontal=6, vertical=3),
+                border_radius=6,
+                border=ft.border.all(1, status_color + "30"),
             )
 
-        # Modern tag chips (exclude training status tags)
+        # Sleek tag chips
         regular_tags = [t for t in tags if not t.startswith("training_")]
         tag_chips = [
             ft.Container(
-                content=ft.Text(tag, size=10, weight=ft.FontWeight.W_500, color=ModernTheme.TEXT_SECONDARY),
-                bgcolor=ModernTheme.BG_HOVER,
-                padding=ft.padding.symmetric(horizontal=8, vertical=4),
-                border_radius=8,
-                border=ft.border.all(1, ModernTheme.BORDER_COLOR),
+                content=ft.Text(tag, size=SleekTheme.FONT_SIZE_XS, weight=ft.FontWeight.W_500, color=SleekTheme.TEXT_SECONDARY),
+                bgcolor=SleekTheme.BG_HOVER,
+                padding=ft.padding.symmetric(horizontal=6, vertical=3),
+                border_radius=6,
+                border=ft.border.all(1, SleekTheme.BORDER_COLOR),
             )
             for tag in regular_tags[:3]  # Show max 3 tags
         ]
@@ -798,13 +1302,14 @@ class VaultApp:
         if status_badge:
             tag_row_items.insert(0, status_badge)
 
-        # Build action buttons with modern styling
+        # Build action buttons with sleek styling
         action_buttons = [
             ft.IconButton(
                 ft.Icons.VISIBILITY_ROUNDED,
                 tooltip="View",
                 on_click=lambda _, e=entry: self.view_secret(e),
-                icon_color=ModernTheme.TEXT_SECONDARY,
+                icon_color=SleekTheme.TEXT_SECONDARY,
+                icon_size=SleekTheme.ICON_SIZE_SM,
             ),
         ]
         
@@ -815,7 +1320,8 @@ class VaultApp:
                     ft.Icons.TRAIN_ROUNDED,
                     tooltip="Train Model",
                     on_click=lambda _, e=entry: self._offer_training_from_entry(e),
-                    icon_color=ModernTheme.ACCENT_WARNING,
+                    icon_color=SleekTheme.ACCENT_WARNING,
+                    icon_size=SleekTheme.ICON_SIZE_SM,
                 )
             )
         
@@ -824,46 +1330,46 @@ class VaultApp:
                 ft.Icons.DELETE_OUTLINE_ROUNDED,
                 tooltip="Delete",
                 on_click=lambda _, e=entry: self.delete_secret(e),
-                icon_color=ModernTheme.ACCENT_ERROR,
+                icon_color=SleekTheme.ACCENT_ERROR,
+                icon_size=SleekTheme.ICON_SIZE_SM,
             )
         )
 
-        # Modern card with elevation
+        # Sleek card
         return ft.Container(
-            content=ft.Card(
-                content=ft.Container(
-                    content=ft.Row(
-                        [
-                            icon_bg,
-                            ft.Container(width=16),  # Spacing
-                            ft.Column(
-                                [
-                                    ft.Text(
-                                        service,
-                                        weight=ft.FontWeight.BOLD,
-                                        size=16,
-                                        color=ModernTheme.TEXT_PRIMARY
-                                    ),
-                                    ft.Container(height=6),
-                                    ft.Row(tag_row_items, spacing=6) if tag_row_items else ft.Container(),
-                                ],
-                                spacing=0,
-                                expand=True,
-                            ),
-                            ft.Row(
-                                action_buttons,
-                                spacing=4,
-                            ),
-                        ],
-                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
-                    ),
-                    padding=20,
+            content=ft.Container(
+                content=ft.Row(
+                    [
+                        icon_bg,
+                        ft.Container(width=SleekTheme.SPACING_MD),
+                        ft.Column(
+                            [
+                                ft.Text(
+                                    service,
+                                    weight=ft.FontWeight.W_600,
+                                    size=SleekTheme.FONT_SIZE_MD,
+                                    color=SleekTheme.TEXT_PRIMARY
+                                ),
+                                ft.Container(height=4),
+                                ft.Row(tag_row_items, spacing=SleekTheme.SPACING_XS) if tag_row_items else ft.Container(),
+                            ],
+                            spacing=0,
+                            expand=True,
+                        ),
+                        ft.Row(
+                            action_buttons,
+                            spacing=SleekTheme.SPACING_XS,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
-                elevation=4,
-                color=ModernTheme.BG_ELEVATED,
+                padding=SleekTheme.CARD_PADDING,
+                bgcolor=SleekTheme.BG_ELEVATED,
+                border_radius=SleekTheme.CARD_BORDER_RADIUS,
+                border=ft.border.all(1, SleekTheme.BORDER_COLOR),
             ),
-            margin=ft.margin.only(bottom=12),
-            animate=ft.Animation(300, ft.AnimationCurve.EASE_OUT),
+            margin=ft.margin.only(bottom=SleekTheme.SPACING_MD),
+            animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
 
     def show_add_dialog(self, e):
@@ -916,6 +1422,25 @@ class VaultApp:
                 ]),
                 value="secret"
             )
+            
+            # Folder dropdown (if folders exist)
+            folder_dropdown = None
+            if self.folder_manager:
+                folders = self.folder_manager.list_folders()
+                if folders:
+                    folder_options = [ft.dropdown.Option("", "None (Root)")]
+                    for folder in folders:
+                        folder_options.append(ft.dropdown.Option(folder["name"], folder["name"]))
+                    
+                    folder_dropdown = ft.Dropdown(
+                        label="Folder (optional)",
+                        options=folder_options,
+                        value="",  # Default to root
+                        border_radius=8,
+                        bgcolor=ModernTheme.BG_ELEVATED,
+                        border_color=ModernTheme.BORDER_COLOR,
+                        focused_border_color=ModernTheme.ACCENT_PRIMARY,
+                    )
 
             def close_dialog():
                 if dialog:
@@ -931,14 +1456,29 @@ class VaultApp:
 
                 # Parse tags
                 tags = [t.strip() for t in tags_field.value.split(',')] if tags_field.value else []
+                
+                # Get folder name
+                folder_name = folder_dropdown.value if folder_dropdown and folder_dropdown.value else None
+                
+                # If folder is specified, check if it's unlocked
+                if folder_name and self.folder_manager:
+                    if not self.folder_manager.is_folder_unlocked(folder_name):
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text(f"⚠️ Folder '{folder_name}' is locked. Please unlock it first."),
+                            bgcolor=ModernTheme.ACCENT_WARNING,
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                        return
 
                 # Store in vault
-                entry_id = self.vault.store(
-                    content=content_field.value,
-                    data_type=type_radio.value,
+                entry_id = self.vault.kv_store.put(
                     service=service_field.value,
+                    secret_value=content_field.value,
+                    entry_type=EntryType.SECRET if type_radio.value == "secret" else EntryType.OTHER,
                     tags=tags,
-                    description=description_field.value or None
+                    description=description_field.value or None,
+                    folder=folder_name
                 )
 
                 # Sync to cloud in background (non-critical)
@@ -959,16 +1499,21 @@ class VaultApp:
                 close_dialog()
                 self.load_secrets()
 
-            logger.debug("Creating AlertDialog")
-            # Create dialog content column with all fields - remove scroll, add width
+            # Create dialog content column with all fields
+            dialog_fields = [
+                type_radio,
+                service_field,
+                content_field,
+                tags_field,
+            ]
+            
+            if folder_dropdown:
+                dialog_fields.append(folder_dropdown)
+            
+            dialog_fields.append(description_field)
+            
             dialog_content = ft.Column(
-                [
-                    type_radio,
-                    service_field,
-                    content_field,
-                    tags_field,
-                    description_field,
-                ],
+                dialog_fields,
                 spacing=15,
                 tight=True,
                 width=500,
@@ -1044,20 +1589,95 @@ class VaultApp:
 
         content = result.get('result', '')
         data_type = entry.get('data_type', 'secret')
-        tags = ', '.join(entry.get('tags', []))
+        tags = entry.get('tags', [])
         description = entry.get('description', 'None')
+        
+        # Check if this is a PDF entry
+        is_pdf = "pdf" in tags or "document" in tags
+        
+        # Extract file path from description if it's a PDF
+        file_path = None
+        if is_pdf and description:
+            # Look for "Path: " in description
+            if "Path: " in description:
+                path_part = description.split("Path: ")[1].split(" | ")[0] if " | " in description else description.split("Path: ")[1]
+                file_path = path_part.strip()
+        
+        # Check if file still exists
+        file_exists = file_path and Path(file_path).exists() if file_path else False
+        
+        # Build content widget
+        if is_pdf and file_exists:
+            # PDF preview mode
+            content_widgets = [
+                ft.Text(
+                    f"📄 PDF Document",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=ModernTheme.TEXT_PRIMARY,
+                ),
+                ft.Text(
+                    f"File Path: {file_path}",
+                    size=12,
+                    color=ModernTheme.TEXT_MUTED,
+                    selectable=True,
+                ),
+                ft.Container(height=12),
+                ft.ElevatedButton(
+                    "📖 Open PDF",
+                    icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
+                    on_click=lambda _: self._open_pdf_file(file_path),
+                    style=ft.ButtonStyle(
+                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                        color="white",
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                ),
+                ft.Container(height=8),
+                ft.Text(
+                    "Content (Base64 encoded)",
+                    size=12,
+                    color=ModernTheme.TEXT_MUTED,
+                    weight=ft.FontWeight.W_500,
+                ),
+                ft.TextField(
+                    value=content[:200] + "..." if len(content) > 200 else content,
+                    multiline=True,
+                    read_only=True,
+                    min_lines=3,
+                    max_lines=8,
+                    bgcolor=ModernTheme.BG_ELEVATED,
+                    border_color=ModernTheme.BORDER_COLOR,
+                    color=ModernTheme.TEXT_PRIMARY,
+                    border_radius=8,
+                ),
+            ]
+        else:
+            # Regular content mode
+            content_widgets = [
+                ft.TextField(
+                    value=content,
+                    multiline=True,
+                    read_only=True,
+                    min_lines=3,
+                    max_lines=10,
+                    bgcolor=ModernTheme.BG_ELEVATED,
+                    border_color=ModernTheme.BORDER_COLOR,
+                    color=ModernTheme.TEXT_PRIMARY,
+                    border_radius=8,
+                ),
+            ]
+            
+            if is_pdf and file_path:
+                # File path exists but file doesn't
+                content_widgets.insert(0, ft.Text(
+                    f"⚠️ File not found: {file_path}",
+                    size=12,
+                    color=ModernTheme.ACCENT_WARNING,
+                ))
+                content_widgets.insert(1, ft.Container(height=8))
 
-        content_field = ft.TextField(
-            value=content,
-            multiline=True,
-            read_only=True,
-            min_lines=3,
-            max_lines=10,
-            bgcolor=ModernTheme.BG_ELEVATED,
-            border_color=ModernTheme.BORDER_COLOR,
-            color=ModernTheme.TEXT_PRIMARY,
-            border_radius=8,
-        )
+        content_field = ft.Column(content_widgets, spacing=8)
 
         def copy_to_clipboard(e):
             self.page.set_clipboard(content)
@@ -1084,7 +1704,7 @@ class VaultApp:
                 content=ft.Column(
                     [
                         ft.Text(f"Type: {data_type.title()}", size=12, color=ModernTheme.TEXT_MUTED),
-                        ft.Text(f"Tags: {tags or 'None'}", size=12, color=ModernTheme.TEXT_MUTED),
+                        ft.Text(f"Tags: {', '.join(tags) if tags else 'None'}", size=12, color=ModernTheme.TEXT_MUTED),
                         ft.Text(f"Description: {description}", size=12, color=ModernTheme.TEXT_MUTED),
                         ft.Divider(color=ModernTheme.BORDER_COLOR),
                         content_field,
@@ -1092,7 +1712,7 @@ class VaultApp:
                     spacing=12,
                     tight=True,
                 ),
-                width=500,
+                width=600 if is_pdf else 500,
             ),
             actions=[
                 ft.TextButton(
@@ -1160,6 +1780,334 @@ class VaultApp:
         self.page.overlay.append(dialog)
         dialog.open = True
         self.page.update()
+    
+    def _open_pdf_file(self, file_path: str):
+        """Open PDF file in default system viewer."""
+        import subprocess
+        import platform
+        
+        try:
+            if platform.system() == "Darwin":  # macOS
+                subprocess.run(["open", file_path], check=True)
+            elif platform.system() == "Windows":
+                os.startfile(file_path)
+            else:  # Linux
+                subprocess.run(["xdg-open", file_path], check=True)
+        except Exception as e:
+            logger.error(f"Failed to open PDF: {e}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Failed to open PDF: {str(e)}"),
+                bgcolor=ModernTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+    
+    def _create_folder_section(self, folder_info: dict, entries: list) -> ft.Container:
+        """Create a collapsible folder section."""
+        folder_name = folder_info["name"]
+        is_unlocked = folder_info.get("is_unlocked", False)
+        has_password = folder_info.get("has_password", False)
+        
+        # Track expanded state
+        is_expanded_ref = {"value": is_unlocked}  # Start expanded if unlocked
+        
+        # Folder header
+        def toggle_folder(e):
+            if not is_unlocked and has_password:
+                # Need to unlock folder first
+                self._show_unlock_folder_dialog(folder_name)
+                return
+            
+            is_expanded_ref["value"] = not is_expanded_ref["value"]
+            
+            # Update icon and visibility
+            if is_expanded_ref["value"]:
+                expand_icon.icon = ft.Icons.EXPAND_LESS_ROUNDED
+                entries_container.visible = True
+            else:
+                expand_icon.icon = ft.Icons.EXPAND_MORE_ROUNDED
+                entries_container.visible = False
+            
+            self.page.update()
+        
+        expand_icon = ft.Icon(
+            ft.Icons.EXPAND_LESS_ROUNDED if is_expanded_ref["value"] else ft.Icons.EXPAND_MORE_ROUNDED,
+            size=SleekTheme.ICON_SIZE_SM,
+            color=SleekTheme.TEXT_SECONDARY,
+        )
+        
+        lock_icon = None
+        if has_password:
+            if is_unlocked:
+                lock_icon = ft.Icon(
+                    ft.Icons.LOCK_OPEN_ROUNDED,
+                    size=SleekTheme.ICON_SIZE_XS,
+                    color=SleekTheme.ACCENT_SUCCESS,
+                )
+            else:
+                lock_icon = ft.Icon(
+                    ft.Icons.LOCK_ROUNDED,
+                    size=SleekTheme.ICON_SIZE_XS,
+                    color=SleekTheme.ACCENT_WARNING,
+                )
+        
+        folder_header = ft.Container(
+            content=ft.Row(
+                [
+                    expand_icon,
+                    ft.Icon(
+                        ft.Icons.FOLDER_ROUNDED,
+                        size=SleekTheme.ICON_SIZE_SM,
+                        color=SleekTheme.ACCENT_PRIMARY,
+                    ),
+                    ft.Text(
+                        folder_name,
+                        weight=ft.FontWeight.W_600,
+                        size=SleekTheme.FONT_SIZE_MD,
+                        color=SleekTheme.TEXT_PRIMARY,
+                    ),
+                    lock_icon,
+                    ft.Container(width=SleekTheme.SPACING_SM),
+                    ft.Text(
+                        f"({len(entries)} items)",
+                        size=SleekTheme.FONT_SIZE_XS,
+                        color=SleekTheme.TEXT_MUTED,
+                    ),
+                ],
+                spacing=SleekTheme.SPACING_SM,
+            ),
+            padding=SleekTheme.PADDING_SM,
+            bgcolor=SleekTheme.BG_ELEVATED,
+            border_radius=SleekTheme.CARD_BORDER_RADIUS,
+            on_click=toggle_folder,
+            border=ft.border.all(1, SleekTheme.BORDER_COLOR),
+        )
+        
+        # Entries container (initially visible if unlocked)
+        entries_container = ft.Container(
+            content=ft.Column(
+                [self.create_secret_card(entry) for entry in entries],
+                spacing=SleekTheme.SPACING_XS,
+            ),
+            padding=ft.padding.only(left=SleekTheme.PADDING_LG, top=SleekTheme.PADDING_SM),
+            visible=is_expanded_ref["value"],
+        )
+        
+        return ft.Container(
+            content=ft.Column(
+                [folder_header, entries_container],
+                spacing=0,
+            ),
+            margin=ft.margin.only(bottom=SleekTheme.SPACING_MD),
+        )
+    
+    def _show_unlock_folder_dialog(self, folder_name: str):
+        """Show dialog to unlock password-protected folder."""
+        password_field = ft.TextField(
+            label="Folder Password",
+            password=True,
+            border_radius=8,
+            bgcolor=ModernTheme.BG_ELEVATED,
+            border_color=ModernTheme.BORDER_COLOR,
+            focused_border_color=ModernTheme.ACCENT_PRIMARY,
+            autofocus=True,
+        )
+        
+        def unlock_folder(e):
+            password = password_field.value
+            if not password:
+                password_field.error_text = "Password required"
+                self.page.update()
+                return
+            
+            if self.folder_manager.unlock_folder(folder_name, password):
+                dialog.open = False
+                self.page.update()
+                
+                # Refresh view
+                self.load_secrets()
+                
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"✅ Folder '{folder_name}' unlocked"),
+                    bgcolor=ModernTheme.ACCENT_SUCCESS,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+            else:
+                password_field.error_text = "Invalid password"
+                password_field.value = ""
+                self.page.update()
+        
+        def close_dialog():
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text(
+                f"🔒 Unlock Folder",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=ModernTheme.TEXT_PRIMARY,
+            ),
+            bgcolor=ModernTheme.BG_ELEVATED,
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            f"Folder '{folder_name}' is password protected.",
+                            size=14,
+                            color=ModernTheme.TEXT_SECONDARY,
+                        ),
+                        ft.Container(height=12),
+                        password_field,
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+                width=400,
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cancel",
+                    on_click=lambda _: close_dialog(),
+                    style=ft.ButtonStyle(color=ModernTheme.TEXT_SECONDARY),
+                ),
+                ft.ElevatedButton(
+                    "Unlock",
+                    icon=ft.Icons.LOCK_OPEN_ROUNDED,
+                    style=ft.ButtonStyle(
+                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                        color="white",
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                    on_click=unlock_folder
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _show_create_folder_dialog(self):
+        """Show dialog to create a new folder."""
+        folder_name_field = ft.TextField(
+            label="Folder Name",
+            border_radius=8,
+            bgcolor=ModernTheme.BG_ELEVATED,
+            border_color=ModernTheme.BORDER_COLOR,
+            focused_border_color=ModernTheme.ACCENT_PRIMARY,
+            autofocus=True,
+        )
+        
+        password_field = ft.TextField(
+            label="Password (optional)",
+            password=True,
+            border_radius=8,
+            bgcolor=ModernTheme.BG_ELEVATED,
+            border_color=ModernTheme.BORDER_COLOR,
+            focused_border_color=ModernTheme.ACCENT_PRIMARY,
+            hint_text="Leave empty for no password",
+        )
+        
+        description_field = ft.TextField(
+            label="Description (optional)",
+            multiline=True,
+            border_radius=8,
+            bgcolor=ModernTheme.BG_ELEVATED,
+            border_color=ModernTheme.BORDER_COLOR,
+            focused_border_color=ModernTheme.ACCENT_PRIMARY,
+        )
+        
+        def create_folder(e):
+            folder_name = folder_name_field.value.strip()
+            if not folder_name:
+                folder_name_field.error_text = "Folder name required"
+                self.page.update()
+                return
+            
+            password = password_field.value if password_field.value else None
+            description = description_field.value if description_field.value else None
+            
+            try:
+                self.folder_manager.create_folder(
+                    folder_name=folder_name,
+                    password=password,
+                    description=description
+                )
+                
+                dialog.open = False
+                self.page.update()
+                
+                # Refresh view
+                self.load_secrets()
+                
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"✅ Folder '{folder_name}' created"),
+                    bgcolor=ModernTheme.ACCENT_SUCCESS,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+            except ValueError as ve:
+                folder_name_field.error_text = str(ve)
+                self.page.update()
+            except Exception as ex:
+                logger.error(f"Failed to create folder: {ex}")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Failed to create folder: {str(ex)}"),
+                    bgcolor=ModernTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+        
+        def close_dialog():
+            dialog.open = False
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text(
+                "📁 Create Folder",
+                size=20,
+                weight=ft.FontWeight.BOLD,
+                color=ModernTheme.TEXT_PRIMARY,
+            ),
+            bgcolor=ModernTheme.BG_ELEVATED,
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        folder_name_field,
+                        password_field,
+                        description_field,
+                    ],
+                    spacing=12,
+                    tight=True,
+                ),
+                width=400,
+            ),
+            actions=[
+                ft.TextButton(
+                    "Cancel",
+                    on_click=lambda _: close_dialog(),
+                    style=ft.ButtonStyle(color=ModernTheme.TEXT_SECONDARY),
+                ),
+                ft.ElevatedButton(
+                    "Create",
+                    icon=ft.Icons.ADD_ROUNDED,
+                    style=ft.ButtonStyle(
+                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                        color="white",
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                    on_click=create_folder
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
 
     def on_search_change(self, e):
         """Handle search query change with debouncing."""
@@ -1179,10 +2127,18 @@ class VaultApp:
         self.selected_type = e.control.value
         self.load_secrets()
 
-    def on_nav_change(self, e):
+    def on_nav_change(self, index: int):
         """Handle navigation change."""
-        index = e.control.selected_index
-
+        # Update sidebar selection
+        self.sidebar.selected_index = index
+        sidebar_container = self.sidebar.build()
+        
+        # Update sidebar in layout
+        layout = self.page.controls[0]  # Get the Row layout
+        if layout and isinstance(layout, ft.Row) and len(layout.controls) > 0:
+            layout.controls[0] = sidebar_container  # Update sidebar
+        
+        # Handle navigation
         if index == 0:  # Secrets
             self.selected_type = "secret"
             self.type_filter.value = "secret"
@@ -1191,13 +2147,259 @@ class VaultApp:
             self.show_knowledge_view()
         elif index == 2:  # Training
             self.show_training_view()
-        elif index == 3:  # Statistics
+        elif index == 3:  # Activity
+            self.show_activity_view()
+        elif index == 4:  # Statistics
             self.show_statistics()
-        elif index == 4:  # Settings
+        elif index == 5:  # Settings
             self.show_settings()
+        
+        self.page.update()
+
+    def show_activity_view(self):
+        """Show MCP access activity log."""
+        self.current_view = "activity"
+        self.secrets_list.controls.clear()
+        
+        # Initialize activity logger
+        activity_logger = ActivityLogger(vault_path=str(self.vault_path))
+        
+        # Get recent activity
+        activities = activity_logger.get_recent_activity(limit=50)
+        
+        # Build activity view
+        activity_items = [
+            ft.Text(
+                "📋 Access Activity",
+                size=24,
+                weight=ft.FontWeight.BOLD,
+                color=ModernTheme.TEXT_PRIMARY,
+            ),
+            ft.Text(
+                "Recent vault access from Claude Desktop and other MCP clients",
+                size=14,
+                color=ModernTheme.TEXT_SECONDARY,
+            ),
+            ft.Container(height=16),
+        ]
+        
+        if not activities:
+            # Empty state
+            activity_items.append(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Container(
+                                content=ft.Icon(
+                                    ft.Icons.HISTORY_ROUNDED,
+                                    size=60,
+                                    color=ModernTheme.TEXT_MUTED,
+                                ),
+                                padding=20,
+                            ),
+                            ft.Container(height=16),
+                            ft.Text(
+                                "No activity yet",
+                                size=18,
+                                weight=ft.FontWeight.BOLD,
+                                color=ModernTheme.TEXT_PRIMARY,
+                            ),
+                            ft.Text(
+                                "Activity from Claude Desktop will appear here",
+                                size=14,
+                                color=ModernTheme.TEXT_SECONDARY,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=0,
+                    ),
+                    padding=40,
+                    alignment=ft.alignment.center,
+                )
+            )
+        else:
+            # Show activity entries
+            for activity in activities:
+                timestamp = activity.get('timestamp', '')
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    time_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                except:
+                    time_str = timestamp
+                
+                tool_name = activity.get('tool_name', 'unknown')
+                app_name = activity.get('app_name', 'Unknown App')
+                granted = activity.get('granted', False)
+                query_preview = activity.get('query_preview', '')
+                result_summary = activity.get('result_summary', '')
+                
+                # Tool icon mapping
+                tool_icons = {
+                    'vault_store': ft.Icons.ADD_CIRCLE_ROUNDED,
+                    'vault_recall': ft.Icons.SEARCH_ROUNDED,
+                    'vault_list_entries': ft.Icons.LIST_ROUNDED,
+                    'vault_delete': ft.Icons.DELETE_ROUNDED,
+                    'vault_stats': ft.Icons.BAR_CHART_ROUNDED,
+                }
+                tool_icon = tool_icons.get(tool_name, ft.Icons.SETTINGS_ROUNDED)
+                
+                # Status color
+                status_color = ModernTheme.ACCENT_SUCCESS if granted else ModernTheme.ACCENT_ERROR
+                status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if granted else ft.Icons.CANCEL_ROUNDED
+                
+                activity_items.append(
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Container(
+                                            content=ft.Icon(
+                                                tool_icon,
+                                                size=20,
+                                                color=ModernTheme.ACCENT_PRIMARY,
+                                            ),
+                                            width=40,
+                                            height=40,
+                                            border_radius=8,
+                                            bgcolor=ModernTheme.BG_ELEVATED,
+                                            alignment=ft.alignment.center,
+                                        ),
+                                        ft.Container(width=12),
+                                        ft.Column(
+                                            [
+                                                ft.Row(
+                                                    [
+                                                        ft.Text(
+                                                            tool_name.replace('vault_', '').replace('_', ' ').title(),
+                                                            size=14,
+                                                            weight=ft.FontWeight.BOLD,
+                                                            color=ModernTheme.TEXT_PRIMARY,
+                                                        ),
+                                                        ft.Container(width=8),
+                                                        ft.Container(
+                                                            content=ft.Row(
+                                                                [
+                                                                    ft.Icon(status_icon, size=14, color=status_color),
+                                                                    ft.Text(
+                                                                        "Granted" if granted else "Denied",
+                                                                        size=12,
+                                                                        color=status_color,
+                                                                        weight=ft.FontWeight.W_500,
+                                                                    ),
+                                                                ],
+                                                                spacing=4,
+                                                                tight=True,
+                                                            ),
+                                                            bgcolor=status_color + "20",
+                                                            padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                                            border_radius=8,
+                                                        ),
+                                                    ],
+                                                    spacing=8,
+                                                ),
+                                                ft.Container(height=4),
+                                                ft.Text(
+                                                    f"From: {app_name} • {time_str}",
+                                                    size=12,
+                                                    color=ModernTheme.TEXT_SECONDARY,
+                                                ),
+                                                ft.Container(height=4),
+                                                ft.Text(
+                                                    query_preview if query_preview else f"Operation: {tool_name}",
+                                                    size=12,
+                                                    color=ModernTheme.TEXT_MUTED,
+                                                ),
+                                                ft.Text(
+                                                    result_summary if result_summary else "",
+                                                    size=12,
+                                                    color=ModernTheme.ACCENT_SUCCESS,
+                                                    weight=ft.FontWeight.W_500,
+                                                ) if result_summary else ft.Container(),
+                                            ],
+                                            spacing=0,
+                                            expand=True,
+                                        ),
+                                    ],
+                                    spacing=0,
+                                ),
+                            ],
+                            spacing=0,
+                        ),
+                        padding=16,
+                        bgcolor=ModernTheme.BG_ELEVATED,
+                        border_radius=12,
+                        border=ft.border.all(1, ModernTheme.BORDER_COLOR),
+                    )
+                )
+                activity_items.append(ft.Container(height=12))
+        
+        # Add refresh button
+        activity_items.append(
+            ft.Row(
+                [
+                    ft.ElevatedButton(
+                        "🔄 Refresh",
+                        icon=ft.Icons.REFRESH_ROUNDED,
+                        on_click=lambda _: self.show_activity_view(),
+                        style=ft.ButtonStyle(
+                            bgcolor=ModernTheme.ACCENT_PRIMARY,
+                            color="white",
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                    ),
+                    ft.ElevatedButton(
+                        "🗑️ Clear Log",
+                        icon=ft.Icons.DELETE_ROUNDED,
+                        on_click=lambda _: self._clear_activity_log(),
+                        style=ft.ButtonStyle(
+                            bgcolor=ModernTheme.ACCENT_ERROR,
+                            color="white",
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                    ),
+                ],
+                spacing=12,
+            )
+        )
+        
+        self.secrets_list.controls.append(
+            ft.Container(
+                content=ft.Column(activity_items, spacing=0),
+                padding=24,
+            )
+        )
+        self.page.update()
+    
+    def _clear_activity_log(self):
+        """Clear activity log."""
+        try:
+            activity_logger = ActivityLogger(vault_path=str(self.vault_path))
+            activity_logger.clear_activity()
+            
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("✅ Activity log cleared"),
+                bgcolor=ModernTheme.ACCENT_SUCCESS,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            
+            # Refresh view
+            self.show_activity_view()
+        except Exception as e:
+            logger.error(f"Failed to clear activity log: {e}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Failed to clear log: {str(e)}"),
+                bgcolor=ModernTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
 
     def show_statistics(self):
         """Show vault statistics."""
+        self.current_view = "statistics"
         stats = self.vault.get_stats()
         layer1 = stats['layer_1']
         layer2 = stats['layer_2']
@@ -1258,6 +2460,7 @@ class VaultApp:
 
     def show_knowledge_view(self):
         """Show knowledge view with PDF upload."""
+        self.current_view = "knowledge"
         self.selected_type = "knowledge"
         self.type_filter.value = "knowledge"
         
@@ -1442,6 +2645,10 @@ class VaultApp:
         # Process PDF in background thread
         def process_pdf():
             try:
+                # Ensure PDF processor is initialized
+                if self.pdf_processor is None:
+                    self._initialize_pdf_processor()
+                
                 # Process PDF
                 result = self.pdf_processor.process_pdf(file_path)
                 
@@ -1451,12 +2658,18 @@ class VaultApp:
                 
                 # Store as knowledge entry in Layer 1 (for now, until Layer 2 is fully implemented)
                 # Use service name as filename, tag it as knowledge/pdf
+                # Store file path in description for later retrieval
+                description_parts = [
+                    f"PDF: {result['metadata']['page_count']} pages, {len(result['text_chunks'])} chunks",
+                    f"Path: {file_path}"  # Store original file path
+                ]
+                
                 entry_id = self.vault.kv_store.put(
                     service=filename,
                     secret_value=base64.b64encode(pdf_data).decode('utf-8'),
                     entry_type=EntryType.OTHER,  # Use OTHER type for knowledge entries
                     tags=["pdf", "document", "knowledge"],
-                    description=f"PDF: {result['metadata']['page_count']} pages, {len(result['text_chunks'])} chunks"
+                    description=" | ".join(description_parts)
                 )
                 
                 logger.info(f"Stored PDF as knowledge entry: {filename} (ID: {entry_id})")
@@ -1643,6 +2856,10 @@ class VaultApp:
             self.page.snack_bar.open = True
             self.page.update()
             
+            # Ensure PDF processor is initialized
+            if self.pdf_processor is None:
+                self._initialize_pdf_processor()
+            
             result = self.pdf_processor.process_pdf(tmp_path)
             
             # Offer training with the extracted chunks
@@ -1786,11 +3003,12 @@ class VaultApp:
                 def update_success():
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Text(f"✅ Training job submitted! Adapter ID: {result['adapter_id'][:8]}..."),
-                        bgcolor=ModernTheme.ACCENT_SUCCESS,
+                        bgcolor=SleekTheme.ACCENT_SUCCESS,
                     )
                     self.page.snack_bar.open = True
-                    self.page.update()
+                    # Reload secrets to show updated status badge
                     self.load_secrets()
+                    self.page.update()
                 
                 try:
                     if hasattr(self.page, 'run_task'):
@@ -1827,6 +3045,7 @@ class VaultApp:
 
     def show_training_view(self):
         """Show training jobs view."""
+        self.current_view = "training"
         self.secrets_list.controls.clear()
         
         # Fetch training jobs from backend
@@ -1838,13 +3057,26 @@ class VaultApp:
                     headers=self.training_manager.headers,
                     timeout=10
                 )
+                
+                # Refresh token on 401 error
+                if response.status_code == 401:
+                    if self.training_manager._refresh_token_if_needed(response):
+                        # Retry with new token
+                        response = requests.get(
+                            f"{self.backend_url}/api/adapters/adapters",
+                            headers=self.training_manager.headers,
+                            timeout=10
+                        )
+                
+                logger.info(f"Training jobs API response: {response.status_code}")
                 if response.status_code == 200:
                     data = response.json()
                     jobs = data.get("adapters", [])
+                    logger.info(f"Fetched {len(jobs)} training jobs from backend")
                 else:
-                    logger.warning(f"Failed to fetch training jobs: {response.status_code}")
+                    logger.warning(f"Failed to fetch training jobs: {response.status_code} - {response.text}")
             except Exception as e:
-                logger.warning(f"Error fetching training jobs: {e}")
+                logger.error(f"Error fetching training jobs: {e}", exc_info=True)
         
         # Training view content
         content_items = [
@@ -1964,46 +3196,447 @@ class VaultApp:
         self.page.update()
 
     def show_settings(self):
-        """Show settings."""
+        """Show settings with MCP setup."""
+        # Prevent infinite loops
+        if self._refreshing_settings:
+            return
+        
+        self.current_view = "settings"
         self.secrets_list.controls.clear()
+        
+        # Get MCP setup status (uses cache to avoid repeated initialization)
+        mcp_status = self.mcp_setup.get_setup_status()
+        
+        # Build settings content
+        settings_items = [
+            ft.Text(
+                "⚙️ Settings",
+                size=24,
+                weight=ft.FontWeight.BOLD,
+                color=ModernTheme.TEXT_PRIMARY,
+            ),
+            ft.Divider(color=ModernTheme.BORDER_COLOR),
+            
+            # Vault Info Section
+            ft.Text(
+                "Vault Information",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=ModernTheme.TEXT_PRIMARY,
+            ),
+            ft.Text(
+                f"Vault Path: {self.vault_path}",
+                size=14,
+                color=ModernTheme.TEXT_SECONDARY,
+            ),
+            ft.Text(
+                f"Master Key: {self.key_path}",
+                size=14,
+                color=ModernTheme.TEXT_SECONDARY,
+            ),
+            ft.Text(
+                f"Database: {self.db_path}",
+                size=14,
+                color=ModernTheme.TEXT_SECONDARY,
+            ),
+            ft.Divider(color=ModernTheme.BORDER_COLOR),
+            
+            # Encryption Info
+            ft.Text(
+                "Encryption: XChaCha20-Poly1305",
+                size=14,
+                color=ModernTheme.TEXT_SECONDARY,
+            ),
+            ft.Text(
+                "Key Size: 32 bytes (256-bit)",
+                size=14,
+                color=ModernTheme.TEXT_SECONDARY,
+            ),
+            ft.Divider(color=ModernTheme.BORDER_COLOR),
+            
+            # Component Status Section
+            ft.Text(
+                "🔧 Component Status",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=ModernTheme.TEXT_PRIMARY,
+            ),
+            ft.Text(
+                "Status of Enclave components and services",
+                size=12,
+                color=ModernTheme.TEXT_MUTED,
+            ),
+            ft.Container(height=8),
+        ]
+        
+        # Add component status cards
+        components = [
+            {
+                "name": "AI Knowledge Extraction",
+                "description": "Extracts text from scanned documents",
+                "status_key": "ocr",
+                "icon": ft.Icons.DOCUMENT_SCANNER_ROUNDED,
+            },
+            {
+                "name": "Q&A Generation",
+                "description": "Generates Q&A pairs from documents (TinyLlama)",
+                "status_key": "qa",
+                "icon": ft.Icons.QUESTION_ANSWER_ROUNDED,
+            },
+            {
+                "name": "Secure Vault",
+                "description": "Encrypted local storage",
+                "status_key": "vault",
+                "icon": ft.Icons.LOCK_ROUNDED,
+            },
+            {
+                "name": "Cloud Sync",
+                "description": "Secure cloud backup",
+                "status_key": "cloud_sync",
+                "icon": ft.Icons.CLOUD_DONE_ROUNDED,
+            },
+            {
+                "name": "AI Training",
+                "description": "Personal AI model training",
+                "status_key": "training",
+                "icon": ft.Icons.PSYCHOLOGY_ROUNDED,
+            },
+        ]
+        
+        for component in components:
+            status_info = self._component_status.get(component["status_key"], {"status": "unknown", "message": "Unknown"})
+            
+            # Determine status color and icon
+            if status_info["status"] == "ready":
+                status_color = SleekTheme.ACCENT_SUCCESS
+                status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED
+                status_text = "Ready"
+            elif status_info["status"] == "installing":
+                status_color = SleekTheme.ACCENT_PRIMARY
+                status_icon = ft.Icons.DOWNLOADING_ROUNDED
+                status_text = status_info["message"]
+            elif status_info["status"] == "checking":
+                status_color = SleekTheme.TEXT_MUTED
+                status_icon = ft.Icons.HOURGLASS_EMPTY_ROUNDED
+                status_text = status_info["message"]
+            elif status_info["status"] == "error":
+                status_color = SleekTheme.ACCENT_ERROR
+                status_icon = ft.Icons.ERROR_ROUNDED
+                status_text = "Error"
+            else:
+                status_color = SleekTheme.TEXT_MUTED
+                status_icon = ft.Icons.HELP_OUTLINE_ROUNDED
+                status_text = "Unknown"
+            
+            # Create component card
+            component_card = ft.Card(
+                content=ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Icon(
+                                component["icon"],
+                                color=SleekTheme.ACCENT_PRIMARY,
+                                size=24,
+                            ),
+                            ft.Column(
+                                [
+                                    ft.Text(
+                                        component["name"],
+                                        size=14,
+                                        weight=ft.FontWeight.W_600,
+                                        color=SleekTheme.TEXT_PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        component["description"],
+                                        size=11,
+                                        color=SleekTheme.TEXT_MUTED,
+                                    ),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                            ft.Row(
+                                [
+                                    ft.Icon(
+                                        status_icon,
+                                        color=status_color,
+                                        size=18,
+                                    ),
+                                    ft.Text(
+                                        status_text,
+                                        size=12,
+                                        color=status_color,
+                                        weight=ft.FontWeight.W_500,
+                                    ),
+                                    # Add setup button for Q&A if not ready
+                                    ft.IconButton(
+                                        ft.Icons.DOWNLOAD_ROUNDED,
+                                        icon_size=18,
+                                        tooltip="Download TinyLlama",
+                                        visible=(component["status_key"] == "qa" and status_info["status"] != "ready" and status_info["status"] != "installing"),
+                                        on_click=lambda e, key=component["status_key"]: self._setup_qa_model_with_progress() if key == "qa" else None,
+                                        icon_color=SleekTheme.ACCENT_PRIMARY,
+                                    ) if component["status_key"] == "qa" else ft.Container(width=0),
+                                ],
+                                spacing=6,
+                            ),
+                        ],
+                        spacing=12,
+                    ),
+                    padding=12,
+                ),
+                elevation=1,
+                color=SleekTheme.BG_ELEVATED,
+            )
+            
+            settings_items.append(component_card)
+        
+        settings_items.append(ft.Divider(color=ModernTheme.BORDER_COLOR))
+        
+        # MCP Server Section
+        settings_items.extend([
+            ft.Text(
+                "🔌 MCP Server Integration",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=ModernTheme.TEXT_PRIMARY,
+            ),
+            ft.Text(
+                "Connect your vault to Claude Desktop or ChatGPT",
+                size=12,
+                color=ModernTheme.TEXT_MUTED,
+            ),
+            ft.Container(height=8),
+        ])
+        
+        # MCP Status
+        if mcp_status["claude_installed"]:
+            status_color = ModernTheme.ACCENT_SUCCESS if mcp_status["mcp_configured"] else ModernTheme.ACCENT_WARNING
+            status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if mcp_status["mcp_configured"] else ft.Icons.WARNING_ROUNDED
+            status_text = "Configured" if mcp_status["mcp_configured"] else "Not Configured"
+            
+            settings_items.append(
+                ft.Row(
+                    [
+                        ft.Icon(status_icon, color=status_color, size=20),
+                        ft.Text(
+                            f"Claude Desktop: {status_text}",
+                            size=14,
+                            color=status_color,
+                            weight=ft.FontWeight.W_500,
+                        ),
+                    ],
+                    spacing=8,
+                )
+            )
+        else:
+            settings_items.append(
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.INFO_ROUNDED, color=ModernTheme.TEXT_MUTED, size=20),
+                        ft.Text(
+                            "Claude Desktop: Not Detected",
+                            size=14,
+                            color=ModernTheme.TEXT_MUTED,
+                        ),
+                    ],
+                    spacing=8,
+                )
+            )
+        
+        # MCP Test Status
+        if mcp_status["test_success"]:
+            settings_items.append(
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=ModernTheme.ACCENT_SUCCESS, size=16),
+                        ft.Text(
+                            f"MCP Server: {mcp_status['test_message']}",
+                            size=12,
+                            color=ModernTheme.ACCENT_SUCCESS,
+                        ),
+                    ],
+                    spacing=8,
+                )
+            )
+        else:
+            settings_items.append(
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.ERROR_ROUNDED, color=ModernTheme.ACCENT_ERROR, size=16),
+                        ft.Text(
+                            f"MCP Server: {mcp_status['test_message']}",
+                            size=12,
+                            color=ModernTheme.ACCENT_ERROR,
+                        ),
+                    ],
+                    spacing=8,
+                )
+            )
+        
+        settings_items.append(ft.Container(height=12))
+        
+        # MCP Setup Buttons
+        mcp_buttons = []
+        
+        # Generate Config Button
+        def copy_config(e):
+            config_json = self.mcp_setup.get_merged_config_json()
+            self.page.set_clipboard(config_json)
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("📋 Config copied to clipboard! Paste into Claude Desktop config file."),
+                bgcolor=ModernTheme.ACCENT_SUCCESS,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+        
+        mcp_buttons.append(
+            ft.ElevatedButton(
+                "📋 Copy Config to Clipboard",
+                icon=ft.Icons.COPY_ROUNDED,
+                on_click=copy_config,
+                style=ft.ButtonStyle(
+                    bgcolor=ModernTheme.ACCENT_PRIMARY,
+                    color="white",
+                    shape=ft.RoundedRectangleBorder(radius=8),
+                ),
+            )
+        )
+        
+        # Auto-Configure Button (if Claude Desktop detected)
+        if mcp_status["claude_installed"]:
+            def auto_configure(e):
+                try:
+                    config = self.mcp_setup.generate_mcp_config()
+                    merged = self.mcp_setup.merge_config(config)
+                    
+                    if self.mcp_setup.write_config(merged):
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text("✅ MCP server configured! Restart Claude Desktop to activate."),
+                            bgcolor=ModernTheme.ACCENT_SUCCESS,
+                        )
+                    else:
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text("❌ Failed to write config. Check permissions."),
+                            bgcolor=ModernTheme.ACCENT_ERROR,
+                        )
+                    
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                    # Refresh settings to show updated status (but use flag to prevent loops)
+                    if not self._refreshing_settings:
+                        self._refreshing_settings = True
+                        try:
+                            self.show_settings()
+                        finally:
+                            self._refreshing_settings = False
+                except Exception as ex:
+                    logger.error(f"Auto-configure failed: {ex}")
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ Error: {str(ex)}"),
+                        bgcolor=ModernTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+            
+            mcp_buttons.append(
+                ft.ElevatedButton(
+                    "🚀 Auto-Configure Claude Desktop",
+                    icon=ft.Icons.AUTO_AWESOME_ROUNDED,
+                    on_click=auto_configure,
+                    style=ft.ButtonStyle(
+                        bgcolor=ModernTheme.ACCENT_SUCCESS,
+                        color="white",
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                )
+            )
+        
+        # Test Connection Button
+        def test_connection(e):
+            success, message = self.mcp_setup.test_mcp_server()
+            color = ModernTheme.ACCENT_SUCCESS if success else ModernTheme.ACCENT_ERROR
+            icon = ft.Icons.CHECK_CIRCLE_ROUNDED if success else ft.Icons.ERROR_ROUNDED
+            
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Row(
+                    [
+                        ft.Icon(icon, color=color, size=20),
+                        ft.Text(f"MCP Server: {message}"),
+                    ],
+                    spacing=8,
+                ),
+                bgcolor=color,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            # Don't refresh settings - just show snackbar result
+        
+        mcp_buttons.append(
+            ft.ElevatedButton(
+                "🧪 Test Connection",
+                icon=ft.Icons.PLAY_ARROW_ROUNDED,
+                on_click=test_connection,
+                style=ft.ButtonStyle(
+                    bgcolor=ModernTheme.ACCENT_PRIMARY,
+                    color="white",
+                    shape=ft.RoundedRectangleBorder(radius=8),
+                ),
+            )
+        )
+        
+        settings_items.append(
+            ft.Row(
+                mcp_buttons,
+                spacing=12,
+                wrap=True,
+            )
+        )
+        
+        # Instructions
+        if mcp_status["config_path"]:
+            settings_items.extend([
+                ft.Container(height=12),
+                ft.Divider(color=ModernTheme.BORDER_COLOR),
+                ft.Text(
+                    "Setup Instructions",
+                    size=16,
+                    weight=ft.FontWeight.BOLD,
+                    color=ModernTheme.TEXT_PRIMARY,
+                ),
+                ft.Text(
+                    f"1. Config file location:\n   {mcp_status['config_path']}",
+                    size=12,
+                    color=ModernTheme.TEXT_SECONDARY,
+                ),
+                ft.Text(
+                    "2. Click 'Auto-Configure' to set it up (or 'Copy Config' to paste manually)",
+                    size=12,
+                    color=ModernTheme.TEXT_SECONDARY,
+                ),
+                ft.Text(
+                    "3. ⚠️ IMPORTANT: Completely quit and restart Claude Desktop",
+                    size=12,
+                    color=ModernTheme.ACCENT_WARNING,
+                    weight=ft.FontWeight.BOLD,
+                ),
+                ft.Text(
+                    "4. After restart, look for 'Enclave' in your Connectors/Extensions list",
+                    size=12,
+                    color=ModernTheme.TEXT_SECONDARY,
+                ),
+                ft.Text(
+                    "5. Test by asking Claude: 'What tools do you have access to?'",
+                    size=12,
+                    color=ModernTheme.TEXT_SECONDARY,
+                ),
+            ])
+        
+        # Add all items to container
         self.secrets_list.controls.append(
             ft.Container(
                 content=ft.Column(
-                    [
-                        ft.Text(
-                            "⚙️ Settings",
-                            size=24,
-                            weight=ft.FontWeight.BOLD,
-                            color=ModernTheme.TEXT_PRIMARY,
-                        ),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
-                        ft.Text(
-                            f"Vault Path: {self.vault_path}",
-                            size=14,
-                            color=ModernTheme.TEXT_SECONDARY,
-                        ),
-                        ft.Text(
-                            f"Master Key: {self.key_path}",
-                            size=14,
-                            color=ModernTheme.TEXT_SECONDARY,
-                        ),
-                        ft.Text(
-                            f"Database: {self.db_path}",
-                            size=14,
-                            color=ModernTheme.TEXT_SECONDARY,
-                        ),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
-                        ft.Text(
-                            "Encryption: XChaCha20-Poly1305",
-                            size=14,
-                            color=ModernTheme.TEXT_SECONDARY,
-                        ),
-                        ft.Text(
-                            "Key Size: 32 bytes (256-bit)",
-                            size=14,
-                            color=ModernTheme.TEXT_SECONDARY,
-                        ),
-                    ],
+                    settings_items,
                     spacing=12,
                 ),
                 padding=24,

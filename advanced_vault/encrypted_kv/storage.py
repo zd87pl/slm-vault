@@ -59,6 +59,10 @@ class EncryptedKVStore:
     def _init_db(self):
         """Create database schema if not exists."""
         with sqlite3.connect(self.db_path) as conn:
+            # Check if folder column exists
+            cursor = conn.execute("PRAGMA table_info(encrypted_entries)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS encrypted_entries (
                     id TEXT PRIMARY KEY,
@@ -66,6 +70,7 @@ class EncryptedKVStore:
                     service TEXT NOT NULL,
                     tags TEXT,
                     description TEXT,
+                    folder TEXT,  -- Folder name (optional)
                     encrypted_data TEXT NOT NULL,
                     nonce TEXT NOT NULL,
                     created_at TEXT NOT NULL,
@@ -74,6 +79,15 @@ class EncryptedKVStore:
                     version INTEGER DEFAULT 1
                 )
             """)
+            
+            # Add folder column if it doesn't exist (migration)
+            if "folder" not in columns:
+                try:
+                    conn.execute("ALTER TABLE encrypted_entries ADD COLUMN folder TEXT")
+                    conn.commit()
+                    logger.info("Added 'folder' column to encrypted_entries table")
+                except sqlite3.OperationalError as e:
+                    logger.warning(f"Could not add folder column (may already exist): {e}")
 
             # Create indexes for fast metadata search
             conn.execute("""
@@ -89,11 +103,9 @@ class EncryptedKVStore:
                 ON encrypted_entries(created_at)
             """)
             conn.execute("""
-                CREATE INDEX IF NOT EXISTS idx_accessed_at
-                ON encrypted_entries(accessed_at)
+                CREATE INDEX IF NOT EXISTS idx_folder
+                ON encrypted_entries(folder)
             """)
-
-            conn.commit()
 
     def put(
         self,
@@ -102,6 +114,7 @@ class EncryptedKVStore:
         entry_type: EntryType = EntryType.SECRET,
         tags: Optional[List[str]] = None,
         description: Optional[str] = None,
+        folder: Optional[str] = None,
         entry_id: Optional[str] = None
     ) -> str:
         """
@@ -143,6 +156,7 @@ class EncryptedKVStore:
             service=service,
             tags=tags or [],
             description=description,
+            folder=folder,  # Folder name
             encrypted_data=ciphertext,
             nonce=nonce,
             created_at=datetime.utcnow(),
@@ -154,12 +168,12 @@ class EncryptedKVStore:
             data = entry.to_dict()
             conn.execute("""
                 INSERT OR REPLACE INTO encrypted_entries
-                (id, entry_type, service, tags, description, encrypted_data,
+                (id, entry_type, service, tags, description, folder, encrypted_data,
                  nonce, created_at, updated_at, accessed_at, version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 data["id"], data["entry_type"], data["service"], data["tags"],
-                data["description"], data["encrypted_data"], data["nonce"],
+                data["description"], data["folder"], data["encrypted_data"], data["nonce"],
                 data["created_at"], data["updated_at"], data["accessed_at"],
                 data["version"]
             ))
@@ -288,6 +302,10 @@ class EncryptedKVStore:
         if filter.entry_type:
             conditions.append("entry_type = ?")
             params.append(filter.entry_type.value)
+
+        if filter.folder:
+            conditions.append("folder = ?")
+            params.append(filter.folder)
 
         if filter.tags:
             if filter.require_all_tags:

@@ -19,6 +19,7 @@ python-multipart==0.0.12
 # HTTP
 httpx==0.27.2
 aiohttp==3.10.10
+requests==2.31.0
 
 # Encryption (for client-side operations)
 cryptography==44.0.0

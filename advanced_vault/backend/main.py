@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 import logging
 
 from config import settings
-from api import auth, vault, logs, devices, keys, adapters
+from api import auth, vault, logs, devices, keys, adapters, training
 
 # Configure logging
 logging.basicConfig(
@@ -98,6 +98,7 @@ app.include_router(logs.router, prefix="/api/logs", tags=["logs"])
 app.include_router(devices.router, prefix="/api/devices", tags=["devices"])
 app.include_router(keys.router, prefix="/api/keys", tags=["api-keys"])
 app.include_router(adapters.router, prefix="/api/adapters", tags=["adapters"])
+app.include_router(training.router, prefix="/api/training", tags=["training"])
 
 
 if __name__ == "__main__":
