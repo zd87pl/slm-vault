@@ -49,6 +49,7 @@ class TrainingManager:
         self,
         backend_url: str,
         session_data: dict,
+        supabase_client=None,
         supabase_url: Optional[str] = None,
         supabase_anon_key: Optional[str] = None
     ):
@@ -58,8 +59,9 @@ class TrainingManager:
         Args:
             backend_url: Backend API base URL
             session_data: Session data with access_token and user_id
-            supabase_url: Supabase URL (for dataset storage)
-            supabase_anon_key: Supabase anon key (for dataset storage)
+            supabase_client: Supabase client instance (for token refresh)
+            supabase_url: Supabase URL (for dataset storage, optional)
+            supabase_anon_key: Supabase anon key (for dataset storage, optional)
         """
         self.backend_url = backend_url.rstrip('/')
         self.session_data = session_data
@@ -73,7 +75,10 @@ class TrainingManager:
             "Content-Type": "application/json"
         }
         
-        # Note: We no longer initialize Supabase client here
+        # Store Supabase client for token refresh (same approach as CloudSyncService)
+        self.supabase_client = supabase_client
+        
+        # Note: We no longer initialize Supabase client here for storage
         # Dataset uploads go through backend API which uses service key
         # This avoids RLS issues and token management in GUI
         self.supabase = None  # Not needed - backend handles storage
@@ -88,11 +93,44 @@ class TrainingManager:
         
         logger.info(f"Initialized TrainingManager for user: {self.user_id}")
     
+    def _sync_token_from_session_data(self) -> None:
+        """
+        Sync access token from session_data if it was updated by another service.
+        
+        This prevents "Already Used" errors when CloudSyncService refreshes the token
+        and TrainingManager tries to use the old refresh token.
+        """
+        current_access_token = self.session_data.get("access_token")
+        if current_access_token and current_access_token != self.access_token:
+            logger.debug("Syncing access token from session_data (updated by another service)")
+            self.access_token = current_access_token
+            self.headers["Authorization"] = f"Bearer {self.access_token}"
+    
+    def _is_token_expired(self) -> bool:
+        """
+        Check if access token is expired or will expire soon.
+        
+        Returns:
+            True if token is expired or will expire in < 60 seconds
+        """
+        expires_at = self.session_data.get("expires_at")
+        if not expires_at:
+            # No expiry info, assume token might be expired if we get 401
+            return False
+        
+        import time
+        # Refresh if token expires in < 60 seconds
+        return time.time() >= (expires_at - 60)
+    
     def _refresh_token_if_needed(self, response: Optional[requests.Response] = None) -> bool:
         """
         Refresh access token if needed (on 401 errors or proactively).
         
-        Uses backend API /api/auth/refresh endpoint.
+        Uses Supabase client directly (same approach as CloudSyncService) for reliability.
+        Falls back to backend API if Supabase client not available.
+        
+        IMPORTANT: Checks if session_data has been updated by another service (e.g., CloudSyncService)
+        before attempting refresh to avoid "Already Used" errors.
         
         Args:
             response: Optional response object to check status code
@@ -104,17 +142,67 @@ class TrainingManager:
         if response and response.status_code != 401:
             return True
         
+        # IMPORTANT: First, sync with session_data in case another service refreshed the token
+        # This prevents "Already Used" errors when multiple services share the same session_data
+        old_token = self.access_token
+        self._sync_token_from_session_data()
+        # If token was synced and changed, we got a fresh token from another service
+        if old_token != self.access_token:
+            logger.info("Token synced from session_data (updated by another service), using it")
+            return True
+        
         refresh_token = self.session_data.get("refresh_token")
         if not refresh_token:
             logger.warning("No refresh token available")
             return False
         
+        # Prefer Supabase client directly (more reliable, same as CloudSyncService)
+        if self.supabase_client:
+            try:
+                session = self.supabase_client.auth.refresh_session(refresh_token)
+                
+                # Update tokens
+                new_access_token = session.session.access_token
+                new_refresh_token = session.session.refresh_token
+                
+                # Update session data
+                self.session_data["access_token"] = new_access_token
+                self.session_data["refresh_token"] = new_refresh_token
+                self.access_token = new_access_token
+                
+                # Update headers
+                self.headers["Authorization"] = f"Bearer {self.access_token}"
+                
+                logger.info("Token refreshed successfully via Supabase client")
+                return True
+                
+            except Exception as e:
+                error_msg = str(e)
+                # If token was already used, check if session_data was updated by another service
+                if "Already Used" in error_msg or "already used" in error_msg.lower():
+                    logger.warning("Refresh token already used, checking if updated by another service...")
+                    # Sync token from session_data (may have been updated by CloudSyncService)
+                    old_token = self.access_token
+                    self._sync_token_from_session_data()
+                    if old_token != self.access_token:
+                        logger.info("Token was refreshed by another service, synced successfully")
+                        return True
+                    else:
+                        logger.error("Refresh token already used and no update found in session_data. User needs to log in again.")
+                        # IMPORTANT: Don't try backend API fallback - it uses the same refresh token
+                        return False
+                
+                logger.error(f"Failed to refresh token via Supabase client: {e}")
+                # Fall through to backend API fallback (only if NOT "Already Used")
+        
+        # Fallback to backend API if Supabase client not available or failed
         try:
             # Refresh via backend API
-            # Backend expects refresh_token as form data or query param
+            # Backend expects refresh_token as JSON body (RefreshTokenRequest model)
             refresh_response = requests.post(
                 f"{self.backend_url}/api/auth/refresh",
-                params={"refresh_token": refresh_token},
+                json={"refresh_token": refresh_token},
+                headers={"Content-Type": "application/json"},
                 timeout=10
             )
             
@@ -133,7 +221,7 @@ class TrainingManager:
                     # Update headers
                     self.headers["Authorization"] = f"Bearer {self.access_token}"
                     
-                    logger.info("Token refreshed successfully via backend")
+                    logger.info("Token refreshed successfully via backend API")
                     return True
                 else:
                     logger.error("Backend refresh response missing access_token")
@@ -141,9 +229,9 @@ class TrainingManager:
             else:
                 logger.error(f"Backend refresh failed: {refresh_response.status_code} - {refresh_response.text}")
                 return False
-            
+                
         except Exception as e:
-            logger.error(f"Failed to refresh token via backend: {e}")
+            logger.error(f"Failed to refresh token via backend API: {e}")
             return False
     
     def hash_encryption_key(self, key_hex: str) -> str:
@@ -507,6 +595,16 @@ class TrainingManager:
             
             logger.info(f"Uploading encrypted dataset via backend: {filename} ({len(encrypted_blob)} bytes)")
             
+            # Sync token from session_data before request (may have been updated by CloudSyncService)
+            self._sync_token_from_session_data()
+            
+            # Proactively refresh token if expired or expiring soon
+            if self._is_token_expired():
+                logger.info("Access token expired or expiring soon, refreshing proactively...")
+                if not self._refresh_token_if_needed():
+                    logger.error("Failed to refresh expired token. User may need to log in again.")
+                    raise Exception("Session expired. Please log out and log in again to continue.")
+            
             # Encode as base64 for JSON transport
             encrypted_data_b64 = base64.b64encode(encrypted_blob).decode('utf-8')
             
@@ -533,6 +631,9 @@ class TrainingManager:
                         json=payload,
                         timeout=60
                     )
+                else:
+                    # Token refresh failed - user needs to re-authenticate
+                    raise Exception("Session expired. Please log out and log in again to upload datasets.")
             
             if response.status_code == 200:
                 result = response.json()

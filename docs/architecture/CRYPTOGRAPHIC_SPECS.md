@@ -449,5 +449,299 @@ security_config:
 
 ---
 
+## Advanced Privacy-Preserving Techniques (Future Enhancements)
+
+### Overview
+This section documents advanced cryptographic techniques for multi-user and federated scenarios. **Note:** These are NOT needed for current single-user vault architecture but will become critical for Phase 4 (Team Features) and federated learning.
+
+### Use Case Applicability
+
+| Technique | Single-User Vaults | Team Vaults | Federated Learning | Analytics Dashboard |
+|-----------|-------------------|-------------|-------------------|-------------------|
+| XChaCha20-Poly1305 (current) | ✅ Required | ✅ Required | ✅ Required | ✅ Required |
+| Secure Aggregation | ❌ Not needed | ✅ Critical | ✅ Critical | ⚠️ Optional |
+| Lightweight HE (scalars) | ❌ Not needed | ⚠️ Optional | ⚠️ Optional | ✅ Useful |
+| Full HE (weight deltas) | ❌ Impractical | ❌ Impractical | ❌ Impractical | ❌ Impractical |
+
+### 1. Secure Aggregation Protocol (for Federated Learning)
+
+#### Problem Statement
+Enable multiple users to collaboratively train/improve models without revealing individual weight deltas to server or other users.
+
+#### Technical Approach: Google's Secure Aggregation (2017)
+
+**Algorithm:**
+```python
+class SecureAggregation:
+    """
+    Privacy-preserving aggregation using additive secret sharing.
+    
+    Key Innovation: Pairwise masks cancel during aggregation.
+    Security: Server learns ONLY aggregate, never individual deltas.
+    Performance: 500,000x faster than Paillier homomorphic encryption.
+    """
+    
+    def client_mask_delta(self, user_id: str, delta: np.ndarray) -> bytes:
+        """
+        Client-side: Mask delta with pairwise shared secrets.
+        
+        1. Establish pairwise keys via Diffie-Hellman with other users
+        2. Generate mask: mask_i = Σ_j PRG(shared_secret_ij) where j ≠ i
+        3. Return: masked_delta = delta + mask_i
+        
+        Server sees: masked_delta (useless without other masks)
+        """
+        mask = self._generate_pairwise_masks(user_id)
+        return (delta + mask).tobytes()
+    
+    def server_aggregate(self, masked_deltas: List[np.ndarray]) -> np.ndarray:
+        """
+        Server-side: Sum masked deltas → masks cancel automatically.
+        
+        Σ_i (delta_i + mask_i) = Σ_i delta_i + Σ_i mask_i
+                                = Σ_i delta_i + 0  (pairwise masks cancel!)
+        
+        Privacy: Server never sees individual delta_i
+        """
+        aggregate = np.mean(masked_deltas, axis=0)
+        return aggregate  # Only aggregate visible!
+```
+
+**Performance (DoRA rank 32, 2MB deltas):**
+| Metric | Secure Aggregation | Paillier HE | Improvement |
+|--------|-------------------|-------------|-------------|
+| Client encode time | 50 ms | 6.9 hours | 497,000x faster |
+| Server aggregate time | 100 ms | 13.8 hours | 497,000x faster |
+| Bandwidth per user | 2.1 MB | 256 MB | 122x less |
+| Privacy guarantee | Semi-honest secure | IND-CPA secure | Equivalent* |
+
+\* For aggregation use case with honest-but-curious server
+
+**When to Implement:**
+- Week 7-8: When starting team vault features
+- Month 4: When implementing federated learning
+- **NOT before:** Over-engineering for single-user vaults
+
+**References:**
+- Bonawitz et al. (2017): "Practical Secure Aggregation for Privacy-Preserving Machine Learning"
+- Used in production: Google GBoard, Apple iOS keyboard
+
+---
+
+### 2. Lightweight Homomorphic Encryption (for Analytics Only)
+
+#### Problem Statement
+Compute privacy-preserving analytics (mean, variance, histograms) over user statistics without revealing individual user data.
+
+**IMPORTANT:** Only for **scalar statistics**, NOT full weight deltas!
+
+#### Technical Approach: Paillier HE for Scalars
+
+**Algorithm:**
+```python
+class PrivacyPreservingAnalytics:
+    """
+    Paillier HE for scalar statistics only.
+    
+    Key Limitation: ONLY encrypt scalar values (e.g., norms, counts)
+    Why: Encrypting 2MB delta takes 6.9 hours (impractical)
+         Encrypting 1 scalar takes 50ms (practical!)
+    """
+    
+    def __init__(self):
+        self.paillier = PaillierHE(key_size=2048)
+    
+    def compute_mean_delta_norm(self, user_deltas: List[np.ndarray]) -> float:
+        """
+        Privacy-preserving mean of delta norms.
+        
+        1. Each user computes ||delta_i|| (scalar!) locally
+        2. Encrypt scalar: E(||delta_i||)
+        3. Server computes E(Σ ||delta_i||) homomorphically
+        4. Decrypt aggregate: mean = Σ ||delta_i|| / N
+        5. Add differential privacy noise
+        """
+        # Step 1-2: Encrypt scalar norms (NOT full deltas!)
+        encrypted_norms = [self.paillier.encrypt(np.linalg.norm(delta)) 
+                          for delta in user_deltas]
+        
+        # Step 3: Homomorphic sum (fast for scalars!)
+        encrypted_sum = sum(encrypted_norms)  # 50ms per add
+        
+        # Step 4: Decrypt aggregate only
+        mean_norm = self.paillier.decrypt(encrypted_sum) / len(user_deltas)
+        
+        # Step 5: Differential privacy
+        dp_noise = np.random.laplace(0, sensitivity/epsilon)
+        return mean_norm + dp_noise
+```
+
+**Performance (1000 users):**
+| Operation | Time | Notes |
+|-----------|------|-------|
+| Encrypt 1 scalar | 50 ms | Per user |
+| Homomorphic add | 50 ms | Server-side |
+| Decrypt result | 50 ms | Once |
+| **Total** | **~5 seconds** | For 1000 users |
+
+**Use Cases:**
+- Analytics dashboard: "Average training jobs per user", "Mean delta norm"
+- Investor metrics: "User engagement statistics" without seeing individual data
+- A/B testing: Compare model performance across cohorts
+- GDPR compliance: Prove you can compute stats without storing plaintext
+
+**When to Implement:**
+- When building analytics dashboard for investors/monitoring
+- When GDPR compliance requires provable privacy
+- **NOT urgent:** Nice-to-have, not blocking any features
+
+---
+
+### 3. Full Homomorphic Encryption (NOT RECOMMENDED)
+
+#### Why NOT Recommended for WDVA
+
+**Performance Analysis:**
+
+```python
+# DoRA rank 32 delta: ~2MB (~500,000 float32 values)
+
+Operation              Time (Paillier 2048-bit)    Feasibility
+---------------------------------------------------------------------
+Encrypt 1 float        50 ms                       
+Encrypt full delta     50ms × 500k = 6.9 HOURS     ❌ IMPRACTICAL
+Homomorphic operation  50-100 ms per op            ❌ IMPRACTICAL
+Ciphertext size        4 bytes → 512 bytes         ❌ 128x expansion
+                      2 MB → 256 MB per delta!
+```
+
+**Verdict:** 
+- ❌ **DO NOT USE** for full weight deltas
+- ✅ **ONLY USE** for scalar statistics (see section 2 above)
+- ⚠️ **Future:** TFHE/CKKS may enable fast HE in 5+ years (research-only now)
+
+---
+
+### 4. Implementation Priority
+
+#### Recommended Implementation Order:
+
+**Phase 1 (Current): XChaCha20-Poly1305**
+- ✅ **Status:** IMPLEMENTED
+- **Use:** Storage encryption, data at rest
+- **Performance:** 5ms per 2MB delta
+- **Priority:** Critical (done)
+
+**Phase 2 (Week 7-8): Secure Aggregation**
+- ⏳ **Status:** PLANNED for team features
+- **Use:** Federated learning, team vault aggregation
+- **Performance:** 100ms for 100 users
+- **Priority:** High (blocking team features)
+- **Effort:** 2-3 weeks
+
+**Phase 3 (Month 4): Differential Privacy**
+- ⏳ **Status:** PLANNED for federated learning
+- **Use:** Privacy budget management, noise injection
+- **Performance:** <1ms overhead
+- **Priority:** Medium (complement to Secure Agg)
+- **Effort:** 1 week
+
+**Phase 4 (Optional): Lightweight HE for Analytics**
+- ⏸️ **Status:** NICE-TO-HAVE
+- **Use:** Privacy-preserving analytics dashboard
+- **Performance:** ~5 seconds for 1000 users
+- **Priority:** Low (not blocking features)
+- **Effort:** 1 week
+
+**Phase 5 (Research-only): Full HE**
+- ❌ **Status:** NOT RECOMMENDED (impractical)
+- **Revisit:** 2028+ when TFHE/CKKS mature
+
+---
+
+### 5. Security vs Performance Trade-offs
+
+#### Comparison Matrix
+
+```
+                          Privacy   Speed      Bandwidth  Use Case
+─────────────────────────────────────────────────────────────────
+XChaCha20 (current)        High     ⚡⚡⚡⚡    Minimal    Storage ✅
+Secure Aggregation         High     ⚡⚡⚡     Low        Federated ✅
+Lightweight HE (scalars)   High     ⚡⚡       Medium     Analytics ✅
+Full HE (deltas)          Maximum   ❌        ❌❌❌      NONE ❌
+Differential Privacy       Medium   ⚡⚡⚡⚡    Minimal    Complement ✅
+```
+
+**Legend:**
+- ⚡ = Fast (milliseconds)
+- ❌ = Impractical (hours)
+
+---
+
+### 6. References
+
+#### Academic Papers
+1. Bonawitz et al. (2017): "Practical Secure Aggregation for Privacy-Preserving Machine Learning" - Google
+2. McMahan et al. (2017): "Communication-Efficient Learning of Deep Networks from Decentralized Data" - Federated Learning
+3. Dwork & Roth (2014): "The Algorithmic Foundations of Differential Privacy"
+4. Gentry (2009): "Fully Homomorphic Encryption Using Ideal Lattices" (theoretical foundation)
+
+#### Production Implementations
+- Google Federated Learning (GBoard keyboard)
+- Apple Differential Privacy (iOS analytics)
+- OpenMined PySyft (federated learning framework)
+- Microsoft SEAL (homomorphic encryption library)
+
+#### Recommended Libraries
+```python
+# Secure Aggregation
+- cryptography (already using) ✅
+- diffie-hellman (built-in to cryptography)
+
+# Lightweight HE (scalars only)
+- python-paillier (8KB, mature, MIT license)
+
+# Differential Privacy
+- opacus (Facebook, PyTorch integration)
+- diffprivlib (IBM, scikit-learn compatible)
+
+# Full HE (research-only)
+- microsoft-seal (C++, Python bindings)
+- tenseal (PyTorch + SEAL)
+- concrete-ml (Zama, TFHE-based)
+```
+
+---
+
+### 7. Decision Framework
+
+**When to use each technique:**
+
+```python
+def choose_privacy_technique(use_case: str) -> str:
+    """Decision tree for privacy technique selection."""
+    
+    if use_case == "single_user_storage":
+        return "XChaCha20-Poly1305 (current implementation) ✅"
+    
+    elif use_case == "team_vault_aggregation":
+        return "Secure Aggregation (implement Week 7) 📅"
+    
+    elif use_case == "federated_learning":
+        return "Secure Aggregation + Differential Privacy (Month 4) 📅"
+    
+    elif use_case == "analytics_dashboard":
+        return "Lightweight HE for scalars + DP (optional, nice-to-have) ⚠️"
+    
+    elif use_case == "compute_on_encrypted_deltas":
+        return "NOT FEASIBLE - use Secure Aggregation instead ❌"
+    
+    else:
+        return "Evaluate based on performance requirements"
+```
+
+---
+
 Copyright © 2025 Zygmunt Dyras. All rights reserved.
 Technical specifications subject to patent protection.

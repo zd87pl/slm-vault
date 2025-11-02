@@ -117,13 +117,18 @@ async def logout(user: dict = Depends(get_current_user)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+class RefreshTokenRequest(BaseModel):
+    """Request to refresh access token."""
+    refresh_token: str
+
+
 @router.post("/refresh")
-async def refresh_token(refresh_token: str):
+async def refresh_token(data: RefreshTokenRequest):
     """Refresh access token using refresh token."""
     try:
         supabase = get_supabase()
 
-        result = supabase.auth.refresh_session(refresh_token)
+        result = supabase.auth.refresh_session(data.refresh_token)
 
         if result.session:
             return {
