@@ -427,8 +427,17 @@ class EphemeralDoRAInference:
         Returns:
             Generated text
         """
+        # Format prompt to match training format (Alpaca format used during training)
+        # Training uses: "### Instruction: {inst}\n### Response: {resp}"
+        # So inference should use: "### Instruction: {prompt}\n### Response:"
+        if not prompt.startswith("### Instruction:"):
+            formatted_prompt = f"### Instruction: {prompt}\n### Response:"
+        else:
+            formatted_prompt = prompt
+        
         # Apply chat template if model supports it (for chat models like TinyLlama-Chat)
-        if hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None:
+        # But only if prompt is not already in Alpaca format
+        if not formatted_prompt.startswith("### Instruction:") and hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None:
             # Format as chat message
             messages = [{"role": "user", "content": prompt}]
             formatted_prompt = self.tokenizer.apply_chat_template(
@@ -436,9 +445,6 @@ class EphemeralDoRAInference:
                 tokenize=False,
                 add_generation_prompt=True
             )
-        else:
-            # Use raw prompt for base models
-            formatted_prompt = prompt
 
         # Tokenize input
         inputs = self.tokenizer(formatted_prompt, return_tensors="pt", padding=True)

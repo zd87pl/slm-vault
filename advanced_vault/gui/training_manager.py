@@ -451,6 +451,14 @@ class TrainingManager:
             logger.error(f"Error getting job status: {e}")
             raise ValueError(f"Failed to get job status: {str(e)}")
     
+    def get_training_status(self, adapter_id: str) -> Dict[str, Any]:
+        """
+        Alias for get_job_status (for compatibility).
+        
+        Get status of training job via backend API.
+        """
+        return self.get_job_status(adapter_id)
+    
     def encrypt_dataset_in_memory(
         self, 
         qa_pairs: List[Dict[str, str]], 
@@ -706,5 +714,83 @@ class TrainingManager:
         except Exception as e:
             logger.error(f"Error updating adapter status: {e}")
             return False
+    
+    def inference_with_adapter(
+        self,
+        adapter_id: str,
+        query: str,
+        encryption_key_hex: str,
+        max_tokens: int = 512,  # Increased for better responses
+        temperature: float = 0.3  # Lower temperature for more precise, deterministic responses
+    ) -> Dict[str, Any]:
+        """
+        Run inference with trained adapter (demo query).
+        
+        Args:
+            adapter_id: Adapter UUID
+            query: User's question/prompt
+            encryption_key_hex: Hex-encoded encryption key for decrypting adapter
+            max_tokens: Maximum tokens in response
+            temperature: Sampling temperature
+            
+        Returns:
+            Dictionary with "response" field containing model's answer
+        """
+        try:
+            payload = {
+                "adapter_id": adapter_id,
+                "encryption_key_hex": encryption_key_hex,
+                "prompt": query,  # Backend expects "prompt"
+                "max_tokens": max_tokens,
+                "temperature": temperature
+            }
+            
+            response = requests.post(
+                f"{self.backend_url}/api/training/inference",
+                headers=self.headers,
+                json=payload,
+                timeout=120  # Inference can take time
+            )
+            
+            # Refresh token on 401 error
+            if response.status_code == 401:
+                if self._refresh_token_if_needed(response):
+                    # Retry with new token
+                    response = requests.post(
+                        f"{self.backend_url}/api/training/inference",
+                        headers=self.headers,
+                        json=payload,
+                        timeout=120
+                    )
+            
+            if response.status_code == 404:
+                raise ValueError("Adapter not found or access denied")
+            elif response.status_code == 400:
+                error_data = response.json()
+                raise ValueError(error_data.get("detail", "Adapter is not ready for inference"))
+            elif response.status_code == 503:
+                raise ValueError("Inference service is not configured")
+            elif response.status_code != 200:
+                error_text = response.text
+                logger.error(f"Backend API error: {response.status_code} {error_text}")
+                raise ValueError(f"Failed to run inference: {response.status_code}")
+            
+            result = response.json()
+            
+            # Backend returns {"response": "..."}
+            if "response" not in result:
+                logger.warning(f"Unexpected inference response format: {result}")
+                raise ValueError("Invalid response from inference service")
+            
+            return result
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error running inference: {e}")
+            raise ValueError("Failed to connect to inference service. Please check your connection.")
+        except ValueError:
+            raise  # Re-raise ValueError as-is
+        except Exception as e:
+            logger.error(f"Error running inference: {e}")
+            raise ValueError(f"Failed to run inference: {str(e)}")
 
 
