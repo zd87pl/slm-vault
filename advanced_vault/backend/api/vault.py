@@ -4,7 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import List, Optional
 from middleware.auth import get_current_user
-from utils.supabase_client import get_supabase
+from utils.supabase_client import get_supabase, get_supabase_service
 from utils.access_logger import log_access
 import logging
 
@@ -39,7 +39,8 @@ async def store_entry(
     All encryption happens client-side. Server stores encrypted blobs.
     """
     try:
-        supabase = get_supabase()
+        # Use service key to bypass RLS (backend verifies user_id via auth middleware)
+        supabase = get_supabase_service()
 
         # Insert or update entry
         entry_data = {
@@ -214,7 +215,8 @@ async def delete_entry(
     Delete entry (soft delete).
     """
     try:
-        supabase = get_supabase()
+        # Use service key to bypass RLS (backend verifies user_id via auth middleware)
+        supabase = get_supabase_service()
 
         # Soft delete
         result = supabase.table("vault_entries")\
@@ -269,7 +271,8 @@ async def sync_entries(
     Used by CLI/app to push local vault to cloud.
     """
     try:
-        supabase = get_supabase()
+        # Use service key to bypass RLS (backend verifies user_id via auth middleware)
+        supabase = get_supabase_service()
 
         # Prepare batch insert
         entries_data = [

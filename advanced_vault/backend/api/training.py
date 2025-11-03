@@ -71,7 +71,9 @@ async def submit_training_job(
         key_hash = hashlib.sha256(key_bytes).hexdigest()
         
         # Register adapter intent with backend first
-        supabase = get_supabase()
+        # Use service key to bypass RLS (backend verifies user_id via auth middleware)
+        from utils.supabase_client import get_supabase_service
+        supabase = get_supabase_service()
         adapter_data = {
             "user_id": user_id,
             "adapter_id": adapter_id,
@@ -219,8 +221,9 @@ async def get_training_status(
         
         user_id = user["user_id"]
         
-        # Get adapter metadata (includes RunPod job_id)
-        supabase = get_supabase()
+        # Get adapter metadata (includes RunPod job_id) - use service key to bypass RLS
+        from utils.supabase_client import get_supabase_service
+        supabase = get_supabase_service()
         result = supabase.table("user_adapters")\
             .select("*")\
             .eq("user_id", user_id)\
@@ -450,6 +453,190 @@ async def upload_dataset(
         await log_access(
             user_id=user.get("user_id"),
             operation="dataset_upload",
+            request=request,
+            success=False,
+            error_message=str(e)
+        )
+        
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class InferenceRequest(BaseModel):
+    """Request to run inference with trained adapter."""
+    adapter_id: str
+    encryption_key_hex: str  # Required for decrypting adapter on RunPod
+    prompt: str
+    max_tokens: int = 256
+    temperature: float = 0.7
+
+
+@router.post("/inference")
+async def run_inference(
+    request: Request,
+    data: InferenceRequest,
+    user: dict = Depends(get_current_user)
+):
+    """
+    Run inference with trained adapter (demo query).
+    
+    Backend handles RunPod inference - users provide prompt, adapter_id, and encryption_key_hex.
+    The encryption key is only used for RunPod inference and is never stored.
+    """
+    try:
+        # Validate RunPod configuration
+        if not settings.runpod_api_key or not settings.runpod_endpoint_id:
+            raise HTTPException(
+                status_code=503,
+                detail="Inference service is not configured"
+            )
+        
+        user_id = user["user_id"]
+        adapter_id = data.adapter_id
+        
+        # Verify adapter ownership (use service key to bypass RLS)
+        from utils.supabase_client import get_supabase_service
+        supabase = get_supabase_service()
+        result = supabase.table("user_adapters")\
+            .select("*")\
+            .eq("user_id", user_id)\
+            .eq("adapter_id", adapter_id)\
+            .execute()
+        
+        if not result.data:
+            raise HTTPException(
+                status_code=404,
+                detail="Adapter not found or access denied"
+            )
+        
+        adapter = result.data[0]
+        
+        # Check if adapter is completed
+        if adapter.get("status") != "completed":
+            raise HTTPException(
+                status_code=400,
+                detail=f"Adapter is not ready for inference (status: {adapter.get('status')})"
+            )
+        
+        # Prepare inference config for RunPod
+        encrypted_adapter_path = f"/workspace/encrypted/{user_id}/{adapter_id}.json"
+        
+        inference_config = {
+            "task": "inference",
+            "user_id": user_id,
+            "adapter_id": adapter_id,
+            "encrypted_adapter_path": encrypted_adapter_path,
+            "encryption_key": data.encryption_key_hex,  # Pass encryption key to RunPod
+            "prompt": data.prompt,
+            "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+            "max_tokens": data.max_tokens,
+            "temperature": data.temperature,
+            "enable_cache": True
+        }
+        
+        # Submit inference job to RunPod
+        runpod_url = f"https://api.runpod.ai/v2/{settings.runpod_endpoint_id}/run"
+        payload = {"input": inference_config}
+        
+        try:
+            runpod_response = requests.post(
+                runpod_url,
+                headers={
+                    "Authorization": f"Bearer {settings.runpod_api_key}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=30
+            )
+            
+            if runpod_response.status_code != 200:
+                logger.error(f"RunPod inference error: {runpod_response.status_code} {runpod_response.text}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Failed to submit inference job: {runpod_response.status_code}"
+                )
+            
+            runpod_data = runpod_response.json()
+            runpod_job_id = runpod_data.get('id')
+            
+            if not runpod_job_id:
+                raise HTTPException(
+                    status_code=502,
+                    detail="No job ID returned from RunPod"
+                )
+            
+            # Wait for inference to complete (polling)
+            import time
+            max_wait = 120  # 2 minutes max
+            poll_interval = 2  # Check every 2 seconds
+            start_time = time.time()
+            
+            while time.time() - start_time < max_wait:
+                status_url = f"https://api.runpod.ai/v2/{settings.runpod_endpoint_id}/status/{runpod_job_id}"
+                status_response = requests.get(
+                    status_url,
+                    headers={
+                        "Authorization": f"Bearer {settings.runpod_api_key}"
+                    },
+                    timeout=10
+                )
+                
+                if status_response.status_code == 200:
+                    status_data = status_response.json()
+                    status = status_data.get("status")
+                    
+                    if status == "COMPLETED":
+                        output = status_data.get("output", {})
+                        response_text = output.get("response", "")
+                        
+                        if not response_text:
+                            raise HTTPException(
+                                status_code=502,
+                                detail="Inference completed but no response returned"
+                            )
+                        
+                        # Log access
+                        await log_access(
+                            user_id=user_id,
+                            operation="inference_query",
+                            request=request,
+                            success=True,
+                            metadata={"adapter_id": adapter_id, "prompt_length": len(data.prompt)}
+                        )
+                        
+                        return {
+                            "success": True,
+                            "response": response_text,
+                            "adapter_id": adapter_id
+                        }
+                    elif status == "FAILED":
+                        error = status_data.get("error", "Unknown error")
+                        raise HTTPException(
+                            status_code=502,
+                            detail=f"Inference failed: {error}"
+                        )
+                
+                time.sleep(poll_interval)
+            
+            raise HTTPException(
+                status_code=504,
+                detail="Inference timeout - job took too long"
+            )
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Network error during inference: {e}")
+            raise HTTPException(
+                status_code=502,
+                detail="Failed to connect to inference service"
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to run inference: {e}")
+        
+        await log_access(
+            user_id=user.get("user_id"),
+            operation="inference_query",
             request=request,
             success=False,
             error_message=str(e)
