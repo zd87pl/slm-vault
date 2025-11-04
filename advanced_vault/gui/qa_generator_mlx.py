@@ -444,11 +444,11 @@ Generate 3 diverse Q&A pairs now:"""
             # Generate with structured output (guaranteed valid JSON)
             # Note: MLXLM through Outlines doesn't support temperature parameter
             # Only max_tokens is supported for MLX models
-            # Increased to 2500 to handle very long answers and prevent JSON truncation
-            # Some chunks generate answers > 2000 tokens, so we start high
+            # Increased to 3000 to handle very long answers and prevent JSON truncation
+            # Some chunks generate answers > 2500 tokens, so we start higher
             result = self.generator(
                 prompt,
-                max_tokens=2500  # Increased to handle very long answers and prevent unterminated strings
+                max_tokens=3000  # Increased to handle very long answers and prevent unterminated strings
             )
             
             # Convert Pydantic models to dicts
@@ -483,10 +483,10 @@ Generate 3 diverse Q&A pairs now:"""
                 logger.warning(f"MLX generated incomplete JSON (likely max_tokens too low): {error_msg[:300]}")
                 # Retry with even higher max_tokens
                 try:
-                    logger.info("Retrying MLX Q&A generation with higher max_tokens (3500)...")
+                    logger.info("Retrying MLX Q&A generation with higher max_tokens (4500)...")
                     result = self.generator(
                         prompt,
-                        max_tokens=3500  # Even higher for retry - some answers can be very long
+                        max_tokens=4500  # Even higher for retry - some answers can be very long
                     )
                     # Convert Pydantic models to dicts
                     qa_pairs = []
