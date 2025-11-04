@@ -59,6 +59,16 @@ class SmartRouter:
         r"give\s+(?:me\s+)?(?:my\s+|the\s+)?(.+?)\s+(?:api\s+)?(?:key|token|password|credential)",
         r"find\s+(?:my\s+|the\s+)?(.+?)\s+(?:api\s+)?(?:key|token|password|secret)",
 
+        # Card and payment details
+        r"(?:my\s+|the\s+)?(?:card\s+)?(?:details?|info|information|number)",
+        r"(?:credit|debit)\s+card\s+(?:details?|info|information|number)",
+        r"card\s+(?:details?|info|information|number)",
+        r"payment\s+(?:details?|info|information|method)",
+        
+        # Generic "details" requests (likely asking for stored data)
+        r"(?:my\s+|the\s+)?(.+?)\s+details?",
+        r"(?:my\s+|the\s+)?(.+?)\s+info(?:rmation)?",
+
         # Service-specific requests (simple patterns)
         r"^(.+?)\s+(?:api\s+)?(?:key|token|password|credentials?)$",
         r"credentials?\s+for\s+(.+)",

@@ -537,7 +537,7 @@ class PDFProcessor:
             
         Returns:
             Dictionary with:
-            - text_chunks: List of text chunks (500-1000 tokens each)
+            - text_chunks: List of text chunks (512 chars optimal for MLX Q&A generation)
             - metadata: PDF metadata (page_count, title, author, filename)
         """
         try:
@@ -593,9 +593,13 @@ class PDFProcessor:
                             logger.info("Using OCR text (PyPDF2 extracted minimal text)")
                             full_text = ocr_text
                 
-                # Split into chunks (targeting ~300 tokens, ~1200 chars)
-                # Model has 2048 token limit, so we need to leave room for prompt + response (~500 tokens)
-                # Each chunk should be ~300 tokens (~1200 chars) max
+                # Split into chunks (optimal size: 512 chars for MLX Q&A generation)
+                # MLX models (Qwen2.5-3B) work best with smaller, focused chunks
+                # Old size: 1200 chars (too large, caused incomplete Q&A pairs)
+                # New size: 512 chars (optimal for 3 complete Q&A pairs per chunk)
+                chunk_size = 512
+                chunk_overlap = 100  # 20% overlap for context preservation
+                
                 paragraphs = full_text.split("\n\n")
                 current_chunk = ""
                 
@@ -604,10 +608,12 @@ class PDFProcessor:
                     if not para:
                         continue
                     
-                    # If adding this paragraph would exceed ~1200 chars, save current chunk
-                    if current_chunk and len(current_chunk) + len(para) > 1200:
+                    # If adding this paragraph would exceed chunk_size, save current chunk
+                    if current_chunk and len(current_chunk) + len(para) > chunk_size:
                         text_chunks.append(current_chunk.strip())
-                        current_chunk = para
+                        # Start new chunk with overlap (last 100 chars of previous chunk)
+                        overlap_text = current_chunk[-chunk_overlap:] if len(current_chunk) > chunk_overlap else current_chunk
+                        current_chunk = overlap_text + "\n\n" + para if overlap_text else para
                     else:
                         current_chunk += "\n\n" + para if current_chunk else para
                 

@@ -466,8 +466,8 @@ class InferenceRequest(BaseModel):
     adapter_id: str
     encryption_key_hex: str  # Required for decrypting adapter on RunPod
     prompt: str
-    max_tokens: int = 256
-    temperature: float = 0.7
+    max_tokens: int = 512  # Increased for better responses
+    temperature: float = 0.3  # Lower temperature for more precise responses
 
 
 @router.post("/inference")
@@ -509,12 +509,58 @@ async def run_inference(
             )
         
         adapter = result.data[0]
+        stored_status = adapter.get("status", "pending")
+        runpod_job_id = adapter.get("job_id")
         
-        # Check if adapter is completed
-        if adapter.get("status") != "completed":
+        # If status is not "completed", check RunPod for latest status
+        # This handles cases where training completed but DB wasn't updated yet
+        if stored_status != "completed" and runpod_job_id:
+            try:
+                # Query RunPod for current status
+                runpod_url = f"https://api.runpod.ai/v2/{settings.runpod_endpoint_id}/status/{runpod_job_id}"
+                runpod_response = requests.get(
+                    runpod_url,
+                    headers={
+                        "Authorization": f"Bearer {settings.runpod_api_key}"
+                    },
+                    timeout=10
+                )
+                
+                if runpod_response.status_code == 200:
+                    runpod_data = runpod_response.json()
+                    runpod_status = runpod_data.get("status", "UNKNOWN")
+                    
+                    # Map RunPod statuses to our statuses
+                    status_mapping = {
+                        "IN_QUEUE": "pending",
+                        "IN_PROGRESS": "training",
+                        "COMPLETED": "completed",
+                        "FAILED": "failed"
+                    }
+                    
+                    mapped_status = status_mapping.get(runpod_status, stored_status)
+                    
+                    # Update stored status if it changed
+                    if mapped_status != stored_status:
+                        try:
+                            supabase.table("user_adapters")\
+                                .update({"status": mapped_status})\
+                                .eq("user_id", user_id)\
+                                .eq("adapter_id", adapter_id)\
+                                .execute()
+                            stored_status = mapped_status  # Update for check below
+                            logger.info(f"Updated adapter {adapter_id} status from {adapter.get('status')} to {mapped_status}")
+                        except Exception as e:
+                            logger.warning(f"Failed to update adapter status: {e}")
+            except Exception as e:
+                logger.warning(f"Failed to check RunPod status during inference: {e}")
+                # Continue with stored status
+        
+        # Check if adapter is completed (after potential update)
+        if stored_status != "completed":
             raise HTTPException(
                 status_code=400,
-                detail=f"Adapter is not ready for inference (status: {adapter.get('status')})"
+                detail=f"Adapter is not ready for inference (status: {stored_status})"
             )
         
         # Prepare inference config for RunPod

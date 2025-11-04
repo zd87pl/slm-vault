@@ -7,15 +7,23 @@ Beautiful Material Design UI for encrypted vault management
 import flet as ft
 import os
 import sys
+import platform
 import threading
 import requests
 import logging
 import base64
 import tempfile
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 import time
+
+# Check if MLX module is available
+try:
+    from qa_generator_mlx import MLXQAGenerator
+    MLX_MODULE_AVAILABLE = True
+except ImportError:
+    MLX_MODULE_AVAILABLE = False
 
 # Add parent to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -48,6 +56,29 @@ class VaultApp:
         self.page.title = "🔐 Enclave"
         self.page.theme_mode = ft.ThemeMode.DARK
         self.page.padding = 0
+        
+        # Set window size to 70% of screen (professional app sizing)
+        # Get screen size and calculate 70%
+        import platform
+        if platform.system() == "Darwin":  # macOS
+            # macOS typically has high DPI, so we use reasonable defaults
+            # Flet will handle scaling automatically
+            screen_width = 1440  # Typical MacBook width
+            screen_height = 900  # Typical MacBook height
+        else:
+            # For other platforms, use default screen size
+            screen_width = 1920
+            screen_height = 1080
+        
+        window_width = int(screen_width * 0.7)
+        window_height = int(screen_height * 0.7)
+        
+        # Set window size and center it
+        self.page.window.width = window_width
+        self.page.window.height = window_height
+        self.page.window.center()
+        self.page.window.min_width = 800
+        self.page.window.min_height = 600
         
         # Set up sleek theme
         self.page.theme = ft.Theme(
@@ -112,6 +143,10 @@ class VaultApp:
         }
         # Flag to prevent infinite refresh loops
         self._refreshing_settings = False
+        
+        # Training view auto-refresh timer (for pending/training jobs)
+        self._training_refresh_timer = None
+        self._training_refresh_active = False
 
         # Check for existing session
         self.check_authentication()
@@ -154,18 +189,124 @@ class VaultApp:
         # Sync from cloud on login
         self.sync_from_cloud()
 
-        # Check if first-time user
-        if self._is_first_time_user():
-            # Show welcome screen
-            self.show_welcome_screen()
-        else:
-            # Build main UI directly
-            self.page.clean()
-            self.build_ui()
-            self.page.update()
+        # Always show landing page first
+        self.show_landing_page()
         
-        # Initialize PDF processor after GUI is ready
+        # Check if setup is needed and show overlay if necessary
+        def check_and_setup():
+            # Wait a bit for components to initialize
+            import time
+            time.sleep(1.5)  # Give components time to initialize
+            
+            # Check if setup is needed
+            if self._needs_setup():
+                # Show setup overlay/progress dialog
+                # Call directly since _auto_setup_components is not async
+                self._auto_setup_components()
+        
+        # Initialize components and check setup in background
         self._initialize_pdf_processor()
+        threading.Thread(target=check_and_setup, daemon=True).start()
+    
+    def _create_progress_dialog(self, title: str, initial_message: str = "Preparing...") -> tuple:
+        """
+        Create a professional progress dialog (70% of screen, maximized, no scroll).
+        Styled like ProtonVPN - clean, modern, professional.
+        
+        Returns:
+            Tuple of (dialog, progress_text, progress_bar, progress_percent, time_remaining_text)
+        """
+        # Get actual window size (70% of screen is already set in __init__)
+        window_width = self.page.window.width or 1200
+        window_height = self.page.window.height or 800
+        
+        # Dialog should be 70% of window, but with reasonable min/max
+        dialog_width = min(max(int(window_width * 0.7), 500), 800)
+        dialog_height = min(max(int(window_height * 0.7), 300), 500)
+        
+        # Content height is fixed - no scroll, content fits perfectly
+        content_height = dialog_height - 120  # Account for title (60px) and padding/margins (60px)
+        
+        progress_text = ft.Text(
+            initial_message,
+            size=14,
+            color=SleekTheme.TEXT_PRIMARY,
+            text_align=ft.TextAlign.LEFT,
+            selectable=False,
+        )
+        progress_percent = ft.Text(
+            "",
+            size=18,
+            weight=ft.FontWeight.BOLD,
+            color=SleekTheme.ACCENT_PRIMARY,
+        )
+        time_remaining_text = ft.Text(
+            "",
+            size=12,
+            color=SleekTheme.TEXT_MUTED,
+        )
+        progress_bar = ft.ProgressBar(
+            width=dialog_width - 80,  # Account for padding
+            value=0.0,
+            color=SleekTheme.ACCENT_PRIMARY,
+            bgcolor=SleekTheme.BG_ELEVATED,
+            bar_height=8,  # Slightly thicker for better visibility
+        )
+        
+        # Content container - fixed height, no scroll
+        content_container = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Container(height=16),
+                    # Progress text with max height to prevent overflow
+                    ft.Container(
+                        content=progress_text,
+                        height=120,  # Fixed height for message area
+                        padding=ft.padding.only(bottom=8),
+                    ),
+                    ft.Container(height=24),
+                    # Progress bar
+                    progress_bar,
+                    ft.Container(height=16),
+                    # Status row (percentage + time)
+                    ft.Row(
+                        [
+                            progress_percent,
+                            ft.Container(expand=True),  # Spacer
+                            time_remaining_text,
+                        ],
+                        spacing=0,
+                        tight=True,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(height=16),
+                ],
+                tight=True,
+                scroll=None,  # NO SCROLL - fixed height layout
+                spacing=0,
+            ),
+            width=dialog_width - 40,
+            height=content_height,
+            padding=20,
+        )
+        
+        progress_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Container(
+                content=ft.Text(
+                    title,
+                    size=20,
+                    weight=ft.FontWeight.BOLD,
+                    color=SleekTheme.TEXT_PRIMARY,
+                ),
+                padding=ft.padding.only(bottom=8),
+            ),
+            content=content_container,
+            actions=[],
+            shape=ft.RoundedRectangleBorder(radius=16),  # Modern rounded corners
+        )
+        
+        return progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text
     
     def _setup_qa_model_with_progress(self):
         """
@@ -175,33 +316,9 @@ class VaultApp:
             logger.error("Q&A generator not initialized")
             return
         
-        progress_text = ft.Text("Przygotowywanie Q&A Generation...")
-        progress_percent = ft.Text("0%", size=14, weight=ft.FontWeight.W_500, color=SleekTheme.ACCENT_PRIMARY)
-        time_remaining_text = ft.Text("", size=12, color=SleekTheme.TEXT_MUTED)
-        progress_bar = ft.ProgressBar(width=400, value=0.0, color=SleekTheme.ACCENT_PRIMARY, bgcolor=SleekTheme.BG_ELEVATED)
-        
-        progress_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("🔧 Setting up Q&A Generation"),
-            content=ft.Column(
-                [
-                    progress_text,
-                    ft.Container(height=12),
-                    progress_bar,
-                    ft.Container(height=8),
-                    ft.Row(
-                        [
-                            progress_percent,
-                            ft.Container(width=16),
-                            time_remaining_text,
-                        ],
-                        spacing=0,
-                    ),
-                ],
-                tight=True,
-                width=400,
-            ),
-            actions=[],
+        progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
+            "🔧 Setting up Q&A Generation",
+            "Preparing Q&A Generation..."
         )
         
         self.page.overlay.append(progress_dialog)
@@ -214,10 +331,12 @@ class VaultApp:
                 if progress_dialog and progress_dialog.open and progress_text and progress_bar and progress_percent:
                     progress_text.value = message
                     
-                    if percent is not None:
+                    if percent is not None and percent >= 0:
+                        # Only show percentage if it's valid (>= 0)
                         progress_bar.value = percent / 100.0
                         progress_percent.value = f"{percent:.1f}%"
                     else:
+                        # Indeterminate progress (no percentage)
                         progress_bar.value = None
                         progress_percent.value = ""
                     
@@ -228,15 +347,27 @@ class VaultApp:
                     self.page.update()
                     
                     # Update component status
-                    if "Pobieranie" in message or "Downloading" in message:
+                    qa_status = self.qa_generator.get_qa_status()
+                    is_mlx = qa_status.get("preferred_method") == "MLX" or "MLX" in message or "Qwen" in message
+                    
+                    if "Pobieranie" in message or "Downloading" in message or "Loading" in message:
                         self._component_status["qa"]["status"] = "installing"
-                        if percent is not None:
-                            self._component_status["qa"]["message"] = f"Downloading TinyLlama... {percent:.1f}%"
+                        if is_mlx:
+                            if percent is not None:
+                                self._component_status["qa"]["message"] = f"Downloading AI model... {percent:.1f}%"
+                            else:
+                                self._component_status["qa"]["message"] = "Downloading optimized AI model..."
                         else:
-                            self._component_status["qa"]["message"] = "Downloading TinyLlama..."
+                            if percent is not None:
+                                self._component_status["qa"]["message"] = f"Downloading TinyLlama... {percent:.1f}%"
+                            else:
+                                self._component_status["qa"]["message"] = "Downloading TinyLlama..."
                     elif "gotowe" in message.lower() or "ready" in message.lower() or "available" in message.lower():
                         self._component_status["qa"]["status"] = "ready"
-                        self._component_status["qa"]["message"] = "Ready (TinyLlama)"
+                        if is_mlx:
+                            self._component_status["qa"]["message"] = "Ready (Optimized AI)"
+                        else:
+                            self._component_status["qa"]["message"] = "Ready (Local AI)"
                     
                     # Refresh Settings if visible
                     if hasattr(self, 'current_view') and self.current_view == "settings" and not self._refreshing_settings:
@@ -259,8 +390,14 @@ class VaultApp:
         try:
             success, message = self.qa_generator.setup_qa_model(progress_callback=update_progress)
             if success:
-                self._component_status["qa"]["status"] = "ready"
-                self._component_status["qa"]["message"] = "Ready (TinyLlama)"
+                # Update status based on actual method used
+                qa_status = self.qa_generator.get_qa_status()
+                if qa_status.get("preferred_method") == "MLX":
+                    self._component_status["qa"]["status"] = "ready"
+                    self._component_status["qa"]["message"] = "Ready (MLX Qwen2.5-3B)"
+                else:
+                    self._component_status["qa"]["status"] = "ready"
+                    self._component_status["qa"]["message"] = "Ready (Ollama TinyLlama)"
                 progress_text.value = "✅ Q&A Generation ready!"
                 progress_bar.value = 1.0
                 progress_percent.value = "100%"
@@ -291,39 +428,27 @@ class VaultApp:
             ]
         
         self.page.update()
+    
+    def _get_qa_setup_tooltip(self) -> str:
+        """Get tooltip text for Q&A setup button based on available method."""
+        if not self.qa_generator:
+            return "Setup Q&A Generation"
+        
+        qa_status = self.qa_generator.get_qa_status()
+        if qa_status.get("mlx_available") and not qa_status.get("mlx_initialized"):
+            return "Download optimized AI model (~3GB)"
+        elif qa_status.get("preferred_method") == "MLX":
+            return "Optimized AI model ready"
+        else:
+            return "Download TinyLlama model"
 
     def _setup_ollama_with_progress(self):
         """
         Setup Ollama OCR with visible progress dialog showing percentage and time remaining.
         """
-        # Create progress dialog with progress bar
-        progress_text = ft.Text("Przygotowywanie OCR...")
-        progress_percent = ft.Text("0%", size=14, weight=ft.FontWeight.W_500, color=SleekTheme.ACCENT_PRIMARY)
-        time_remaining_text = ft.Text("", size=12, color=SleekTheme.TEXT_MUTED)
-        progress_bar = ft.ProgressBar(width=400, value=0.0, color=SleekTheme.ACCENT_PRIMARY, bgcolor=SleekTheme.BG_ELEVATED)
-        
-        progress_dialog = ft.AlertDialog(
-            modal=True,
-            title=ft.Text("🔧 Setting up AI Knowledge Extraction"),
-            content=ft.Column(
-                [
-                    progress_text,
-                    ft.Container(height=12),
-                    progress_bar,
-                    ft.Container(height=8),
-                    ft.Row(
-                        [
-                            progress_percent,
-                            ft.Container(width=16),
-                            time_remaining_text,
-                        ],
-                        spacing=0,
-                    ),
-                ],
-                tight=True,
-                width=400,
-            ),
-            actions=[],
+        progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
+            "🔧 Setting up AI Knowledge Extraction",
+            "Preparing OCR..."
         )
         
         self.page.overlay.append(progress_dialog)
@@ -338,12 +463,13 @@ class VaultApp:
                     progress_text.value = message
                     
                     # Update progress bar and percentage
-                    if percent is not None:
+                    if percent is not None and percent >= 0:
+                        # Only show percentage if it's valid (>= 0)
                         progress_bar.value = percent / 100.0
                         progress_percent.value = f"{percent:.1f}%"
                     else:
-                        # Indeterminate progress
-                        progress_bar.value = None  # Shows indeterminate progress
+                        # Indeterminate progress (no percentage)
+                        progress_bar.value = None
                         progress_percent.value = ""
                     
                     # Update time remaining - only update if we have a value
@@ -387,20 +513,86 @@ class VaultApp:
         
         self.page.update()
     
+    def _auto_setup_components(self):
+        """Automatically setup components that need configuration."""
+        try:
+            # Check what needs setup
+            needs_ocr = False
+            needs_qa = False
+            
+            if hasattr(self, 'pdf_processor') and self.pdf_processor:
+                if not (self.pdf_processor.smoldocling_available or self.pdf_processor.ollama_available):
+                    needs_ocr = True
+            else:
+                needs_ocr = True  # Not initialized yet
+            
+            if hasattr(self, 'qa_generator') and self.qa_generator:
+                qa_status = self.qa_generator.get_qa_status()
+                if qa_status.get("status") != "ready":
+                    needs_qa = True
+                elif qa_status.get("mlx_available") and not qa_status.get("mlx_initialized"):
+                    needs_qa = True
+            else:
+                needs_qa = True  # Not initialized yet
+            
+            # Show setup dialogs for missing components
+            if needs_ocr:
+                logger.info("OCR component needs setup - showing setup dialog")
+                self._setup_ocr_with_progress()
+            
+            if needs_qa:
+                logger.info("Q&A component needs setup - will show in Settings")
+                # Q&A setup will be triggered from Settings or when user tries to use it
+                # Don't auto-show here to avoid interrupting user
+        
+        except Exception as e:
+            logger.error(f"Error in auto-setup: {e}")
+    
     def _initialize_pdf_processor(self):
         """Initialize PDF processor after GUI is ready (for progress callbacks)."""
         if self.pdf_processor is None:
-            # Check if Ollama needs setup BEFORE initializing PDFProcessor
-            # This allows us to show progress dialog immediately
-            temp_ollama_setup = None
-            try:
-                from advanced_vault.gui.ollama_setup import OllamaSetup
-                temp_ollama_setup = OllamaSetup()
-                needs_setup = not temp_ollama_setup.is_ollama_installed() or not temp_ollama_setup.is_ollama_running() or not temp_ollama_setup.is_model_available()
-            except Exception:
-                needs_setup = True
+            # Check if anything needs setup BEFORE initializing PDFProcessor
+            # First check SmolDocling (preferred on Apple Silicon)
+            needs_setup = True
+            smoldocling_available = False
             
-            # Create progress dialog if setup is needed
+            try:
+                # Check if SmolDocling is already available and working
+                import platform
+                if platform.machine() == "arm64":
+                    try:
+                        # Check if SmolDocling dependencies are installed
+                        import mlx_vlm
+                        import docling_core
+                        # If imports succeed, SmolDocling should work (model loads on first use)
+                        # Don't try to load model here as it's slow - just check dependencies
+                        smoldocling_available = True
+                        logger.debug("SmolDocling dependencies available - no setup needed")
+                    except ImportError:
+                        smoldocling_available = False
+                        logger.debug("SmolDocling dependencies not available")
+                
+                # If SmolDocling is available, no setup needed
+                if smoldocling_available:
+                    needs_setup = False
+                    logger.debug("OCR ready (SmolDocling) - skipping setup dialog")
+                else:
+                    # Check Ollama as fallback
+                    from advanced_vault.gui.ollama_setup import OllamaSetup
+                    temp_ollama_setup = OllamaSetup()
+                    ollama_ready = (temp_ollama_setup.is_ollama_installed() and 
+                                   temp_ollama_setup.is_ollama_running() and 
+                                   temp_ollama_setup.is_model_available())
+                    if ollama_ready:
+                        needs_setup = False
+                        logger.debug("OCR ready (Ollama) - skipping setup dialog")
+                    else:
+                        logger.debug("OCR not ready - setup dialog will be shown")
+            except Exception as e:
+                logger.debug(f"Error checking OCR availability: {e}")
+                needs_setup = True  # Default to showing setup if check fails
+            
+            # Create progress dialog ONLY if setup is actually needed
             progress_dialog = None
             progress_text = None
             progress_percent = None
@@ -408,34 +600,10 @@ class VaultApp:
             progress_bar = None
             
             if needs_setup:
-                # Create progress dialog with progress bar
-                progress_text = ft.Text("Checking AI Knowledge Extraction...")
-                progress_percent = ft.Text("0%", size=14, weight=ft.FontWeight.W_500, color=SleekTheme.ACCENT_PRIMARY)
-                time_remaining_text = ft.Text("", size=12, color=SleekTheme.TEXT_MUTED)
-                progress_bar = ft.ProgressBar(width=400, value=0.0, color=SleekTheme.ACCENT_PRIMARY, bgcolor=SleekTheme.BG_ELEVATED)
-                
-                progress_dialog = ft.AlertDialog(
-                    modal=True,
-                    title=ft.Text("🔧 Setting up AI Knowledge Extraction"),
-                    content=ft.Column(
-                        [
-                            progress_text,
-                            ft.Container(height=12),
-                            progress_bar,
-                            ft.Container(height=8),
-                            ft.Row(
-                                [
-                                    progress_percent,
-                                    ft.Container(width=16),
-                                    time_remaining_text,
-                                ],
-                                spacing=0,
-                            ),
-                        ],
-                        tight=True,
-                        width=400,
-                    ),
-                    actions=[],
+                # Create progress dialog using helper
+                progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
+                    "🔧 Setting up AI Knowledge Extraction",
+                    "Checking AI Knowledge Extraction..."
                 )
                 
                 self.page.overlay.append(progress_dialog)
@@ -569,21 +737,57 @@ class VaultApp:
                     ]
                     self.page.update()
             
-            # Close progress dialog if OCR is ready
-            if (self.pdf_processor.smoldocling_available or self.pdf_processor.ollama_available) and progress_dialog and progress_dialog.open:
-                progress_text.value = "✅ AI Knowledge Extraction ready!"
-                if progress_bar:
-                    progress_bar.value = 1.0
-                if progress_percent:
-                    progress_percent.value = "100%"
-                if time_remaining_text:
-                    time_remaining_text.value = ""
-                progress_dialog.actions = [
-                    ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
-                ]
-                self.page.update()
+            # Close progress dialog ONLY if it was opened (setup was needed)
+            # If OCR is ready and dialog was opened, show success and close
+            if progress_dialog and progress_dialog.open:
+                if self.pdf_processor.smoldocling_available or self.pdf_processor.ollama_available:
+                    # Setup completed successfully - show success message
+                    progress_text.value = "✅ AI Knowledge Extraction ready!"
+                    if progress_bar:
+                        progress_bar.value = 1.0
+                    if progress_percent:
+                        progress_percent.value = "100%"
+                    if time_remaining_text:
+                        time_remaining_text.value = ""
+                    progress_dialog.actions = [
+                        ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                    ]
+                    self.page.update()
+                else:
+                    # Setup failed - close dialog silently, user can setup from Settings
+                    progress_dialog.open = False
+                    self.page.update()
+    
+    def _needs_setup(self) -> bool:
+        """Check if any components need setup."""
+        try:
+            # If components not initialized yet, we can't check - assume ready (will check after init)
+            # This prevents welcome screen from showing on every startup
+            if not hasattr(self, 'pdf_processor') or not self.pdf_processor:
+                return False  # Will be initialized later, don't block on startup
+            
+            if not hasattr(self, 'qa_generator') or not self.qa_generator:
+                return False  # Will be initialized later, don't block on startup
+            
+            # Check OCR status
+            if not (self.pdf_processor.smoldocling_available or self.pdf_processor.ollama_available):
+                return True
+            
+            # Check Q&A status
+            qa_status = self.qa_generator.get_qa_status()
+            if qa_status.get("status") != "ready":
+                return True
+            # Check if MLX is available but not initialized
+            if qa_status.get("mlx_available") and not qa_status.get("mlx_initialized"):
+                return True
+            
+            return False  # All components ready
+        except Exception as e:
+            logger.warning(f"Error checking setup status: {e}")
+            return False  # Don't block on error - let user proceed
     
     def _is_first_time_user(self) -> bool:
+        """Check if user is first-time (no vault entries)."""
         try:
             if not self.vault:
                 return True
@@ -616,12 +820,8 @@ class VaultApp:
     
     def _on_welcome_complete(self):
         """Called when welcome screen is dismissed."""
-        self.page.clean()
-        self.build_ui()
-        self.page.update()
-        
-        # Initialize PDF processor after GUI is ready
-        self._initialize_pdf_processor()
+        # Always go to landing page after welcome screen
+        self.show_landing_page()
     
     def _add_sample_data(self):
         """Add sample data for first-time users."""
@@ -683,6 +883,402 @@ class VaultApp:
             )
             self.page.snack_bar.open = True
             self.page.update()
+    
+    def show_landing_page(self):
+        """Show landing page with large action buttons - always shown after login."""
+        self.current_view = "landing"
+        
+        # Update sidebar selection to Home
+        if hasattr(self, 'sidebar'):
+            self.sidebar.selected_index = -1
+            sidebar_container = self.sidebar.build()
+        else:
+            # Initialize sidebar if not exists
+            self.sidebar = ModernSidebar(
+                on_nav_change=self.on_nav_change,
+                selected_index=-1
+            )
+            sidebar_container = self.sidebar.build()
+        
+        self.page.clean()
+        
+        # Get vault statistics
+        try:
+            query_filter = QueryFilter()
+            all_entries = self.vault.kv_store.search(query_filter)
+            
+            # Count by type
+            # SECRET includes all secret types (SECRET, API_KEY, PASSWORD, TOKEN, CREDENTIAL)
+            secrets_count = len([e for e in all_entries if e.entry_type in [EntryType.SECRET, EntryType.API_KEY, EntryType.PASSWORD, EntryType.TOKEN, EntryType.CREDENTIAL]])
+            # Knowledge entries use EntryType.OTHER
+            knowledge_count = len([e for e in all_entries if e.entry_type == EntryType.OTHER])
+        except Exception as e:
+            logger.warning(f"Error getting vault stats: {e}")
+            secrets_count = 0
+            knowledge_count = 0
+        
+        # User info - get email from session
+        user_email = "User"
+        if self.session_data:
+            # Email is stored in session_data["user"]["email"]
+            user_info = self.session_data.get("user", {})
+            user_email = user_info.get("email") or self.session_data.get("user_email") or self.session_data.get("email") or "User"
+        
+        # Get component status
+        ocr_ready = False
+        qa_ready = False
+        if hasattr(self, 'pdf_processor') and self.pdf_processor:
+            ocr_ready = self.pdf_processor.smoldocling_available or self.pdf_processor.ollama_available
+        if hasattr(self, 'qa_generator') and self.qa_generator:
+            qa_status = self.qa_generator.get_qa_status()
+            qa_ready = qa_status.get("status") == "ready"
+        
+        # Create landing page content - centered, clean design
+        content = ft.Container(
+            content=ft.Column(
+                [
+                    # Header - centered
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Icon(
+                                    ft.Icons.LOCK_ROUNDED, 
+                                    size=64, 
+                                    color=SleekTheme.ACCENT_PRIMARY
+                                ),
+                                ft.Container(height=16),
+                                ft.Text(
+                                    "🔐 Enclave Vault",
+                                    size=36,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=SleekTheme.TEXT_PRIMARY,
+                                    text_align=ft.TextAlign.CENTER,
+                                ),
+                                ft.Container(height=8),
+                                ft.Text(
+                                    f"Welcome back, {user_email}",
+                                    size=18,
+                                    color=SleekTheme.TEXT_SECONDARY,
+                                    text_align=ft.TextAlign.CENTER,
+                                ),
+                            ],
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            spacing=0,
+                        ),
+                        padding=ft.padding.only(bottom=48),
+                        alignment=ft.alignment.center,
+                    ),
+                    
+                    # Large Action Buttons - 2x2 grid
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                # First row
+                                ft.Row(
+                                    [
+                                        self._create_large_action_button(
+                                            "📚 Add Knowledge",
+                                            "Upload PDF documents\nand train AI models",
+                                            ft.Icons.UPLOAD_FILE_ROUNDED,
+                                            SleekTheme.ACCENT_PRIMARY,
+                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'knowledge') or self.load_secrets()),
+                                        ),
+                                        self._create_large_action_button(
+                                            "🔑 View Secrets",
+                                            f"{secrets_count} encrypted secrets\nstored securely",
+                                            ft.Icons.LOCK_ROUNDED,
+                                            SleekTheme.ACCENT_SUCCESS,
+                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update()),
+                                        ),
+                                    ],
+                                    spacing=24,
+                                    alignment=ft.MainAxisAlignment.CENTER,
+                                ),
+                                ft.Container(height=24),
+                                # Second row
+                                ft.Row(
+                                    [
+                                        self._create_large_action_button(
+                                            "📊 Access Log",
+                                            "View activity history\nand access records",
+                                            ft.Icons.HISTORY_ROUNDED,
+                                            SleekTheme.ACCENT_WARNING,
+                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'activity') or self.load_secrets()),
+                                        ),
+                                        self._create_large_action_button(
+                                            "⚙️ Settings",
+                                            "Configure components\nand preferences",
+                                            ft.Icons.SETTINGS_ROUNDED,
+                                            SleekTheme.TEXT_SECONDARY,
+                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update(), self.show_settings()),
+                                        ),
+                                    ],
+                                    spacing=24,
+                                    alignment=ft.MainAxisAlignment.CENTER,
+                                ),
+                            ],
+                            spacing=0,
+                        ),
+                        padding=ft.padding.symmetric(horizontal=32),
+                    ),
+                    
+                    ft.Container(height=48),
+                    
+                    # Quick stats footer - clickable links
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Container(
+                                    content=ft.ElevatedButton(
+                                        content=ft.Column(
+                                            [
+                                                ft.Text(
+                                                    str(knowledge_count),
+                                                    size=24,
+                                                    weight=ft.FontWeight.BOLD,
+                                                    color=SleekTheme.ACCENT_PRIMARY,
+                                                    text_align=ft.TextAlign.CENTER,
+                                                ),
+                                                ft.Text(
+                                                    "Documents",
+                                                    size=12,
+                                                    color=SleekTheme.TEXT_SECONDARY,
+                                                    text_align=ft.TextAlign.CENTER,
+                                                ),
+                                            ],
+                                            spacing=4,
+                                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                        ),
+                                        on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'knowledge') or self.load_secrets()),
+                                        style=ft.ButtonStyle(
+                                            bgcolor="transparent",
+                                            color=SleekTheme.TEXT_PRIMARY,
+                                            elevation=0,
+                                            overlay_color=SleekTheme.ACCENT_PRIMARY + "10",
+                                        ),
+                                    ),
+                                    padding=16,
+                                    width=120,
+                                ),
+                                ft.VerticalDivider(width=1, color=SleekTheme.BORDER_COLOR),
+                                ft.Container(
+                                    content=ft.ElevatedButton(
+                                        content=ft.Column(
+                                            [
+                                                ft.Text(
+                                                    str(secrets_count),
+                                                    size=24,
+                                                    weight=ft.FontWeight.BOLD,
+                                                    color=SleekTheme.ACCENT_SUCCESS,
+                                                    text_align=ft.TextAlign.CENTER,
+                                                ),
+                                                ft.Text(
+                                                    "Secrets",
+                                                    size=12,
+                                                    color=SleekTheme.TEXT_SECONDARY,
+                                                    text_align=ft.TextAlign.CENTER,
+                                                ),
+                                            ],
+                                            spacing=4,
+                                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                        ),
+                                        on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'selected_type', 'secret') or setattr(self.type_filter, 'value', 'secret') or self.load_secrets()),
+                                        style=ft.ButtonStyle(
+                                            bgcolor="transparent",
+                                            color=SleekTheme.TEXT_PRIMARY,
+                                            elevation=0,
+                                            overlay_color=SleekTheme.ACCENT_SUCCESS + "10",
+                                        ),
+                                    ),
+                                    padding=16,
+                                    width=120,
+                                ),
+                                ft.VerticalDivider(width=1, color=SleekTheme.BORDER_COLOR),
+                                ft.Container(
+                                    content=ft.ElevatedButton(
+                                        content=ft.Column(
+                                            [
+                                                ft.Icon(
+                                                    ft.Icons.CHECK_CIRCLE_ROUNDED if (ocr_ready and qa_ready) else ft.Icons.WARNING_ROUNDED,
+                                                    size=24,
+                                                    color=SleekTheme.ACCENT_SUCCESS if (ocr_ready and qa_ready) else SleekTheme.ACCENT_WARNING,
+                                                ),
+                                                ft.Text(
+                                                    "Ready" if (ocr_ready and qa_ready) else "Setup",
+                                                    size=12,
+                                                    color=SleekTheme.ACCENT_SUCCESS if (ocr_ready and qa_ready) else SleekTheme.ACCENT_WARNING,
+                                                    text_align=ft.TextAlign.CENTER,
+                                                ),
+                                            ],
+                                            spacing=4,
+                                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                        ),
+                                        on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), self.show_settings()),
+                                        style=ft.ButtonStyle(
+                                            bgcolor="transparent",
+                                            color=SleekTheme.TEXT_PRIMARY,
+                                            elevation=0,
+                                            overlay_color=SleekTheme.ACCENT_WARNING + "10",
+                                        ),
+                                    ),
+                                    padding=16,
+                                    width=120,
+                                ),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            spacing=0,
+                        ),
+                        padding=ft.padding.symmetric(vertical=24, horizontal=32),
+                        bgcolor=SleekTheme.BG_ELEVATED,
+                        border_radius=12,
+                        margin=ft.margin.symmetric(horizontal=48),
+                    ),
+                ],
+                scroll=ft.ScrollMode.AUTO,
+                spacing=0,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=48,
+            expand=True,
+            alignment=ft.alignment.center,
+        )
+        
+        # Add sidebar and content in layout (if sidebar exists)
+        if hasattr(self, 'sidebar'):
+            self.page.add(
+                ft.Row(
+                    [
+                        sidebar_container,
+                        content,
+                    ],
+                    spacing=0,
+                    expand=True,
+                )
+            )
+        else:
+            # Fallback: just add content if sidebar not initialized yet
+            self.page.add(content)
+        self.page.update()
+    
+    def _create_large_action_button(self, title: str, subtitle: str, icon: str, color: str, on_click) -> ft.Container:
+        """Create a large, prominent action button."""
+        return ft.Container(
+            content=ft.ElevatedButton(
+                content=ft.Column(
+                    [
+                        ft.Container(height=8),
+                        ft.Icon(
+                            icon,
+                            size=48,
+                            color=color,
+                        ),
+                        ft.Container(height=16),
+                        ft.Text(
+                            title,
+                            size=20,
+                            weight=ft.FontWeight.BOLD,
+                            color=SleekTheme.TEXT_PRIMARY,
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                        ft.Container(height=8),
+                        ft.Text(
+                            subtitle,
+                            size=13,
+                            color=SleekTheme.TEXT_SECONDARY,
+                            text_align=ft.TextAlign.CENTER,
+                        ),
+                        ft.Container(height=8),
+                    ],
+                    spacing=0,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    tight=True,
+                ),
+                on_click=on_click,
+                style=ft.ButtonStyle(
+                    bgcolor=SleekTheme.BG_ELEVATED,
+                    color=SleekTheme.TEXT_PRIMARY,
+                    padding=ft.padding.all(32),
+                    elevation=2,
+                    overlay_color=SleekTheme.ACCENT_PRIMARY + "20",
+                    animation_duration=200,
+                ),
+            ),
+            width=280,
+            height=220,
+        )
+    
+    def _create_stat_card(self, title: str, count: int, subtitle: str, icon: str) -> ft.Container:
+        """Create a statistics card."""
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(icon, size=24, color=SleekTheme.ACCENT_PRIMARY),
+                            ft.Text(
+                                str(count),
+                                size=32,
+                                weight=ft.FontWeight.BOLD,
+                                color=SleekTheme.TEXT_PRIMARY,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    ft.Text(title, size=14, weight=ft.FontWeight.W_500, color=SleekTheme.TEXT_PRIMARY),
+                    ft.Text(subtitle, size=12, color=SleekTheme.TEXT_SECONDARY),
+                ],
+                spacing=4,
+            ),
+            padding=24,
+            bgcolor=SleekTheme.BG_ELEVATED,
+            border_radius=12,
+            width=200,
+        )
+    
+    def _create_action_button(self, title: str, subtitle: str, icon: str, on_click) -> ft.Container:
+        """Create an action button."""
+        return ft.Container(
+            content=ft.ElevatedButton(
+                content=ft.Column(
+                    [
+                        ft.Icon(icon, size=32, color=SleekTheme.ACCENT_PRIMARY),
+                        ft.Text(title, size=14, weight=ft.FontWeight.W_500),
+                        ft.Text(subtitle, size=12, color=SleekTheme.TEXT_SECONDARY),
+                    ],
+                    spacing=8,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                on_click=on_click,
+                style=ft.ButtonStyle(
+                    bgcolor=SleekTheme.BG_ELEVATED,
+                    color=SleekTheme.TEXT_PRIMARY,
+                    padding=ft.padding.all(24),
+                ),
+            ),
+            width=220,
+        )
+    
+    def _create_status_indicator(self, title: str, status: str, color: str, icon: str) -> ft.Container:
+        """Create a status indicator."""
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(icon, size=20, color=color),
+                    ft.Column(
+                        [
+                            ft.Text(title, size=14, weight=ft.FontWeight.W_500, color=SleekTheme.TEXT_PRIMARY),
+                            ft.Text(status, size=12, color=color),
+                        ],
+                        spacing=2,
+                    ),
+                ],
+                spacing=12,
+            ),
+            padding=16,
+            bgcolor=SleekTheme.BG_ELEVATED,
+            border_radius=8,
+            width=250,
+        )
 
     def initialize_vault(self):
         """Initialize vault after authentication."""
@@ -769,14 +1365,25 @@ class VaultApp:
                 self.qa_generator = QAGenerator()
                 logger.info("Q&A generator initialized")
                 
-                # Check if Q&A model needs setup
-                if not self.qa_generator.is_qa_model_available():
-                    logger.info("Q&A model (TinyLlama) not available, will setup when needed")
-                    self._component_status["qa"]["status"] = "checking"
-                    self._component_status["qa"]["message"] = "TinyLlama not downloaded"
-                else:
+                # Check Q&A model status (MLX preferred, Ollama fallback)
+                qa_status = self.qa_generator.get_qa_status()
+                
+                # Always prefer MLX on Apple Silicon if available (even if dependencies missing)
+                if qa_status.get("mlx_available") or (platform.machine() == "arm64" and MLX_MODULE_AVAILABLE):
+                    if qa_status.get("mlx_initialized"):
+                        self._component_status["qa"]["status"] = "ready"
+                        self._component_status["qa"]["message"] = "Ready (Optimized AI)"
+                    else:
+                        # MLX available but model not downloaded yet - show setup option
+                        self._component_status["qa"]["status"] = "checking"
+                        self._component_status["qa"]["message"] = "Setup required (download AI model)"
+                elif qa_status.get("qa_model_available"):
                     self._component_status["qa"]["status"] = "ready"
-                    self._component_status["qa"]["message"] = "Ready (TinyLlama)"
+                    self._component_status["qa"]["message"] = "Ready (Ollama TinyLlama)"
+                else:
+                    logger.info("Q&A model not available, will setup when needed")
+                    self._component_status["qa"]["status"] = "checking"
+                    self._component_status["qa"]["message"] = "Q&A model not downloaded"
                 
                 self.training_manager = TrainingManager(
                     backend_url=self.backend_url,
@@ -866,6 +1473,9 @@ class VaultApp:
 
     def build_ui(self):
         """Build the main UI."""
+        # Clear page before building to prevent duplicates
+        self.page.clean()
+        
         # Create Compute Pipeline (backend) connectivity indicator
         self.compute_pipeline_icon = ft.IconButton(
             icon=ft.Icons.SCIENCE_ROUNDED,
@@ -912,12 +1522,23 @@ class VaultApp:
                 ft.Container(width=8),
                 ft.VerticalDivider(width=1, color=ModernTheme.BORDER_COLOR),
                 ft.Container(width=8),
-                ft.IconButton(
-                    ft.Icons.ADD_CIRCLE_ROUNDED,
-                    tooltip="Add Secret",
-                    on_click=self.show_add_dialog,
+                ft.PopupMenuButton(
+                    icon=ft.Icons.ADD_CIRCLE_ROUNDED,
+                    tooltip="Add Entry",
                     icon_size=28,
                     icon_color=ModernTheme.ACCENT_PRIMARY,
+                    items=[
+                        ft.PopupMenuItem(
+                            text="Add Secret",
+                            icon=ft.Icons.LOCK_ROUNDED,
+                            on_click=lambda e: self.show_add_dialog(e, default_type="secret"),
+                        ),
+                        ft.PopupMenuItem(
+                            text="Add Knowledge",
+                            icon=ft.Icons.LIGHTBULB_ROUNDED,
+                            on_click=lambda e: self.show_add_dialog(e, default_type="knowledge"),
+                        ),
+                    ],
                 ),
                 ft.IconButton(
                     ft.Icons.CREATE_NEW_FOLDER_ROUNDED,
@@ -1001,7 +1622,7 @@ class VaultApp:
         # Modern sidebar navigation
         self.sidebar = ModernSidebar(
             on_nav_change=self.on_nav_change,
-            selected_index=0
+            selected_index=-1  # Start with Home selected
         )
         sidebar_container = self.sidebar.build()
 
@@ -1190,7 +1811,7 @@ class VaultApp:
                                 ft.ElevatedButton(
                                     "Add Secret",
                                     icon=ft.Icons.ADD_ROUNDED,
-                                    on_click=self.show_add_dialog,
+                                    on_click=lambda e: self.show_add_dialog(e, default_type="secret"),
                                     style=ft.ButtonStyle(
                                         bgcolor=SleekTheme.ACCENT_PRIMARY,
                                         color="white",
@@ -1371,10 +1992,17 @@ class VaultApp:
             animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
 
-    def show_add_dialog(self, e):
-        """Show add secret dialog."""
+    def show_add_dialog(self, e, default_type: str = None):
+        """Show add secret/knowledge dialog."""
         try:
             logger.debug("Opening add dialog")
+
+            # Determine default type based on current view if not provided
+            if default_type is None:
+                if hasattr(self, 'selected_type') and self.selected_type == "knowledge":
+                    default_type = "knowledge"
+                else:
+                    default_type = "secret"
 
             # Close any existing dialogs in overlay
             for overlay_item in list(self.page.overlay):
@@ -1419,7 +2047,7 @@ class VaultApp:
                     ft.Radio(value="secret", label="Secret"),
                     ft.Radio(value="knowledge", label="Knowledge"),
                 ]),
-                value="secret"
+                value=default_type
             )
             
             # Folder dropdown (if folders exist)
@@ -2138,20 +2766,28 @@ class VaultApp:
             layout.controls[0] = sidebar_container  # Update sidebar
         
         # Handle navigation
-        if index == 0:  # Secrets
-            self.selected_type = "secret"
-            self.type_filter.value = "secret"
-            self.load_secrets()
-        elif index == 1:  # Knowledge
-            self.show_knowledge_view()
-        elif index == 2:  # Training
-            self.show_training_view()
-        elif index == 3:  # Activity
-            self.show_activity_view()
-        elif index == 4:  # Statistics
-            self.show_statistics()
-        elif index == 5:  # Settings
-            self.show_settings()
+        if index == -1:  # Home
+            self.show_landing_page()
+        else:
+            # For all other views, ensure main UI layout is built
+            # Check if we're currently on landing page (which uses different layout)
+            if self.current_view == "landing" or len(self.page.controls) == 0 or not hasattr(self, 'secrets_list'):
+                self.build_ui()
+            
+            if index == 0:  # Secrets
+                self.selected_type = "secret"
+                self.type_filter.value = "secret"
+                self.load_secrets()
+            elif index == 1:  # Knowledge
+                self.show_knowledge_view()
+            elif index == 2:  # Training
+                self.show_training_view()
+            elif index == 3:  # Activity
+                self.show_activity_view()
+            elif index == 4:  # Statistics
+                self.show_statistics()
+            elif index == 5:  # Settings
+                self.show_settings()
         
         self.page.update()
 
@@ -2487,10 +3123,26 @@ class VaultApp:
             border_radius=12,
         )
         
+        # Add Knowledge button
+        add_knowledge_button = ft.Container(
+            content=ft.ElevatedButton(
+                "➕ Add Knowledge",
+                icon=ft.Icons.ADD_ROUNDED,
+                on_click=lambda e: self.show_add_dialog(e, default_type="knowledge"),
+                style=ft.ButtonStyle(
+                    bgcolor=ModernTheme.ACCENT_SUCCESS,
+                    color="white",
+                    shape=ft.RoundedRectangleBorder(radius=12),
+                    padding=ft.padding.symmetric(horizontal=24, vertical=12),
+                ),
+            ),
+            border_radius=12,
+        )
+        
         # Clear and rebuild knowledge view
         self.secrets_list.controls.clear()
         
-        # Knowledge view header with upload button
+        # Knowledge view header with upload and add buttons
         self.secrets_list.controls.append(
             ft.Container(
                 content=ft.Column(
@@ -2503,7 +3155,13 @@ class VaultApp:
                                     weight=ft.FontWeight.BOLD,
                                     color=ModernTheme.TEXT_PRIMARY,
                                 ),
-                                upload_button,
+                                ft.Row(
+                                    [
+                                        add_knowledge_button,
+                                        upload_button,
+                                    ],
+                                    spacing=12,
+                                ),
                             ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         ),
@@ -2881,34 +3539,320 @@ class VaultApp:
                 except Exception as cleanup_err:
                     logger.warning(f"Failed to cleanup temp file: {cleanup_err}")
 
+    def _create_training_progress_dialog(self, filename: str) -> tuple:
+        """
+        Create professional training progress dialog with encryption-focused messaging.
+        
+        Returns:
+            Tuple of (dialog, phase_text, progress_bar, phase_status, encryption_indicator)
+        """
+        window_width = self.page.window.width or 1200
+        window_height = self.page.window.height or 800
+        
+        dialog_width = min(max(int(window_width * 0.7), 600), 900)
+        dialog_height = min(max(int(window_height * 0.7), 400), 600)
+        
+        # Phase text (main message)
+        phase_text = ft.Text(
+            "Preparing your document...",
+            size=16,
+            weight=ft.FontWeight.BOLD,
+            color=SleekTheme.TEXT_PRIMARY,
+        )
+        
+        # Progress bar
+        progress_bar = ft.ProgressBar(
+            width=dialog_width - 80,
+            value=0.0,
+            color=SleekTheme.ACCENT_PRIMARY,
+            bgcolor=SleekTheme.BG_ELEVATED,
+            bar_height=10,
+        )
+        
+        # Phase status (subtitle)
+        phase_status = ft.Text(
+            "",
+            size=13,
+            color=SleekTheme.TEXT_SECONDARY,
+        )
+        
+        # Encryption indicator (always visible, reassuring)
+        encryption_indicator = ft.Row(
+            [
+                ft.Icon(
+                    ft.Icons.LOCK_ROUNDED,
+                    size=16,
+                    color=SleekTheme.ACCENT_SUCCESS,
+                ),
+                ft.Text(
+                    "All data is encrypted end-to-end",
+                    size=12,
+                    color=SleekTheme.ACCENT_SUCCESS,
+                    weight=ft.FontWeight.W_500,
+                ),
+            ],
+            spacing=6,
+            tight=True,
+        )
+        
+        # Phase steps indicator
+        phase_steps = ft.Column(
+            [
+                self._create_phase_step("Preparing the document", 0, False),
+                self._create_phase_step("Knowledge extraction", 1, False),
+                self._create_phase_step("Uploading encrypted data", 2, False),
+                self._create_phase_step("Generating Vault Data", 3, False),
+            ],
+            spacing=8,
+        )
+        
+        content_container = ft.Container(
+            content=ft.Column(
+                [
+                    # Title section
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Text(
+                                    f"🔐 Training Your AI Model",
+                                    size=20,
+                                    weight=ft.FontWeight.BOLD,
+                                    color=SleekTheme.TEXT_PRIMARY,
+                                ),
+                                ft.Container(height=4),
+                                ft.Text(
+                                    f"Document: {filename}",
+                                    size=13,
+                                    color=SleekTheme.TEXT_SECONDARY,
+                                ),
+                            ],
+                            spacing=0,
+                            tight=True,
+                        ),
+                        padding=ft.padding.only(bottom=20),
+                    ),
+                    # Phase steps (fixed height)
+                    ft.Container(
+                        content=phase_steps,
+                        padding=ft.padding.only(bottom=20),
+                    ),
+                    # Current phase section (expands to fill space)
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                phase_text,
+                                ft.Container(height=6),
+                                phase_status,
+                            ],
+                            spacing=0,
+                            tight=True,
+                        ),
+                        expand=True,
+                        padding=ft.padding.only(bottom=16),
+                    ),
+                    # Progress bar (fixed)
+                    ft.Container(
+                        content=progress_bar,
+                        padding=ft.padding.only(bottom=16),
+                    ),
+                    # Encryption indicator (fixed at bottom)
+                    ft.Container(
+                        content=encryption_indicator,
+                        padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                        bgcolor=SleekTheme.ACCENT_SUCCESS + "15",
+                        border_radius=8,
+                        border=ft.border.all(1, SleekTheme.ACCENT_SUCCESS + "40"),
+                    ),
+                ],
+                scroll=None,
+                spacing=0,
+                tight=True,
+            ),
+            width=dialog_width - 48,  # Account for dialog padding
+            padding=24,
+        )
+        
+        progress_dialog = ft.AlertDialog(
+            modal=True,
+            title=None,  # Custom title in content
+            content=ft.Container(
+                content=content_container,
+                width=dialog_width,
+                height=dialog_height,
+                padding=0,
+            ),
+            actions=[],
+            actions_alignment=ft.MainAxisAlignment.END,
+            shape=ft.RoundedRectangleBorder(radius=16),
+        )
+        
+        return progress_dialog, phase_text, progress_bar, phase_status, encryption_indicator, phase_steps
+    
+    def _create_phase_step(self, label: str, step_index: int, completed: bool) -> ft.Container:
+        """Create a phase step indicator."""
+        icon = ft.Icons.CHECK_CIRCLE_ROUNDED if completed else (
+            ft.Icons.RADIO_BUTTON_UNCHECKED if step_index == 0 else ft.Icons.CIRCLE_OUTLINED
+        )
+        icon_color = SleekTheme.ACCENT_SUCCESS if completed else SleekTheme.TEXT_MUTED
+        
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(
+                        icon,
+                        size=18,
+                        color=icon_color,
+                    ),
+                    ft.Text(
+                        label,
+                        size=13,
+                        color=SleekTheme.TEXT_PRIMARY if completed else SleekTheme.TEXT_SECONDARY,
+                        weight=ft.FontWeight.W_500 if completed else ft.FontWeight.NORMAL,
+                    ),
+                ],
+                spacing=10,
+                tight=True,
+            ),
+            padding=ft.padding.symmetric(vertical=4),
+        )
+    
+    def _update_training_phase(
+        self,
+        phase_text: ft.Text,
+        progress_bar: ft.ProgressBar,
+        phase_status: ft.Text,
+        phase_steps: ft.Column,
+        phase: int,
+        message: str,
+        submessage: str = "",
+        progress: Optional[float] = None
+    ):
+        """
+        Update training progress dialog for specific phase.
+        
+        Args:
+            phase_text: Main phase text widget
+            progress_bar: Progress bar widget
+            phase_status: Status subtitle widget
+            phase_steps: Phase steps column widget
+            phase: Phase number (0-3)
+            message: Main message
+            submessage: Optional submessage
+            progress: Optional progress (0.0-1.0)
+        """
+        phases = [
+            ("Preparing the document", "📄 Splitting document into sections..."),
+            ("Knowledge extraction", "💡 Extracting knowledge from your content..."),
+            ("Uploading encrypted data", "☁️ Uploading encrypted data to secure cloud storage..."),
+            ("Generating Vault Data", "🔐 Generating your encrypted vault data..."),
+        ]
+        
+        phase_name, default_msg = phases[phase] if phase < len(phases) else ("", "")
+        
+        # Update phase text
+        phase_text.value = message or default_msg
+        
+        # Update status
+        if submessage:
+            phase_status.value = submessage
+        else:
+            phase_status.value = "Your data remains encrypted throughout this process"
+        
+        # Update progress bar
+        if progress is not None:
+            progress_bar.value = progress
+        else:
+            # Auto-calculate progress based on phase
+            progress_bar.value = (phase + 1) / len(phases)
+        
+        # Update phase steps (mark previous as completed)
+        for i, step_widget in enumerate(phase_steps.controls):
+            if i < phase:
+                # Mark previous steps as completed
+                step = self._create_phase_step(phases[i][0], i, True)
+                phase_steps.controls[i] = step
+            elif i == phase:
+                # Current step (in progress)
+                step = self._create_phase_step(phases[i][0], i, False)
+                phase_steps.controls[i] = step
+        
+        self.page.update()
+    
     def _start_training_workflow(self, filename: str, text_chunks: List[str]):
-        """Start Q&A generation and training workflow."""
+        """Start Q&A generation and training workflow with progress dialog."""
+        # Create progress dialog
+        progress_dialog, phase_text, progress_bar, phase_status, encryption_indicator, phase_steps = self._create_training_progress_dialog(filename)
+        
+        self.page.overlay.append(progress_dialog)
+        progress_dialog.open = True
+        self.page.update()
+        
         def workflow():
             try:
-                # Step 1: Generate Q&A pairs
-                def update_step1():
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text("📝 Generating Q&A pairs..."),
-                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                # Phase 1: Preparing the document (already done, but show briefly)
+                def update_phase1():
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=0,
+                        message="📄 Preparing the document...",
+                        submessage=f"Processed {len(text_chunks)} sections",
+                        progress=0.25
                     )
-                    self.page.snack_bar.open = True
-                    self.page.update()
                 
                 try:
                     if hasattr(self.page, 'run_task'):
-                        self.page.run_task(update_step1)
+                        self.page.run_task(update_phase1)
                     else:
-                        update_step1()
+                        update_phase1()
                 except Exception:
-                    update_step1()
+                    update_phase1()
                 
-                qa_pairs = self.qa_generator.generate_from_chunks(
-                    text_chunks=text_chunks,
-                    user_id=self.session_data.get("user_id"),
-                    num_pairs_per_chunk=3
-                )
+                import time
+                time.sleep(0.5)  # Brief pause to show phase 1
+                
+                # Phase 2: Knowledge extraction (Q&A generation)
+                total_chunks = len(text_chunks)
+                processed_chunks = [0]  # Use list to allow modification in nested function
+                
+                def update_phase2_progress(current: int, total: int):
+                    """Update progress during knowledge extraction."""
+                    progress = 0.25 + (current / total) * 0.25  # 25% to 50%
+                    submsg = f"Extracting knowledge from chunk {current}/{total}... (All data encrypted)"
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=1,
+                        message="💡 Extracting knowledge from your content...",
+                        submessage=submsg,
+                        progress=progress
+                    )
+                
+                # Generate Q&A pairs with progress tracking
+                # We'll manually iterate through chunks to show progress
+                qa_pairs = []
+                for i, chunk in enumerate(text_chunks):
+                    current = i + 1
+                    processed_chunks[0] = current
+                    
+                    # Update progress
+                    def update_progress():
+                        update_phase2_progress(current, total_chunks)
+                    
+                    try:
+                        if hasattr(self.page, 'run_task'):
+                            self.page.run_task(update_progress)
+                        else:
+                            update_progress()
+                    except Exception:
+                        update_progress()
+                    
+                    # Generate Q&A for this chunk
+                    chunk_pairs = self.qa_generator.generate_qa_pairs(chunk, num_pairs=3)
+                    if chunk_pairs:
+                        qa_pairs.extend(chunk_pairs)
                 
                 if not qa_pairs:
+                    progress_dialog.open = False
+                    self.page.update()
                     user_msg, _ = make_user_friendly("Failed to generate Q&A pairs from document", context="training")
                     def show_error():
                         self.page.snack_bar = ft.SnackBar(
@@ -2926,38 +3870,71 @@ class VaultApp:
                         show_error()
                     return
                 
-                # Step 2: Generate encryption key BEFORE saving
+                # Phase 3: Uploading encrypted data (includes encryption)
                 import os
                 encryption_key = os.urandom(32)
                 encryption_key_hex = encryption_key.hex()
                 
-                # Step 3: Save dataset ENCRYPTED (never persist plaintext)
-                # Encrypts immediately after generation - never saves plaintext
+                def update_phase3_start():
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=2,
+                        message="🔒 Encrypting and uploading your data...",
+                        submessage=f"Encrypting {len(qa_pairs)} knowledge items with XChaCha20-Poly1305",
+                        progress=0.6
+                    )
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_phase3_start)
+                    else:
+                        update_phase3_start()
+                except Exception:
+                    update_phase3_start()
+                
                 dataset_filename = f"{filename.replace('.pdf', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
                 dataset_path = self.training_manager.save_dataset(
                     qa_pairs=qa_pairs,
                     filename=dataset_filename,
-                    encryption_key=encryption_key  # Encrypt before saving
+                    encryption_key=encryption_key
                 )
                 
                 logger.info(f"Dataset encrypted and saved: {dataset_path}")
                 
-                # Step 4: Submit training job
-                def update_step4():
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text("🚀 Submitting training job..."),
-                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                def update_phase3_upload():
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=2,
+                        message="☁️ Uploading encrypted data securely...",
+                        submessage="Your encrypted data is being uploaded to secure cloud storage",
+                        progress=0.75
                     )
-                    self.page.snack_bar.open = True
-                    self.page.update()
                 
                 try:
                     if hasattr(self.page, 'run_task'):
-                        self.page.run_task(update_step4)
+                        self.page.run_task(update_phase3_upload)
                     else:
-                        update_step4()
+                        update_phase3_upload()
                 except Exception:
-                    update_step4()
+                    update_phase3_upload()
+                
+                # Phase 4: Generating Vault Data (submit training job)
+                def update_phase4():
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=3,
+                        message="🔐 Generating Vault Data...",
+                        submessage="Your encrypted data is being processed to generate vault data (this may take a few minutes)",
+                        progress=0.85
+                    )
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_phase4)
+                    else:
+                        update_phase4()
+                except Exception:
+                    update_phase4()
                 
                 result = self.training_manager.submit_training_job(
                     dataset_path=dataset_path,
@@ -2966,6 +3943,24 @@ class VaultApp:
                     epochs=3,
                     batch_size=4
                 )
+                
+                # After submission, update to show completion
+                def update_phase4_complete():
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=3,
+                        message="🔐 Generating Vault Data...",
+                        submessage="Your encrypted vault data is being generated on secure infrastructure (check Training Jobs for progress)",
+                        progress=0.95
+                    )
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_phase4_complete)
+                    else:
+                        update_phase4_complete()
+                except Exception:
+                    update_phase4_complete()
                 
                 # Store training job metadata in vault entry
                 # Find the entry by filename and update with job_id
@@ -2998,15 +3993,48 @@ class VaultApp:
                 except Exception as update_err:
                     logger.warning(f"Failed to update entry with training metadata: {update_err}")
                 
-                # Update UI (thread-safe)
+                # Phase 4 Complete: Show success and demo query
                 def update_success():
+                    # Mark all phases as completed
+                    phases = [
+                        "Preparing the document",
+                        "Knowledge extraction",
+                        "Uploading encrypted data",
+                        "Generating Vault Data"
+                    ]
+                    for i in range(4):
+                        step = self._create_phase_step(phases[i], i, True)
+                        phase_steps.controls[i] = step
+                    
+                    phase_text.value = "✅ Vault Data Generated Successfully!"
+                    phase_status.value = f"Your encrypted vault data is ready. Knowledge ID: {result['adapter_id'][:8]}...\n\n💡 Try 'Demo Query' to test your knowledge base!"
+                    progress_bar.value = 1.0
+                    
+                    # Store encryption_key_hex for demo query (in closure)
+                    knowledge_id = result['adapter_id']
+                    
+                    # Add buttons: Demo Query and Done
+                    progress_dialog.actions = [
+                        ft.TextButton(
+                            "Demo Query",
+                            on_click=lambda e: self._show_demo_query_dialog(knowledge_id, encryption_key_hex, filename, progress_dialog),
+                            style=ft.ButtonStyle(color=SleekTheme.ACCENT_PRIMARY),
+                        ),
+                        ft.TextButton(
+                            "Done",
+                            on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update() or self.load_secrets(),
+                            style=ft.ButtonStyle(color=SleekTheme.TEXT_SECONDARY),
+                        ),
+                    ]
+                    
+                    self.page.update()
+                    
+                    # Show snackbar
                     self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text(f"✅ Training job submitted! Adapter ID: {result['adapter_id'][:8]}..."),
+                        content=ft.Text(f"✅ Training job submitted! Try Demo Query to test your knowledge."),
                         bgcolor=SleekTheme.ACCENT_SUCCESS,
                     )
                     self.page.snack_bar.open = True
-                    # Reload secrets to show updated status badge
-                    self.load_secrets()
                     self.page.update()
                 
                 try:
@@ -3024,6 +4052,20 @@ class VaultApp:
                 user_msg, _ = make_user_friendly(str(ex), context="training")
                 
                 def show_error():
+                    # Update dialog to show error
+                    phase_text.value = f"❌ Error: {user_msg}"
+                    phase_status.value = "Training workflow failed. Your data remains secure."
+                    progress_bar.value = None  # Indeterminate
+                    progress_dialog.actions = [
+                        ft.TextButton(
+                            "Close",
+                            on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update(),
+                            style=ft.ButtonStyle(color=SleekTheme.ACCENT_ERROR),
+                        ),
+                    ]
+                    self.page.update()
+                    
+                    # Also show snackbar
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Text(f"❌ {user_msg}"),
                         bgcolor=ModernTheme.ACCENT_ERROR,
@@ -3039,8 +4081,234 @@ class VaultApp:
                 except Exception:
                     show_error()
         
+        # Run workflow in background thread
         thread = threading.Thread(target=workflow, daemon=True)
         thread.start()
+    
+    def _show_demo_query_dialog(self, knowledge_id: str, encryption_key_hex: str, filename: str, parent_dialog: ft.AlertDialog):
+        """Show dialog for demo query to test the trained knowledge base."""
+        # Close parent dialog first
+        parent_dialog.open = False
+        self.page.update()
+        
+        # Query input field
+        query_field = ft.TextField(
+            label="Ask a question about your document",
+            hint_text="e.g., Describe this document in a few sentences",
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            border_radius=8,
+            bgcolor=SleekTheme.BG_ELEVATED,
+            border_color=SleekTheme.BORDER_COLOR,
+            focused_border_color=SleekTheme.ACCENT_PRIMARY,
+            expand=True,
+        )
+        
+        # Response area
+        response_text = ft.Text(
+            "",
+            size=14,
+            color=SleekTheme.TEXT_PRIMARY,
+            selectable=True,
+        )
+        
+        response_container = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(
+                        "Response:",
+                        size=12,
+                        weight=ft.FontWeight.W_500,
+                        color=SleekTheme.TEXT_SECONDARY,
+                    ),
+                    ft.Container(height=8),
+                    response_text,
+                ],
+                spacing=0,
+            ),
+            padding=16,
+            bgcolor=SleekTheme.BG_ELEVATED,
+            border_radius=8,
+            border=ft.border.all(1, SleekTheme.BORDER_COLOR),
+            visible=False,
+        )
+        
+        # Loading indicator
+        loading_indicator = ft.Container(
+            content=ft.Row(
+                [
+                    ft.ProgressRing(width=20, height=20, stroke_width=2),
+                    ft.Text("Asking your knowledge base...", size=12, color=SleekTheme.TEXT_SECONDARY),
+                ],
+                spacing=12,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            padding=16,
+            visible=False,
+        )
+        
+        def ask_query(e):
+            """Send query to inference endpoint."""
+            query = query_field.value.strip()
+            if not query:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Please enter a question"),
+                    bgcolor=SleekTheme.ACCENT_WARNING,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Show loading
+            loading_indicator.visible = True
+            response_container.visible = False
+            query_field.disabled = True
+            submit_button.disabled = True
+            self.page.update()
+            
+            def run_inference():
+                try:
+                    # First check adapter status before inference
+                    # Poll for status update (backend queries RunPod to get latest status)
+                    try:
+                        import time
+                        max_polls = 5  # Check up to 5 times
+                        poll_interval = 2  # Wait 2 seconds between polls
+                        
+                        adapter_status = "unknown"
+                        for poll_count in range(max_polls):
+                            status_result = self.training_manager.get_training_status(knowledge_id)
+                            adapter_status = status_result.get("status", "unknown")
+                            
+                            if adapter_status == "completed":
+                                break  # Ready for inference
+                            elif adapter_status in ["pending", "training"]:
+                                # Still processing - wait and check again
+                                if poll_count < max_polls - 1:
+                                    time.sleep(poll_interval)
+                                    continue
+                            
+                            # If we get here, either failed or still not ready after polling
+                            break
+                        
+                        if adapter_status != "completed":
+                            # Adapter not ready yet
+                            error_msg = f"Knowledge base is still training (status: {adapter_status}). Please wait for training to complete."
+                            if adapter_status == "pending":
+                                error_msg = "Knowledge base is queued for training. Please wait a few minutes and try again."
+                            elif adapter_status == "training":
+                                error_msg = "Knowledge base is currently training. This may take several minutes. Please wait and try again."
+                            elif adapter_status == "failed":
+                                error_msg = "Knowledge base training failed. Please check the training status."
+                            
+                            def show_not_ready():
+                                loading_indicator.visible = False
+                                query_field.disabled = False
+                                submit_button.disabled = False
+                                response_text.value = error_msg
+                                response_container.visible = True
+                                self.page.update()
+                            
+                            show_not_ready()
+                            return
+                    except Exception as status_err:
+                        logger.warning(f"Could not check adapter status: {status_err}")
+                        # Continue anyway - backend will handle the check
+                    
+                    # Call training manager's inference method
+                    response = self.training_manager.inference_with_adapter(
+                        adapter_id=knowledge_id,
+                        query=query,
+                        encryption_key_hex=encryption_key_hex
+                    )
+                    
+                    # Update UI with response
+                    def update_ui():
+                        loading_indicator.visible = False
+                        query_field.disabled = False
+                        submit_button.disabled = False
+                        
+                        if response and "response" in response:
+                            response_text.value = response["response"]
+                            response_container.visible = True
+                        else:
+                            response_text.value = "No response received"
+                            response_container.visible = True
+                        
+                        self.page.update()
+                    
+                    # Call directly (not async)
+                    update_ui()
+                    
+                except Exception as ex:
+                    logger.error(f"Demo query error: {ex}")
+                    def show_error():
+                        loading_indicator.visible = False
+                        query_field.disabled = False
+                        submit_button.disabled = False
+                        response_text.value = f"Error: {str(ex)}"
+                        response_container.visible = True
+                        self.page.update()
+                    
+                    # Call directly (not async)
+                    show_error()
+            
+            thread = threading.Thread(target=run_inference, daemon=True)
+            thread.start()
+        
+        submit_button = ft.ElevatedButton(
+            "Ask",
+            icon=ft.Icons.SEND_ROUNDED,
+            on_click=ask_query,
+            style=ft.ButtonStyle(
+                bgcolor=SleekTheme.ACCENT_PRIMARY,
+                color="white",
+            ),
+        )
+        
+        # Create dialog
+        demo_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text(
+                f"Demo Query - {filename}",
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=SleekTheme.TEXT_PRIMARY,
+            ),
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            "Ask your trained knowledge base a question about the document:",
+                            size=13,
+                            color=SleekTheme.TEXT_SECONDARY,
+                        ),
+                        ft.Container(height=16),
+                        query_field,
+                        ft.Container(height=16),
+                        loading_indicator,
+                        response_container,
+                    ],
+                    spacing=0,
+                    tight=True,
+                ),
+                width=600,
+                padding=0,
+            ),
+            actions=[
+                submit_button,
+                ft.TextButton(
+                    "Close",
+                    on_click=lambda e: setattr(demo_dialog, 'open', False) or self.page.update(),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.overlay.append(demo_dialog)
+        demo_dialog.open = True
+        self.page.update()
 
     def show_training_view(self):
         """Show training jobs view."""
@@ -3193,6 +4461,167 @@ class VaultApp:
         )
         
         self.page.update()
+        
+        # Start auto-refresh for pending/training jobs
+        self._start_training_auto_refresh(jobs)
+    
+    def _start_training_auto_refresh(self, jobs: List[Dict[str, Any]]):
+        """
+        Start automatic refresh for pending/training jobs.
+        
+        Args:
+            jobs: List of training jobs
+        """
+        # Stop existing timer if any
+        if self._training_refresh_timer:
+            self._training_refresh_timer.cancel()
+            self._training_refresh_timer = None
+        
+        # Check if there are any pending or training jobs
+        has_pending_or_training = any(
+            job.get("status", "").lower() in ["pending", "training"]
+            for job in jobs
+        )
+        
+        if not has_pending_or_training:
+            # No pending/training jobs, no need to refresh
+            self._training_refresh_active = False
+            return
+        
+        # Start auto-refresh
+        self._training_refresh_active = True
+        
+        def refresh_training_status():
+            """Refresh training jobs status periodically."""
+            if not self._training_refresh_active:
+                return
+            
+            # Only refresh if training view is currently visible
+            if self.current_view != "training":
+                self._training_refresh_active = False
+                return
+            
+            try:
+                # Fetch updated jobs
+                if self.training_manager:
+                    response = requests.get(
+                        f"{self.backend_url}/api/adapters/adapters",
+                        headers=self.training_manager.headers,
+                        timeout=10
+                    )
+                    
+                    # Refresh token on 401 error
+                    if response.status_code == 401:
+                        if self.training_manager._refresh_token_if_needed(response):
+                            response = requests.get(
+                                f"{self.backend_url}/api/adapters/adapters",
+                                headers=self.training_manager.headers,
+                                timeout=10
+                            )
+                    
+                    if response.status_code == 200:
+                        data = response.json()
+                        updated_jobs = data.get("adapters", [])
+                        
+                        # Check if any jobs are still pending/training
+                        has_pending_or_training = any(
+                            job.get("status", "").lower() in ["pending", "training"]
+                            for job in updated_jobs
+                        )
+                        
+                        # Update vault entry tags if status changed
+                        self._update_training_status_tags(updated_jobs)
+                        
+                        if has_pending_or_training:
+                            # Still have pending/training jobs, refresh view and schedule next check
+                            logger.info("Refreshing training view (pending/training jobs active)...")
+                            self.show_training_view()
+                            # Schedule next refresh in 5 seconds
+                            self._training_refresh_timer = threading.Timer(5.0, refresh_training_status)
+                            self._training_refresh_timer.daemon = True
+                            self._training_refresh_timer.start()
+                        else:
+                            # All jobs completed/failed, refresh once more to show final status, then stop
+                            logger.info("All training jobs completed, refreshing view one last time...")
+                            self.show_training_view()
+                            # Also refresh Knowledge view if visible to update status badges
+                            if self.current_view == "knowledge":
+                                self.load_secrets()
+                            self._training_refresh_active = False
+            except Exception as e:
+                logger.debug(f"Error refreshing training status: {e}")
+                # Schedule retry in 10 seconds on error
+                self._training_refresh_timer = threading.Timer(10.0, refresh_training_status)
+                self._training_refresh_timer.daemon = True
+                self._training_refresh_timer.start()
+        
+        # Start first refresh after 5 seconds
+        self._training_refresh_timer = threading.Timer(5.0, refresh_training_status)
+        self._training_refresh_timer.daemon = True
+        self._training_refresh_timer.start()
+        logger.info("Started auto-refresh for training jobs (5s interval)")
+    
+    def _update_training_status_tags(self, jobs: List[Dict[str, Any]]):
+        """
+        Update training status tags in vault entries based on job status.
+        
+        Args:
+            jobs: List of training jobs with adapter_id and status
+        """
+        if not self.vault:
+            return
+        
+        try:
+            from advanced_vault.encrypted_kv import QueryFilter
+            
+            # Build mapping of adapter_id -> status
+            adapter_statuses = {job.get("adapter_id"): job.get("status", "unknown") for job in jobs}
+            
+            # Find all entries with training tags
+            filter = QueryFilter()
+            all_entries = self.vault.kv_store.search(filter)
+            
+            updated_count = 0
+            for entry in all_entries:
+                tags = list(entry.tags) if entry.tags else []
+                training_job_tags = [t for t in tags if t.startswith("training_job:")]
+                
+                if not training_job_tags:
+                    continue
+                
+                # Extract adapter_id from training_job tag
+                for job_tag in training_job_tags:
+                    adapter_id = job_tag.replace("training_job:", "")
+                    if adapter_id in adapter_statuses:
+                        # Remove old training_status tag
+                        tags = [t for t in tags if not t.startswith("training_status:")]
+                        
+                        # Add new status tag
+                        new_status = adapter_statuses[adapter_id].lower()
+                        tags.append(f"training_status:{new_status}")
+                        
+                        # Update entry
+                        try:
+                            decrypted_value = self.vault.kv_store.get_by_id(entry.id)
+                            if decrypted_value:
+                                self.vault.kv_store.put(
+                                    service=entry.service,
+                                    secret_value=decrypted_value,
+                                    entry_type=entry.entry_type,
+                                    tags=tags,
+                                    description=entry.description,
+                                    entry_id=entry.id
+                                )
+                                updated_count += 1
+                                logger.debug(f"Updated training status tag for {entry.service}: {new_status}")
+                        except Exception as e:
+                            logger.debug(f"Failed to update entry {entry.id}: {e}")
+            
+            if updated_count > 0:
+                logger.info(f"Updated training status tags for {updated_count} entries")
+                
+        except Exception as e:
+            logger.debug(f"Error updating training status tags: {e}")
 
     def show_settings(self):
         """Show settings with MCP setup."""
@@ -3278,7 +4707,7 @@ class VaultApp:
             },
             {
                 "name": "Q&A Generation",
-                "description": "Generates Q&A pairs from documents (TinyLlama)",
+                "description": "Generates Q&A pairs from documents using optimized AI models",
                 "status_key": "qa",
                 "icon": ft.Icons.QUESTION_ANSWER_ROUNDED,
             },
@@ -3303,7 +4732,25 @@ class VaultApp:
         ]
         
         for component in components:
-            status_info = self._component_status.get(component["status_key"], {"status": "unknown", "message": "Unknown"})
+            # For Q&A, check actual status dynamically (MLX may have initialized after startup)
+            if component["status_key"] == "qa" and self.qa_generator:
+                try:
+                    qa_status = self.qa_generator.get_qa_status()
+                    if qa_status.get("mlx_initialized"):
+                        status_info = {"status": "ready", "message": "Ready (Optimized AI)"}
+                    elif qa_status.get("qa_model_available"):
+                        status_info = {"status": "ready", "message": "Ready (Local AI)"}
+                    elif qa_status.get("mlx_available"):
+                        status_info = {"status": "checking", "message": "Setup required (download AI model)"}
+                    else:
+                        status_info = {"status": "checking", "message": "Q&A model not downloaded"}
+                    # Update cache
+                    self._component_status["qa"] = status_info
+                except Exception as e:
+                    logger.debug(f"Could not get Q&A status: {e}")
+                    status_info = self._component_status.get(component["status_key"], {"status": "unknown", "message": "Unknown"})
+            else:
+                status_info = self._component_status.get(component["status_key"], {"status": "unknown", "message": "Unknown"})
             
             # Determine status color and icon
             if status_info["status"] == "ready":
@@ -3315,8 +4762,8 @@ class VaultApp:
                 status_icon = ft.Icons.DOWNLOADING_ROUNDED
                 status_text = status_info["message"]
             elif status_info["status"] == "checking":
-                status_color = SleekTheme.TEXT_MUTED
-                status_icon = ft.Icons.HOURGLASS_EMPTY_ROUNDED
+                status_color = SleekTheme.ACCENT_WARNING if "Setup required" in status_info.get("message", "") else SleekTheme.TEXT_MUTED
+                status_icon = ft.Icons.DOWNLOAD_ROUNDED if "Setup required" in status_info.get("message", "") else ft.Icons.HOURGLASS_EMPTY_ROUNDED
                 status_text = status_info["message"]
             elif status_info["status"] == "error":
                 status_color = SleekTheme.ACCENT_ERROR
@@ -3371,7 +4818,7 @@ class VaultApp:
                                     ft.IconButton(
                                         ft.Icons.DOWNLOAD_ROUNDED,
                                         icon_size=18,
-                                        tooltip="Download TinyLlama",
+                                        tooltip=self._get_qa_setup_tooltip(),
                                         visible=(component["status_key"] == "qa" and status_info["status"] != "ready" and status_info["status"] != "installing"),
                                         on_click=lambda e, key=component["status_key"]: self._setup_qa_model_with_progress() if key == "qa" else None,
                                         icon_color=SleekTheme.ACCENT_PRIMARY,

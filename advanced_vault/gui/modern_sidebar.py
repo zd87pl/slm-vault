@@ -94,6 +94,30 @@ class ModernSidebar:
         # Navigation items
         nav_items_column = []
         
+        # Home item (always first)
+        home_item = {
+            "icon": ft.Icons.HOME_OUTLINED,
+            "selected": ft.Icons.HOME_ROUNDED,
+            "label": "Home",
+            "idx": -1
+        }
+        nav_items_column.append(
+            self._create_nav_item(
+                icon=home_item["icon"],
+                selected_icon=home_item["selected"],
+                label=home_item["label"],
+                index=home_item["idx"],
+                is_selected=self.selected_index == home_item["idx"]
+            )
+        )
+        
+        nav_items_column.append(
+            ft.Container(
+                height=SleekTheme.SPACING_MD,
+                margin=ft.margin.only(top=SleekTheme.SPACING_MD, bottom=SleekTheme.SPACING_MD),
+            )
+        )
+        
         # Primary section
         primary_items = [
             {"icon": ft.Icons.KEY_OUTLINED, "selected": ft.Icons.KEY_ROUNDED, "label": "Secrets", "idx": 0},
@@ -120,7 +144,7 @@ class ModernSidebar:
         
         # Secondary section
         secondary_items = [
-            {"icon": ft.Icons.TRAIN_OUTLINED, "selected": ft.Icons.TRAIN_ROUNDED, "label": "Training", "idx": 2},
+            {"icon": ft.Icons.PSYCHOLOGY_OUTLINED, "selected": ft.Icons.PSYCHOLOGY_ROUNDED, "label": "Training", "idx": 2},
             {"icon": ft.Icons.HISTORY_OUTLINED, "selected": ft.Icons.HISTORY_ROUNDED, "label": "Activity", "idx": 3},
             {"icon": ft.Icons.BAR_CHART_OUTLINED, "selected": ft.Icons.BAR_CHART_ROUNDED, "label": "Statistics", "idx": 4},
         ]
@@ -143,11 +167,11 @@ class ModernSidebar:
             )
         )
         
-        # Settings section
+        # Setup/Settings section
         settings_item = {
             "icon": ft.Icons.SETTINGS_OUTLINED,
             "selected": ft.Icons.SETTINGS_ROUNDED,
-            "label": "Settings",
+            "label": "Setup",
             "idx": 5
         }
         

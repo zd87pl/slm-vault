@@ -1,8 +1,13 @@
 """
 Q&A Generator Service
 
-Generates Q&A pairs from PDF text chunks using RunPod inference (with Ollama fallback).
+Generates Q&A pairs from PDF text chunks using MLX (Apple Silicon), Ollama, or RunPod.
 Formats output as Alpaca training dataset (JSONL).
+
+Priority order:
+1. MLX (Qwen2.5-3B with Outlines) - Apple Silicon only, guaranteed JSON
+2. Ollama (TinyLlama/Llama3.2) - Local fallback
+3. RunPod - Cloud fallback
 """
 
 import logging
@@ -10,16 +15,29 @@ import requests
 import json
 import time
 import os
+import platform
 from typing import List, Dict, Any, Optional, Tuple, Callable
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# Try to import MLX generator (Apple Silicon only)
+try:
+    from qa_generator_mlx import MLXQAGenerator
+    MLX_MODULE_AVAILABLE = True
+except ImportError:
+    MLX_MODULE_AVAILABLE = False
+    logger.debug("MLX Q&A generator module not available")
+
 
 class QAGenerator:
     """
-    Service for generating Q&A pairs from PDF chunks using RunPod inference.
-    Falls back to local Ollama if RunPod fails or returns echo.
+    Service for generating Q&A pairs from PDF chunks.
+    
+    Priority order:
+    1. MLX (Apple Silicon) - Best quality, guaranteed JSON, 3 pairs per chunk
+    2. Ollama (local) - Fallback for non-Apple Silicon or if MLX unavailable
+    3. RunPod (cloud) - Final fallback
     """
     
     def __init__(self, runpod_endpoint_id: Optional[str] = None, runpod_api_key: Optional[str] = None,
@@ -39,10 +57,29 @@ class QAGenerator:
         
         # Ollama fallback configuration
         self.ollama_base_url = ollama_base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.ollama_model = ollama_model or os.getenv("OLLAMA_QA_MODEL", "tinyllama")  # Use TinyLlama for Q&A generation
+        self.ollama_model = ollama_model or os.getenv("OLLAMA_QA_MODEL", "tinyllama")
+        
+        # Try to initialize MLX generator (Apple Silicon only)
+        # Use lazy loading - don't load model until first use (to avoid blocking startup)
+        self.mlx_generator = None
+        self.mlx_initialized = False
+        self.mlx_available = False
+        
+        if MLX_MODULE_AVAILABLE and platform.machine() == "arm64":
+            try:
+                if MLXQAGenerator.is_available():
+                    self.mlx_available = True
+                    logger.info("MLX Q&A generator available (will load on first use)")
+                else:
+                    # Check what's missing and log it
+                    logger.info("MLX available but dependencies missing - attempting auto-install on first use")
+                    # Will try to install automatically when user clicks Setup
+                    self.mlx_available = True  # Set to True so we can try to install dependencies
+            except Exception as e:
+                logger.debug(f"MLX availability check failed: {e}, will use Ollama fallback")
         
         if not self.endpoint_id or not self.api_key:
-            logger.warning("RunPod endpoint not configured. Q&A generation will use Ollama fallback if available.")
+            logger.warning("RunPod endpoint not configured. Q&A generation will use MLX/Ollama fallback if available.")
     
     def is_ollama_available(self) -> bool:
         """
@@ -59,11 +96,21 @@ class QAGenerator:
     
     def is_qa_model_available(self) -> bool:
         """
-        Check if Q&A model (TinyLlama) is available.
+        Check if Q&A model is available (MLX preferred, Ollama fallback).
         
         Returns:
-            True if TinyLlama or fallback model is available
+            True if MLX or Ollama model is available
         """
+        # Check MLX first (Apple Silicon) - don't require full initialization
+        if self.mlx_available:
+            try:
+                if MLXQAGenerator.is_available():
+                    logger.debug("MLX Q&A model available")
+                    return True
+            except Exception:
+                pass
+        
+        # Check Ollama fallback
         if not self.is_ollama_available():
             return False
         
@@ -87,7 +134,7 @@ class QAGenerator:
     
     def setup_qa_model(self, progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None) -> Tuple[bool, str]:
         """
-        Setup Q&A model (TinyLlama) with progress tracking.
+        Setup Q&A model (MLX preferred, Ollama fallback) with progress tracking.
         
         Args:
             progress_callback: Optional callback(message, percent, time_remaining) for progress updates
@@ -95,6 +142,37 @@ class QAGenerator:
         Returns:
             (success: bool, message: str)
         """
+        # Check if MLX is available (Apple Silicon)
+        if self.mlx_available:
+            # Check if dependencies are installed, try to install if missing
+            if not MLXQAGenerator.is_available():
+                logger.info("MLX dependencies missing, attempting auto-install...")
+                if progress_callback:
+                    progress_callback("Installing MLX dependencies (outlines, langchain-text-splitters)...", None, None)
+                
+                success = self._install_mlx_dependencies(progress_callback)
+                if not success:
+                    logger.warning("Failed to install MLX dependencies, falling back to Ollama")
+                    return False, "Failed to install MLX dependencies. Please install manually: pip install outlines langchain-text-splitters"
+            
+            # Initialize MLX with progress if not already initialized
+            if not self.mlx_initialized:
+                try:
+                    logger.info("Initializing MLX Q&A generator with progress tracking...")
+                    self.mlx_generator = MLXQAGenerator(progress_callback=progress_callback)
+                    self.mlx_initialized = True
+                    logger.info("MLX Q&A model initialized successfully")
+                    return True, "MLX Q&A model ready (Qwen2.5-3B-Instruct-4bit)"
+                except Exception as e:
+                    logger.error(f"MLX initialization failed: {e}")
+                    return False, f"MLX initialization failed: {str(e)}"
+            else:
+                if progress_callback:
+                    progress_callback("MLX Q&A model ready (Qwen2.5-3B)", 100.0, None)
+                logger.info("MLX Q&A model already initialized")
+                return True, "MLX Q&A model ready (Qwen2.5-3B-Instruct-4bit)"
+        
+        # Fallback to Ollama setup
         if not self.is_ollama_available():
             return False, "Ollama server is not running. Please start Ollama first."
         
@@ -224,12 +302,89 @@ class QAGenerator:
         Returns:
             Dictionary with status information
         """
+        mlx_info = None
+        if self.mlx_initialized and self.mlx_generator:
+            try:
+                mlx_info = self.mlx_generator.get_model_info()
+            except Exception:
+                pass
+        
         return {
+            "mlx_available": self.mlx_available,
+            "mlx_initialized": self.mlx_initialized,
+            "mlx_info": mlx_info,
             "ollama_available": self.is_ollama_available(),
             "qa_model_available": self.is_qa_model_available(),
             "model_name": self.ollama_model,
-            "ollama_base_url": self.ollama_base_url
+            "ollama_base_url": self.ollama_base_url,
+            "preferred_method": "MLX" if self.mlx_available else "Ollama"
         }
+    
+    def _install_mlx_dependencies(self, progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None) -> bool:
+        """
+        Automatically install MLX dependencies (outlines, langchain-text-splitters).
+        
+        Args:
+            progress_callback: Optional callback for progress updates
+            
+        Returns:
+            True if installation successful
+        """
+        import subprocess
+        import sys
+        
+        dependencies = [
+            "outlines>=0.0.46",
+            "langchain-text-splitters>=0.3.0"
+        ]
+        
+        for dep in dependencies:
+            try:
+                if progress_callback:
+                    progress_callback(f"Installing {dep}...", None, None)
+                
+                logger.info(f"Installing {dep}...")
+                
+                # Try user install first
+                result = subprocess.run(
+                    [sys.executable, "-m", "pip", "install", "--user", dep],
+                    capture_output=True,
+                    text=True,
+                    timeout=300
+                )
+                
+                if result.returncode != 0:
+                    # Fallback to break-system-packages
+                    logger.debug(f"User install failed for {dep}, trying with --break-system-packages")
+                    result = subprocess.run(
+                        [sys.executable, "-m", "pip", "install", "--break-system-packages", dep],
+                        capture_output=True,
+                        text=True,
+                        timeout=300
+                    )
+                
+                if result.returncode != 0:
+                    logger.error(f"Failed to install {dep}: {result.stderr}")
+                    return False
+                
+                logger.info(f"Successfully installed {dep}")
+                
+            except Exception as e:
+                logger.error(f"Error installing {dep}: {e}")
+                return False
+        
+        # Reload module to pick up new imports
+        try:
+            import importlib
+            if MLX_MODULE_AVAILABLE:
+                import qa_generator_mlx
+                importlib.reload(qa_generator_mlx)
+                global MLXQAGenerator
+                MLXQAGenerator = qa_generator_mlx.MLXQAGenerator
+        except Exception as e:
+            logger.warning(f"Could not reload MLX module: {e}")
+        
+        return True
     
     def _is_chunk_valid(self, text_chunk: str) -> bool:
         """
@@ -307,11 +462,14 @@ class QAGenerator:
         """
         Generate Q&A pairs from a text chunk.
         
-        Uses local Ollama if available (preferred for privacy), falls back to RunPod.
+        Priority order:
+        1. MLX (Apple Silicon) - Best quality, guaranteed 3 pairs, valid JSON
+        2. Ollama (local) - Fallback
+        3. RunPod (cloud) - Final fallback
         
         Args:
             text_chunk: Text chunk to generate Q&A from
-            num_pairs: Number of Q&A pairs to generate
+            num_pairs: Number of Q&A pairs to generate (MLX always generates 3)
             
         Returns:
             List of Q&A pairs in format [{"instruction": "question", "output": "answer"}, ...]
@@ -324,7 +482,29 @@ class QAGenerator:
             logger.debug(f"Skipping invalid chunk (length: {len(text_chunk)})")
             return []
         
-        # Try Ollama first (local, privacy-preserving)
+        # Try MLX first (Apple Silicon, best quality)
+        # Lazy initialization - load model on first use
+        if self.mlx_available and not self.mlx_initialized:
+            try:
+                logger.info("Initializing MLX Q&A generator (first use)...")
+                self.mlx_generator = MLXQAGenerator()
+                self.mlx_initialized = True
+                logger.info("MLX Q&A generator initialized successfully")
+                # Status will be updated dynamically in Settings view via get_qa_status()
+            except Exception as e:
+                logger.warning(f"MLX initialization failed: {e}, will use Ollama fallback")
+                self.mlx_available = False
+        
+        if self.mlx_generator:
+            try:
+                mlx_pairs = self.mlx_generator.generate_qa_pairs(text_chunk)
+                if mlx_pairs and len(mlx_pairs) >= num_pairs:
+                    logger.info(f"MLX generated {len(mlx_pairs)} Q&A pairs (guaranteed valid JSON)")
+                    return mlx_pairs[:num_pairs]  # Return requested number
+            except Exception as e:
+                logger.debug(f"MLX generation failed: {e}, falling back to Ollama")
+        
+        # Try Ollama second (local, privacy-preserving)
         try:
             ollama_pairs = self._generate_qa_with_ollama(text_chunk, num_pairs)
             if ollama_pairs:
@@ -333,12 +513,12 @@ class QAGenerator:
         except Exception as e:
             logger.debug(f"Ollama generation failed: {e}")
         
-        # Fallback to RunPod if Ollama not available
+        # Fallback to RunPod if local methods unavailable
         if self.base_url and self.api_key:
             logger.info("Falling back to RunPod for Q&A generation...")
             return self._generate_qa_with_runpod(text_chunk, num_pairs)
         else:
-            logger.warning("No Q&A generation method available (Ollama and RunPod both unavailable)")
+            logger.warning("No Q&A generation method available (MLX/Ollama/RunPod all unavailable)")
             return []
     
     def _generate_qa_with_runpod(self, text_chunk: str, num_pairs: int) -> List[Dict[str, str]]:

@@ -24,6 +24,15 @@ mlx>=0.18.0
 mlx-vlm>=0.1.0
 docling-core>=1.0.0
 
+# MLX Q&A Generation (Apple Silicon optimized)
+# For structured Q&A generation with guaranteed JSON output
+mlx-lm>=0.21.0
+outlines>=0.0.46
+langchain-text-splitters>=0.3.0
+pydantic>=2.0.0
+huggingface_hub>=0.20.0  # For better model download progress tracking
+hf_transfer>=0.3.0  # Rust-based fast download protocol (10-100x faster)
+
 # Encryption (already in main project)
 # cryptography
 # pynacl

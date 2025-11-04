@@ -5,7 +5,7 @@ Shows onboarding flow with tutorial and sample data options.
 """
 
 import flet as ft
-from theme import ModernTheme
+from sleek_theme import SleekTheme
 from typing import Callable, Optional
 
 logger = None
@@ -34,49 +34,52 @@ class WelcomeScreen:
         self.skip_tutorial = False
         
     def get_view(self) -> ft.Container:
-        """Get the welcome screen view."""
+        """Get the welcome screen view - ProtonVPN-style modern design."""
         return ft.Container(
             content=ft.Column(
                 [
-                    # Hero section
+                    # Hero section - centered, prominent
                     ft.Container(
                         content=ft.Column(
                             [
+                                # Icon with glow effect
                                 ft.Container(
                                     content=ft.Icon(
                                         ft.Icons.LOCK_ROUNDED,
-                                        size=100,
-                                        color=ModernTheme.ACCENT_PRIMARY,
+                                        size=96,
+                                        color=SleekTheme.ACCENT_PRIMARY,
                                     ),
-                                    padding=30,
-                                    border_radius=30,
-                                    bgcolor=ModernTheme.BG_ELEVATED,
-                                    border=ft.border.all(2, ModernTheme.BORDER_COLOR),
+                                    padding=32,
+                                    border_radius=24,
+                                    bgcolor=SleekTheme.BG_ELEVATED,
+                                    border=ft.border.all(2, SleekTheme.ACCENT_PRIMARY + "40"),
+                                    # Subtle shadow effect (via elevated background)
                                 ),
-                                ft.Container(height=32),
+                                ft.Container(height=40),
                                 ft.Text(
                                     "Welcome to Enclave",
                                     size=42,
                                     weight=ft.FontWeight.BOLD,
-                                    color=ModernTheme.TEXT_PRIMARY,
+                                    color=SleekTheme.TEXT_PRIMARY,
                                     text_align=ft.TextAlign.CENTER,
                                 ),
-                                ft.Container(height=12),
+                                ft.Container(height=16),
                                 ft.Text(
-                                    "Your encrypted vault with AI training",
-                                    size=18,
-                                    color=ModernTheme.TEXT_SECONDARY,
+                                    "Your encrypted vault with AI-powered knowledge extraction",
+                                    size=17,
+                                    color=SleekTheme.TEXT_SECONDARY,
                                     text_align=ft.TextAlign.CENTER,
                                 ),
-                                ft.Container(height=48),
+                                ft.Container(height=64),
                             ],
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                             spacing=0,
                         ),
                         alignment=ft.alignment.center,
+                        padding=ft.padding.symmetric(horizontal=40),
                     ),
                     
-                    # Features list
+                    # Features list - clean, spaced out
                     ft.Container(
                         content=ft.Column(
                             [
@@ -85,19 +88,19 @@ class WelcomeScreen:
                                     "End-to-End Encryption",
                                     "Your data is encrypted before it leaves your device"
                                 ),
-                                ft.Container(height=16),
+                                ft.Container(height=24),
                                 self._create_feature_item(
                                     ft.Icons.PSYCHOLOGY_ROUNDED,
                                     "AI-Powered Knowledge",
                                     "Train personalized models on your documents"
                                 ),
-                                ft.Container(height=16),
+                                ft.Container(height=24),
                                 self._create_feature_item(
                                     ft.Icons.CLOUD_DONE_ROUNDED,
                                     "Cloud Sync",
                                     "Sync across devices securely"
                                 ),
-                                ft.Container(height=16),
+                                ft.Container(height=24),
                                 self._create_feature_item(
                                     ft.Icons.SEARCH_ROUNDED,
                                     "Smart Search",
@@ -106,51 +109,49 @@ class WelcomeScreen:
                             ],
                             spacing=0,
                         ),
-                        padding=ft.padding.symmetric(horizontal=40),
+                        padding=ft.padding.symmetric(horizontal=60),
                     ),
                     
-                    ft.Container(height=48),
+                    ft.Container(height=56),
                     
-                    # Action buttons
+                    # Action buttons - prominent, well-spaced
                     ft.Container(
                         content=ft.Column(
                             [
-                                # Primary CTA
+                                # Primary CTA - large, prominent
                                 ft.ElevatedButton(
                                     "Get Started",
                                     icon=ft.Icons.ARROW_FORWARD_ROUNDED,
                                     on_click=self._on_get_started,
                                     style=ft.ButtonStyle(
-                                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                                        bgcolor=SleekTheme.ACCENT_PRIMARY,
                                         color="white",
-                                        padding=ft.padding.symmetric(horizontal=32, vertical=16),
+                                        padding=ft.padding.symmetric(horizontal=48, vertical=20),
                                         shape=ft.RoundedRectangleBorder(radius=12),
+                                        elevation=2,
                                     ),
                                     height=56,
                                 ),
-                                ft.Container(height=16),
+                                ft.Container(height=20),
                                 
                                 # Secondary: Add sample data
-                                ft.Container(
-                                    content=ft.ElevatedButton(
-                                        "Add Sample Data",
-                                        icon=ft.Icons.AUTO_AWESOME_ROUNDED,
-                                        on_click=self._on_add_sample,
-                                        style=ft.ButtonStyle(
-                                            bgcolor=ModernTheme.BG_ELEVATED,
-                                            color=ModernTheme.TEXT_PRIMARY,
-                                            padding=ft.padding.symmetric(horizontal=32, vertical=12),
-                                            shape=ft.RoundedRectangleBorder(radius=12),
-                                        ),
-                                        height=48,
+                                ft.ElevatedButton(
+                                    "Add Sample Data",
+                                    icon=ft.Icons.AUTO_AWESOME_ROUNDED,
+                                    on_click=self._on_add_sample,
+                                    style=ft.ButtonStyle(
+                                        bgcolor=SleekTheme.BG_ELEVATED,
+                                        color=SleekTheme.TEXT_PRIMARY,
+                                        padding=ft.padding.symmetric(horizontal=40, vertical=16),
+                                        shape=ft.RoundedRectangleBorder(radius=12),
+                                        side=ft.BorderSide(1.5, SleekTheme.BORDER_COLOR),
                                     ),
-                                    border=ft.border.all(1, ModernTheme.BORDER_COLOR),
-                                    border_radius=12,
+                                    height=52,
                                 ),
                                 
-                                ft.Container(height=24),
+                                ft.Container(height=32),
                                 
-                                # Skip tutorial checkbox
+                                # Skip tutorial checkbox - subtle
                                 ft.Container(
                                     content=ft.Row(
                                         [
@@ -158,11 +159,12 @@ class WelcomeScreen:
                                                 value=False,
                                                 on_change=self._on_checkbox_change,
                                                 label=None,
+                                                fill_color=SleekTheme.ACCENT_PRIMARY,
                                             ),
                                             ft.Text(
                                                 "Skip tutorial",
-                                                size=14,
-                                                color=ModernTheme.TEXT_SECONDARY,
+                                                size=13,
+                                                color=SleekTheme.TEXT_SECONDARY,
                                             ),
                                         ],
                                         spacing=8,
@@ -174,52 +176,48 @@ class WelcomeScreen:
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                             spacing=0,
                         ),
-                        padding=ft.padding.symmetric(horizontal=40),
+                        padding=ft.padding.symmetric(horizontal=60),
                     ),
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                scroll=ft.ScrollMode.AUTO,
+                scroll=ft.ScrollMode.AUTO,  # Allow scroll only if content exceeds viewport
                 spacing=0,
             ),
-            gradient=ft.LinearGradient(
-                begin=ft.alignment.top_left,
-                end=ft.alignment.bottom_right,
-                colors=[ModernTheme.BG_PRIMARY, ModernTheme.BG_SECONDARY],
-            ),
-            padding=40,
+            bgcolor=SleekTheme.BG_PRIMARY,
+            padding=80,  # More padding for breathing room
             expand=True,
             alignment=ft.alignment.center,
         )
     
     def _create_feature_item(self, icon, title: str, description: str) -> ft.Container:
-        """Create a feature item row."""
+        """Create a feature item row - clean, modern design."""
         return ft.Container(
             content=ft.Row(
                 [
                     ft.Container(
                         content=ft.Icon(
                             icon,
-                            size=32,
-                            color=ModernTheme.ACCENT_PRIMARY,
+                            size=28,
+                            color=SleekTheme.ACCENT_PRIMARY,
                         ),
-                        padding=12,
+                        padding=14,
                         border_radius=12,
-                        bgcolor=ModernTheme.ACCENT_PRIMARY + "20",
+                        bgcolor=SleekTheme.ACCENT_PRIMARY + "20",  # Slightly more visible
                     ),
-                    ft.Container(width=16),
+                    ft.Container(width=20),
                     ft.Column(
                         [
                             ft.Text(
                                 title,
                                 size=16,
                                 weight=ft.FontWeight.BOLD,
-                                color=ModernTheme.TEXT_PRIMARY,
+                                color=SleekTheme.TEXT_PRIMARY,
                             ),
-                            ft.Container(height=4),
+                            ft.Container(height=6),
                             ft.Text(
                                 description,
                                 size=14,
-                                color=ModernTheme.TEXT_SECONDARY,
+                                color=SleekTheme.TEXT_SECONDARY,
                             ),
                         ],
                         spacing=0,
@@ -227,8 +225,9 @@ class WelcomeScreen:
                     ),
                 ],
                 spacing=0,
+                vertical_alignment=ft.CrossAxisAlignment.START,
             ),
-            padding=ft.padding.symmetric(vertical=8),
+            padding=ft.padding.symmetric(vertical=12),
         )
     
     def _on_get_started(self, e):
