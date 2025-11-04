@@ -404,7 +404,7 @@ class EphemeralDoRAInference:
                 module.weight.data = W_personalized
                 updated_count += 1
 
-        logger.debug(f"Applied DoRA weights to {updated_count} modules")
+        logger.info(f"Applied DoRA weights to {updated_count} modules (adapter is active)")
 
     def _generate(self,
                  model,
@@ -429,28 +429,24 @@ class EphemeralDoRAInference:
         """
         # Format prompt to match training format (Alpaca format used during training)
         # Training uses: "### Instruction: {inst}\n### Response: {resp}"
-        # So inference should use: "### Instruction: {prompt}\n### Response:"
+        # So inference MUST use: "### Instruction: {prompt}\n### Response:"
+        # CRITICAL: Do NOT use chat template - model was trained on Alpaca format during fine-tuning
         if not prompt.startswith("### Instruction:"):
             formatted_prompt = f"### Instruction: {prompt}\n### Response:"
         else:
             formatted_prompt = prompt
         
-        # Apply chat template if model supports it (for chat models like TinyLlama-Chat)
-        # But only if prompt is not already in Alpaca format
-        if not formatted_prompt.startswith("### Instruction:") and hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template is not None:
-            # Format as chat message
-            messages = [{"role": "user", "content": prompt}]
-            formatted_prompt = self.tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True
-            )
+        # Log formatted prompt for debugging
+        logger.info(f"Formatted prompt (Alpaca format): {formatted_prompt[:200]}...")
 
-        # Tokenize input
-        inputs = self.tokenizer(formatted_prompt, return_tensors="pt", padding=True)
+        # Tokenize input WITHOUT chat template
+        # Important: We must NOT use chat template because the model was fine-tuned on Alpaca format
+        # Using chat template would change the tokenization and break the adapter's effectiveness
+        inputs = self.tokenizer(formatted_prompt, return_tensors="pt", padding=True, add_special_tokens=True)
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
-        # Generate
+        # Generate with adapter weights applied
+        logger.debug(f"Generating with max_tokens={max_tokens}, temperature={temperature}, do_sample={do_sample}")
         with torch.no_grad():
             outputs = model.generate(
                 **inputs,
@@ -458,19 +454,40 @@ class EphemeralDoRAInference:
                 temperature=temperature,
                 do_sample=do_sample,
                 pad_token_id=self.tokenizer.pad_token_id,
+                eos_token_id=self.tokenizer.eos_token_id,
                 **kwargs
             )
 
-        # Decode full output and strip the formatted prompt
-        full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
-
+        # Decode full output
+        full_response = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
+        
         # Remove the formatted prompt from the beginning
+        # Try exact match first
         if full_response.startswith(formatted_prompt):
             response = full_response[len(formatted_prompt):].strip()
         else:
-            # Fallback: just return full response if prompt doesn't match
-            response = full_response.strip()
-
+            # Try stripping tokenized prompt (sometimes tokenization adds spaces/special tokens)
+            # Find where the prompt ends in the decoded response
+            prompt_tokens = self.tokenizer.encode(formatted_prompt, add_special_tokens=False)
+            response_tokens = outputs[0].tolist()
+            
+            # Find prompt tokens in response and extract everything after
+            if len(prompt_tokens) > 0 and len(response_tokens) > len(prompt_tokens):
+                # Check if prompt tokens match at the start
+                if response_tokens[:len(prompt_tokens)] == prompt_tokens:
+                    response_only_tokens = response_tokens[len(prompt_tokens):]
+                    response = self.tokenizer.decode(response_only_tokens, skip_special_tokens=True).strip()
+                else:
+                    # Fallback: decode everything and try to extract response
+                    response = full_response.strip()
+                    # Try to find "### Response:" marker
+                    if "### Response:" in response:
+                        response = response.split("### Response:")[-1].strip()
+            else:
+                # Fallback: just return full response if prompt doesn't match
+                response = full_response.strip()
+        
+        logger.debug(f"Generated response length: {len(response)} chars")
         return response
 
     def get_metrics(self) -> Dict[str, Any]:
