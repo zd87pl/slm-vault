@@ -356,6 +356,10 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     # Calculate dataset size for adaptive settings
     dataset_size = len(tokenized_dataset) if hasattr(tokenized_dataset, '__len__') else 100
     
+    # Determine eval strategy based on dataset size
+    # For small datasets (< 20 samples), skip evaluation to avoid issues
+    use_eval = dataset_size >= 20  # Need at least 20 samples for train/eval split
+    
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=epochs,
@@ -370,7 +374,7 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         save_strategy="epoch",
         save_total_limit=2,
         report_to="none",  # Disable wandb unless configured
-        eval_strategy="epoch" if dataset_size > 10 else "no",  # Eval if enough data
+        eval_strategy="no",  # Disable eval for small datasets (requires eval_dataset)
     )
 
     # Train
