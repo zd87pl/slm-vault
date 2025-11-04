@@ -566,10 +566,13 @@ def inference_with_encrypted_dora(config: Dict[str, Any], user_id: str) -> Dict[
         encryption_key = bytes.fromhex(encryption_key_hex)
 
         # Initialize inference engine
+        # CRITICAL: Disable cache temporarily to prevent wrong adapter usage
+        # Cache may return adapter from different document if path/key hash collides
+        logger.warning("Adapter cache DISABLED to prevent wrong adapter usage - investigating cache key collision")
         inference_engine = EphemeralDoRAInference(
             base_model_name=model_name,
             encryption_key=encryption_key,
-            enable_cache=enable_cache,
+            enable_cache=False,  # DISABLED: cache may return wrong adapter
             load_in_4bit=True,  # Use QDoRA for memory efficiency
         )
 
