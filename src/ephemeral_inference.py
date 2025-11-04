@@ -222,19 +222,39 @@ class EphemeralDoRAInference:
                 adapter_applied = False
                 sample_weight_norm = None
                 sample_module_name = None
+                base_weight_norm = None
                 
+                # Compare weights before and after adapter application
                 for name, module in model.named_modules():
-                    if hasattr(module, 'weight') and 'lora' not in name.lower():
+                    if hasattr(module, 'weight') and 'lora' not in name.lower() and 'embed' not in name.lower():
                         sample_module_name = name
                         sample_weight_norm = torch.norm(module.weight.data).item()
                         adapter_applied = True
-                        logger.debug(f"Sample module '{name}' weight norm: {sample_weight_norm:.6f}")
+                        
+                        # Log weight norm to verify adapter changed weights
+                        logger.info(f"Adapter applied check: '{name}' weight norm={sample_weight_norm:.6f}")
+                        
+                        # Check if this is a DoRA target module (q_proj, k_proj, v_proj, o_proj)
+                        if any(target in name for target in ['q_proj', 'k_proj', 'v_proj', 'o_proj']):
+                            logger.info(f"✓ DoRA target module '{name}' found - adapter should be active here")
+                            # Log sample weight values to verify they changed
+                            sample_weights = module.weight.data[:3, :3].cpu().tolist()
+                            logger.debug(f"Sample weights from '{name}': {sample_weights}")
                         break
                 
                 if not adapter_applied:
                     logger.error("WARNING: Could not verify adapter application!")
                 else:
-                    logger.info(f"Adapter verified: {sample_module_name} weight norm={sample_weight_norm:.6f}")
+                    logger.info(f"✓ Adapter verification: {sample_module_name} weight norm={sample_weight_norm:.6f}")
+                    
+                # Log adapter type and tensor count
+                adapter_type = decrypted_weights.get('_type', 'unknown')
+                adapter_tensor_count = len([k for k in decrypted_weights.keys() if k != '_type'])
+                logger.info(f"Adapter info: type={adapter_type}, tensors={adapter_tensor_count}")
+                
+                # Log sample adapter keys to verify correct adapter loaded
+                sample_adapter_keys = [k for k in list(decrypted_weights.keys())[:10] if k != '_type']
+                logger.info(f"Sample adapter keys: {sample_adapter_keys}")
                 
                 # Verify format matches training (log token info)
                 if hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template:
@@ -555,6 +575,8 @@ class EphemeralDoRAInference:
         
         # Log formatted prompt for debugging
         logger.info(f"Formatted prompt (TinyLlama-Chat format): {formatted_prompt[:200]}...")
+        logger.info(f"Full prompt (first 500 chars): {formatted_prompt[:500]}")
+        logger.info(f"Original user question: {question[:200]}")
 
         # Tokenize input (chat template already applied)
         # Don't add special tokens again - chat template handles them
