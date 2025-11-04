@@ -387,8 +387,31 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     logger.info(f"Saving adapter to {output_dir}")
     model.save_pretrained(output_dir)
     tokenizer.save_pretrained(output_dir)
+    
+    # Optionally merge adapter for better inference performance
+    merge_adapter = config.get('merge_adapter', False)
+    merged_model = None
+    merged_path = None
+    
+    if merge_adapter:
+        logger.info("Merging adapter into base model for optimized inference...")
+        try:
+            # Merge adapter weights into base model
+            merged_model = model.merge_and_unload()
+            
+            # Save merged model
+            merged_path = f'/workspace/merged/{user_id}/{adapter_id}/'
+            Path(merged_path).mkdir(parents=True, exist_ok=True)
+            merged_model.save_pretrained(merged_path)
+            tokenizer.save_pretrained(merged_path)
+            
+            logger.info(f"Merged model saved to {merged_path}")
+            logger.info("NOTE: Merged model is ~15x faster for inference but requires more storage")
+        except Exception as e:
+            logger.warning(f"Failed to merge adapter: {e}. Continuing with unmerged adapter.")
+            merge_adapter = False
 
-    return {
+    result = {
         "status": "training_complete",
         "user_id": user_id,
         "adapter_path": output_dir,
@@ -397,18 +420,26 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         "train_loss": train_result.training_loss,
         "train_samples": len(tokenized_dataset),
     }
+    
+    if merge_adapter and merged_path:
+        result["merged_path"] = merged_path
+        result["merged"] = True
+    
+    return result
 
 
 def encrypt_dora_adapter(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     """
-    Encrypt DoRA adapter weights.
+    Encrypt DoRA adapter weights or merged model delta.
 
     Args:
         config: Configuration with keys:
-            - adapter_path: Path to DoRA adapter
+            - adapter_path: Path to DoRA adapter (or merged_path for merged model)
             - encryption_key: Hex-encoded encryption key (or 'generate' to create new)
             - output_path: Path for encrypted output (default: encrypted_adapter.json)
             - enable_compression: Whether to compress before encryption (default: True)
+            - merged_path: Optional path to merged model (if merge was done)
+            - encrypt_merged_delta: If True, encrypt delta from merged model instead of adapter
 
     Returns:
         Dictionary with encryption results
@@ -419,7 +450,19 @@ def encrypt_dora_adapter(config: Dict[str, Any], user_id: str) -> Dict[str, Any]
     logger.info("Starting adapter encryption...")
 
     # Get config
-    adapter_path = config['adapter_path']
+    adapter_path = config.get('adapter_path')
+    merged_path = config.get('merged_path')
+    encrypt_merged_delta = config.get('encrypt_merged_delta', False)
+    
+    # If merged_path provided and encrypt_merged_delta=True, use merged model delta
+    if encrypt_merged_delta and merged_path:
+        logger.info("Encrypting merged model delta (optimized for inference)...")
+        return _encrypt_merged_delta(config, user_id, merged_path)
+    
+    # Otherwise, use standard adapter encryption (backward compatible)
+    if not adapter_path:
+        raise ValueError("Either adapter_path or merged_path must be provided")
+    
     key_input = config.get('encryption_key', 'generate')
     adapter_id = config.get('adapter_id', 'default')
     # Use user-specific storage path
@@ -476,7 +519,7 @@ def encrypt_dora_adapter(config: Dict[str, Any], user_id: str) -> Dict[str, Any]
     encrypted_metadata = manager.extract_and_encrypt_dora_weights(
         model,
         output_path,
-        metadata={'adapter_path': adapter_path}
+        metadata={'adapter_path': adapter_path, 'type': 'adapter'}
     )
 
     # Cleanup
@@ -492,6 +535,168 @@ def encrypt_dora_adapter(config: Dict[str, Any], user_id: str) -> Dict[str, Any]
         "metadata": encrypted_metadata['metadata'],
         "compressed": encrypted_metadata['metadata']['compressed'],
         "original_size_mb": encrypted_metadata['metadata']['original_size_bytes'] / 1024**2,
+        "type": "adapter"  # Indicates this is adapter, not merged delta
+    }
+
+
+def _encrypt_merged_delta(config: Dict[str, Any], user_id: str, merged_path: str) -> Dict[str, Any]:
+    """
+    Encrypt delta weights from merged model (only the difference from base model).
+    
+    This is more efficient than encrypting the full merged model - we only encrypt
+    the personalized knowledge (delta), not the public base model.
+    
+    Args:
+        config: Configuration dict
+        user_id: User ID
+        merged_path: Path to merged model
+        
+    Returns:
+        Dictionary with encryption results
+    """
+    from transformers import AutoModelForCausalLM
+    
+    logger.info("Encrypting merged model delta (only personalized weights)...")
+    
+    key_input = config.get('encryption_key', 'generate')
+    adapter_id = config.get('adapter_id', 'default')
+    output_path = config.get('output_path', f'/workspace/encrypted/{user_id}/{adapter_id}_delta.json')
+    enable_compression = config.get('enable_compression', True)
+    
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    
+    # Generate or parse encryption key
+    if key_input == 'generate':
+        encryption_key = generate_secure_password()
+        key_hex = encryption_key.hex()
+        logger.info("Generated new encryption key")
+    else:
+        encryption_key = bytes.fromhex(key_input)
+        key_hex = key_input
+    
+    if len(encryption_key) != 32:
+        raise ValueError("Encryption key must be 32 bytes")
+    
+    # Determine base model name from merged model config
+    import json
+    config_path = os.path.join(merged_path, 'config.json')
+    if os.path.exists(config_path):
+        with open(config_path, 'r') as f:
+            model_config = json.load(f)
+        base_model_name = model_config.get('_name_or_path', 'TinyLlama/TinyLlama-1.1B-Chat-v1.0')
+    else:
+        # Fallback to default
+        base_model_name = 'TinyLlama/TinyLlama-1.1B-Chat-v1.0'
+    
+    logger.info(f"Base model: {base_model_name}")
+    
+    # Load base model (public, not encrypted)
+    logger.info("Loading base model for delta computation...")
+    base_model = AutoModelForCausalLM.from_pretrained(
+        base_model_name,
+        torch_dtype=torch.float16,
+        device_map="cpu",
+        low_cpu_mem_usage=True
+    )
+    
+    # Load merged model
+    logger.info(f"Loading merged model from {merged_path}...")
+    merged_model = AutoModelForCausalLM.from_pretrained(
+        merged_path,
+        torch_dtype=torch.float16,
+        device_map="cpu",
+        low_cpu_mem_usage=True
+    )
+    
+    # Initialize crypto manager
+    manager = EncryptedDoRAManager(
+        encryption_key,
+        enable_compression=enable_compression
+    )
+    
+    # Extract delta weights (difference between merged and base)
+    logger.info("Computing delta weights (merged - base)...")
+    delta_weights = manager.extract_delta_weights(merged_model, base_model)
+    
+    logger.info(f"Delta weights: {len(delta_weights)} tensors")
+    
+    # Encrypt delta weights using same method as adapter encryption
+    # Serialize delta weights
+    from safetensors.torch import save
+    serialized_data = save(delta_weights)
+    original_size = len(serialized_data)
+    logger.debug(f"Serialized delta to {original_size / 1024**2:.2f} MB")
+    
+    # Compress if enabled
+    if enable_compression:
+        compressed_data = manager.compressor.compress(serialized_data)
+        compression_ratio = len(compressed_data) / original_size
+        logger.info(f"Compressed delta to {len(compressed_data) / 1024**2:.2f} MB "
+                   f"(ratio: {compression_ratio:.2%})")
+        data_to_encrypt = compressed_data
+    else:
+        data_to_encrypt = serialized_data
+    
+    # Generate salt and derive encryption key
+    from Crypto.Random import get_random_bytes
+    salt = get_random_bytes(16)
+    encryption_key_derived = manager._derive_key(salt, b"dora-encryption-key-v2")
+    
+    # Encrypt with XChaCha20-Poly1305
+    from Crypto.Cipher import ChaCha20_Poly1305
+    from base64 import b64encode
+    nonce = get_random_bytes(24)
+    cipher = ChaCha20_Poly1305.new(key=encryption_key_derived, nonce=nonce)
+    
+    # Prepare metadata
+    encryption_metadata = {
+        'version': '2.0',
+        'num_tensors': len(delta_weights),
+        'adapter_type': 'merged_delta',  # Indicates this is delta from merged model
+        'original_size_bytes': original_size,
+        'compressed': enable_compression,
+        'base_model_name': base_model_name,
+        'merged_path': merged_path
+    }
+    
+    # Add metadata as AAD
+    aad = json.dumps(encryption_metadata, sort_keys=True).encode('utf-8')
+    cipher.update(aad)
+    
+    # Encrypt and generate authentication tag
+    ciphertext, tag = cipher.encrypt_and_digest(data_to_encrypt)
+    
+    # Package encrypted data
+    encrypted_package = {
+        'salt': b64encode(salt).decode('utf-8'),
+        'nonce': b64encode(nonce).decode('utf-8'),
+        'ciphertext': b64encode(ciphertext).decode('utf-8'),
+        'tag': b64encode(tag).decode('utf-8'),
+        'metadata': encryption_metadata,
+        'algorithm': 'XChaCha20-Poly1305',
+        'kdf': 'HKDF-SHA256'
+    }
+    
+    # Save to file
+    with open(output_path, 'w') as f:
+        json.dump(encrypted_package, f, indent=2)
+    
+    logger.info(f"Encrypted delta saved to {output_path}")
+    
+    # Cleanup
+    del merged_model
+    del base_model
+    torch.cuda.empty_cache()
+    
+    return {
+        "status": "encryption_complete",
+        "user_id": user_id,
+        "encrypted_path": output_path,
+        "encryption_key": key_hex,
+        "metadata": encryption_metadata,
+        "compressed": enable_compression,
+        "original_size_mb": original_size / 1024**2,
+        "type": "merged_delta"  # Indicates this is merged delta, not adapter
     }
 
 
@@ -516,17 +721,29 @@ def train_and_encrypt(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     adapter_path = training_result['adapter_path']
     logger.info(f"Training complete. Adapter at: {adapter_path}")
 
-    # Step 2: Encrypt adapter
+    # Step 2: Encrypt adapter (or merged delta if merge was done)
     logger.info("Step 2/2: Encrypting adapter...")
+    
+    # Check if merge was done
+    merged_path = training_result.get('merged_path')
+    encrypt_merged_delta = config.get('encrypt_merged_delta', False) and merged_path is not None
+    
     encryption_config = {
         'adapter_path': adapter_path,
         'encryption_key': config.get('encryption_key', 'generate'),
         'adapter_id': config.get('adapter_id', 'default'),
         'output_path': config.get('encrypted_output_path', f'/workspace/encrypted/{user_id}/{config.get("adapter_id", "default")}.json'),
-        'enable_compression': config.get('enable_compression', True)
+        'enable_compression': config.get('enable_compression', True),
+        'merged_path': merged_path,
+        'encrypt_merged_delta': encrypt_merged_delta
     }
 
     encryption_result = encrypt_dora_adapter(encryption_config, user_id)
+    
+    if encrypt_merged_delta:
+        logger.info("✓ Encrypted merged model delta (optimized for fast inference)")
+    else:
+        logger.info("✓ Encrypted adapter (standard mode)")
 
     # Combine results
     return {

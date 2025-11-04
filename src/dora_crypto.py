@@ -173,14 +173,15 @@ class EncryptedDoRAManager:
                                      encrypted_path: str,
                                      lock_memory: bool = False) -> Dict[str, torch.Tensor]:
         """
-        Load and decrypt DoRA weights ephemerally (in-memory only).
+        Load and decrypt DoRA weights or merged delta weights ephemerally (in-memory only).
 
         Args:
             encrypted_path: Path to encrypted weights file
             lock_memory: Whether to lock decrypted weights in memory (prevent swapping)
 
         Returns:
-            Dictionary of decrypted tensors (never persisted to disk)
+            Dictionary of decrypted tensors (never persisted to disk).
+            Also includes '_type' key indicating 'adapter' or 'merged_delta'
         """
         logger.info(f"Loading encrypted adapter from {encrypted_path}...")
 
@@ -225,17 +226,25 @@ class EncryptedDoRAManager:
             serialized_data = decrypted_data
 
         # Step 5: Deserialize from safetensors (in-memory only)
-        dora_weights = load(serialized_data)
+        weights = load(serialized_data)
+        
+        # Step 6: Determine type (adapter or merged_delta)
+        adapter_type = encrypted_package['metadata'].get('adapter_type', 'DoRA')
+        if adapter_type == 'merged_delta':
+            weights['_type'] = 'merged_delta'
+            logger.info(f"Decrypted {len(weights) - 1} delta tensors (merged model delta)")
+        else:
+            weights['_type'] = 'adapter'
+            logger.info(f"Decrypted {len(weights) - 1} DoRA tensors (adapter)")
 
-        logger.info(f"Decrypted {len(dora_weights)} DoRA tensors")
-
-        # Step 6: Lock memory if requested
+        # Step 7: Lock memory if requested
         if lock_memory:
-            for name, tensor in dora_weights.items():
-                mlock_tensor(tensor)
+            for name, tensor in weights.items():
+                if name != '_type':  # Skip metadata
+                    mlock_tensor(tensor)
             logger.debug("Locked decrypted weights in memory")
 
-        return dora_weights
+        return weights
 
     def decrypt_layer_lazy(self,
                           encrypted_path: str,
@@ -325,6 +334,54 @@ class EncryptedDoRAManager:
             raise ValueError("No DoRA weights found in model. Ensure model has DoRA adapters.")
 
         return dora_weights
+
+    def extract_delta_weights(self, merged_model, base_model) -> Dict[str, torch.Tensor]:
+        """
+        Extract delta weights (difference) between merged model and base model.
+        
+        This computes the difference between merged model weights and base model weights,
+        effectively extracting only the personalized knowledge (same size as adapter).
+        
+        Args:
+            merged_model: Fully merged model (base + adapter combined)
+            base_model: Original base model (public)
+            
+        Returns:
+            Dictionary of delta weights (same structure as DoRA weights)
+        """
+        logger.info("Extracting delta weights from merged model...")
+        
+        delta_weights = {}
+        
+        # Get all parameter names from merged model
+        merged_params = dict(merged_model.named_parameters())
+        base_params = dict(base_model.named_parameters())
+        
+        # Compute delta for each parameter
+        for name, merged_param in merged_params.items():
+            if name in base_params:
+                base_param = base_params[name]
+                
+                # Ensure same shape and device
+                if merged_param.shape != base_param.shape:
+                    logger.warning(f"Shape mismatch for {name}: merged={merged_param.shape}, base={base_param.shape}")
+                    continue
+                
+                # Compute delta: ΔW = W_merged - W_base
+                delta = merged_param.data - base_param.data
+                
+                # Only store non-zero deltas (most weights don't change)
+                if torch.any(delta.abs() > 1e-8):  # Threshold for "meaningful" change
+                    delta_weights[name] = delta.clone()
+                    logger.debug(f"Delta for {name}: mean={delta.mean().item():.6f}, "
+                               f"max_abs={delta.abs().max().item():.6f}")
+        
+        logger.info(f"Extracted {len(delta_weights)} delta tensors")
+        
+        if not delta_weights:
+            raise ValueError("No delta weights found. Merged model may be identical to base model.")
+        
+        return delta_weights
 
     def _derive_key(self, salt: bytes, info: bytes) -> bytes:
         """

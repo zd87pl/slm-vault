@@ -373,6 +373,69 @@ class EphemeralDoRAInference:
 
     def _apply_dora_weights_ephemeral(self, dora_weights: Dict[str, torch.Tensor]):
         """
+        Apply DoRA weights or merged delta weights ephemerally.
+
+        For adapter type: Uses DoRA formula: W' = m ⊙ ((W₀ + BA) / ||W₀ + BA||_c)
+        For merged_delta type: Simply adds delta: W' = W₀ + ΔW
+
+        Args:
+            dora_weights: Dictionary of DoRA tensors or delta tensors (includes '_type' key)
+        """
+        # Check type
+        weight_type = dora_weights.get('_type', 'adapter')
+        
+        if weight_type == 'merged_delta':
+            # Simple delta addition (much faster!)
+            logger.info("Applying merged delta weights (simple addition)...")
+            self._apply_delta_weights_ephemeral(dora_weights)
+        else:
+            # Standard DoRA formula application
+            logger.info("Applying DoRA adapter weights (magnitude-direction formula)...")
+            self._apply_dora_formula_ephemeral(dora_weights)
+    
+    def _apply_delta_weights_ephemeral(self, delta_weights: Dict[str, torch.Tensor]):
+        """
+        Apply delta weights (merged model delta) by simple addition.
+        
+        Formula: W' = W₀ + ΔW
+        
+        This is much faster than DoRA formula since we don't need to compute
+        low-rank decomposition or magnitude scaling.
+        
+        Args:
+            delta_weights: Dictionary of delta tensors (parameter_name -> delta_tensor)
+        """
+        updated_count = 0
+        
+        # Get all parameter names from base model
+        base_params = dict(self.base_model.named_parameters())
+        
+        for name, delta in delta_weights.items():
+            if name == '_type':  # Skip metadata
+                continue
+                
+            if name not in base_params:
+                logger.warning(f"Delta weight '{name}' not found in base model, skipping")
+                continue
+            
+            base_param = base_params[name]
+            
+            # Ensure same shape
+            if delta.shape != base_param.shape:
+                logger.warning(f"Shape mismatch for {name}: delta={delta.shape}, base={base_param.shape}")
+                continue
+            
+            # Move delta to same device and dtype as base
+            delta = delta.to(device=base_param.device, dtype=base_param.dtype)
+            
+            # Apply delta: W' = W₀ + ΔW
+            base_param.data.add_(delta)
+            updated_count += 1
+        
+        logger.info(f"Applied delta weights to {updated_count} parameters (merged model active)")
+    
+    def _apply_dora_formula_ephemeral(self, dora_weights: Dict[str, torch.Tensor]):
+        """
         Apply DoRA weights using magnitude-direction decomposition formula.
 
         DoRA formula: W' = m ⊙ ((W₀ + BA) / ||W₀ + BA||_c)
@@ -390,6 +453,8 @@ class EphemeralDoRAInference:
         # Group weights by module
         modules_to_update = {}
         for key in dora_weights.keys():
+            if key == '_type':  # Skip metadata
+                continue
             module_name = key.rsplit('.', 1)[0]
             if module_name not in modules_to_update:
                 modules_to_update[module_name] = {}
