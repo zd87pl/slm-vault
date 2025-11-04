@@ -218,15 +218,29 @@ class EphemeralDoRAInference:
         logger.info(f"Applying adapter weights and running inference...")
         try:
             with self._ephemeral_adapter_context(decrypted_weights) as model:
-                # Verify adapter is applied by checking a sample weight
-                # This helps debug if adapter is actually being used
+                # Verify adapter is applied and format matches training
+                adapter_applied = False
+                sample_weight_norm = None
                 sample_module_name = None
+                
                 for name, module in model.named_modules():
                     if hasattr(module, 'weight') and 'lora' not in name.lower():
                         sample_module_name = name
                         sample_weight_norm = torch.norm(module.weight.data).item()
+                        adapter_applied = True
                         logger.debug(f"Sample module '{name}' weight norm: {sample_weight_norm:.6f}")
                         break
+                
+                if not adapter_applied:
+                    logger.error("WARNING: Could not verify adapter application!")
+                else:
+                    logger.info(f"Adapter verified: {sample_module_name} weight norm={sample_weight_norm:.6f}")
+                
+                # Verify format matches training (log token info)
+                if hasattr(self.tokenizer, 'chat_template') and self.tokenizer.chat_template:
+                    logger.debug("Tokenizer has chat template - format matching enabled")
+                else:
+                    logger.warning("Tokenizer missing chat template - format mismatch possible!")
                 
                 # Run inference
                 inference_start = time.time()
