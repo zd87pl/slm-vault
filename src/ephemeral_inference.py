@@ -169,6 +169,9 @@ class EphemeralDoRAInference:
         import time
         start_time = time.time()
 
+        # Log adapter path for debugging
+        logger.info(f"Inference request: encrypted_path={encrypted_path}, prompt={prompt[:100]}...")
+        
         # Check cache first
         if self.cache:
             cached_weights = self.cache.get(encrypted_path, self.encryption_key)
@@ -176,32 +179,55 @@ class EphemeralDoRAInference:
                 decrypted_weights = cached_weights
                 self.cache_hits += 1
                 cache_hit = True
-                logger.debug("Using cached adapter")
+                logger.info(f"Using CACHED adapter from {encrypted_path} (cache may contain wrong adapter!)")
+                # Log some adapter info for verification
+                adapter_keys = list(cached_weights.keys())[:5] if cached_weights else []
+                logger.info(f"Cached adapter has {len(cached_weights)} tensors (sample keys: {adapter_keys})")
             else:
                 decrypted_weights = None
                 self.cache_misses += 1
                 cache_hit = False
+                logger.info(f"Cache MISS - will decrypt adapter from {encrypted_path}")
         else:
             decrypted_weights = None
             cache_hit = False
+            logger.info(f"No cache - will decrypt adapter from {encrypted_path}")
 
         # Decrypt if not cached
         decrypt_time = 0
         if decrypted_weights is None:
             decrypt_start = time.time()
+            logger.info(f"Decrypting adapter from {encrypted_path}...")
             decrypted_weights = self.crypto_manager.decrypt_and_load_dora_weights(
                 encrypted_path,
                 lock_memory=True
             )
             decrypt_time = time.time() - decrypt_start
+            logger.info(f"Decrypted adapter: {len(decrypted_weights)} tensors")
+            
+            # Log sample keys to verify it's the right adapter
+            sample_keys = list(decrypted_weights.keys())[:5]
+            logger.info(f"Decrypted adapter sample keys: {sample_keys}")
 
             # Add to cache
             if self.cache:
                 self.cache.put(encrypted_path, self.encryption_key, decrypted_weights)
+                logger.info(f"Added adapter to cache (path: {encrypted_path})")
 
         # Use ephemeral adapter context
+        logger.info(f"Applying adapter weights and running inference...")
         try:
             with self._ephemeral_adapter_context(decrypted_weights) as model:
+                # Verify adapter is applied by checking a sample weight
+                # This helps debug if adapter is actually being used
+                sample_module_name = None
+                for name, module in model.named_modules():
+                    if hasattr(module, 'weight') and 'lora' not in name.lower():
+                        sample_module_name = name
+                        sample_weight_norm = torch.norm(module.weight.data).item()
+                        logger.debug(f"Sample module '{name}' weight norm: {sample_weight_norm:.6f}")
+                        break
+                
                 # Run inference
                 inference_start = time.time()
                 response = self._generate(
@@ -213,6 +239,7 @@ class EphemeralDoRAInference:
                     **generation_kwargs
                 )
                 inference_time = time.time() - inference_start
+                logger.info(f"Inference completed: response length={len(response)} chars")
 
         finally:
             # If we decrypted fresh (not from cache), clean up
