@@ -591,7 +591,7 @@ async def run_inference(
                     "Content-Type": "application/json"
                 },
                 json=payload,
-                timeout=30
+                timeout=60  # Increased: RunPod submission can take time during cold start
             )
             
             if runpod_response.status_code != 200:
