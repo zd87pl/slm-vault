@@ -612,7 +612,7 @@ async def run_inference(
             
             # Wait for inference to complete (polling)
             import time
-            max_wait = 120  # 2 minutes max
+            max_wait = 180  # 3 minutes max (cold start 30-60s + inference 10-30s + buffer)
             poll_interval = 2  # Check every 2 seconds
             start_time = time.time()
             

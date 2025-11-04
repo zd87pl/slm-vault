@@ -749,7 +749,7 @@ class TrainingManager:
                 f"{self.backend_url}/api/training/inference",
                 headers=self.headers,
                 json=payload,
-                timeout=120  # Inference can take time
+                timeout=240  # Increased: RunPod cold start (30-60s) + inference (10-30s) + backend processing = up to 180s
             )
             
             # Refresh token on 401 error
@@ -760,7 +760,7 @@ class TrainingManager:
                         f"{self.backend_url}/api/training/inference",
                         headers=self.headers,
                         json=payload,
-                        timeout=120
+                        timeout=240  # Increased timeout for retry
                     )
             
             if response.status_code == 404:
