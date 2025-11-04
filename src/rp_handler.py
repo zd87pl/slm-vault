@@ -835,12 +835,22 @@ def inference_with_encrypted_dora(config: Dict[str, Any], user_id: str) -> Dict[
 
         # Run inference
         logger.info(f"Running inference: {prompt[:50]}...")
+        logger.info(f"Full prompt: {prompt}")
+        logger.info(f"Adapter path: {encrypted_path}")
+        logger.info(f"Max tokens: {max_tokens}, Temperature: {temperature}")
+        
         result = inference_engine.inference_with_encrypted_adapter(
             encrypted_path=encrypted_path,
             prompt=prompt,
             max_tokens=max_tokens,
             temperature=temperature,
         )
+        
+        # Log result metadata for debugging
+        logger.info(f"Inference result: response_length={len(result.get('response', ''))} chars")
+        logger.info(f"Response preview: {result.get('response', '')[:200]}")
+        if 'metadata' in result:
+            logger.info(f"Inference metadata: {result['metadata']}")
     else:
         # Basic inference without adapter (for testing)
         logger.info("Starting basic inference (no adapter)...")
