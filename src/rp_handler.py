@@ -123,14 +123,20 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
 
     # Get config values
     model_name = config.get('model_name', 'TinyLlama/TinyLlama-1.1B-Chat-v1.0')
-    rank = config.get('rank', 16)
-    alpha = config.get('alpha', 32)
-    dropout = config.get('dropout', 0.05)
+    
+    # Optimized hyperparameters for small datasets (39 samples)
+    # Reduced rank and epochs to prevent overfitting
+    rank = config.get('rank', 8)  # Reduced from 16 (less overfitting risk)
+    alpha = config.get('alpha', 16)  # Keep 2:1 ratio with rank
+    dropout = config.get('dropout', 0.1)  # Increased from 0.05 (more regularization)
+    
     dataset_source = config.get('dataset', 'yahma/alpaca-cleaned')
     encryption_key_hex = config.get('encryption_key')
-    epochs = config.get('epochs', 3)
-    batch_size = config.get('batch_size', 4)
-    learning_rate = config.get('learning_rate', 2e-4)
+    
+    # Conservative training for small dataset
+    epochs = config.get('epochs', 2)  # Reduced from 3 (high overfitting risk with 39 samples)
+    batch_size = config.get('batch_size', 1)  # Smaller batch for more gradient updates
+    learning_rate = config.get('learning_rate', 1e-4)  # Conservative (down from 2e-4)
     max_samples = config.get('max_samples', None)
 
     # Load model with 4-bit quantization (QDoRA)
@@ -164,15 +170,14 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     # Prepare for training
     model = prepare_model_for_kbit_training(model, use_gradient_checkpointing=True)
 
-    # Configure DoRA
+    # Configure DoRA - optimized for small dataset
     logger.info(f"Configuring DoRA: rank={rank}, alpha={alpha}, dropout={dropout}")
     peft_config = LoraConfig(
         use_dora=True,  # Enable DoRA
         r=rank,
         lora_alpha=alpha,
         lora_dropout=dropout,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj",
-                       "gate_proj", "up_proj", "down_proj"],
+        target_modules=["q_proj", "k_proj", "v_proj", "o_proj"],  # Removed gate/up/down for stability
         bias="none",
         task_type="CAUSAL_LM"
     )
@@ -292,22 +297,34 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
 
     # Tokenization function
     def tokenize_function(examples):
-        # Handle different dataset formats
-        # When batched=True, examples is a dict with lists as values
+        """
+        Tokenize using TinyLlama-Chat's native format.
+        This ensures training and inference formats match exactly.
+        """
         logger.debug(f"Tokenizing batch with keys: {list(examples.keys())}")
         
         if 'instruction' in examples and 'output' in examples:
-            # Alpaca format
+            # Use TinyLlama-Chat's native format via chat template
             instructions = examples['instruction']
             outputs = examples['output']
             inputs = examples.get('input', [''] * len(instructions))
             
             texts = []
             for inst, inp, resp in zip(instructions, inputs, outputs):
-                if inp:
-                    text = f"### Instruction: {inst}\n### Input: {inp}\n### Response: {resp}"
-                else:
-                    text = f"### Instruction: {inst}\n### Response: {resp}"
+                # Build messages in chat format
+                user_content = inst if not inp else f"{inst}\n{inp}"
+                messages = [
+                    {"role": "user", "content": user_content},
+                    {"role": "assistant", "content": resp}
+                ]
+                
+                # Apply chat template (TinyLlama-Chat format)
+                # This matches the format used during inference
+                text = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=False  # Don't add <|assistant|> during training
+                )
                 texts.append(text)
         elif 'text' in examples:
             texts = examples['text']
@@ -336,16 +353,24 @@ def train_dora(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     
     logger.info(f"Using user-specific storage path: {output_dir}")
     
+    # Calculate dataset size for adaptive settings
+    dataset_size = len(tokenized_dataset) if hasattr(tokenized_dataset, '__len__') else 100
+    
     training_args = TrainingArguments(
         output_dir=output_dir,
         num_train_epochs=epochs,
         per_device_train_batch_size=batch_size,
+        gradient_accumulation_steps=4,  # Effective batch size = 4
         learning_rate=learning_rate,
+        warmup_steps=max(1, dataset_size // 10),  # 10% warmup
+        lr_scheduler_type="cosine",
+        weight_decay=0.01,  # L2 regularization
         fp16=True,
-        logging_steps=10,
+        logging_steps=5,  # More frequent logging for small dataset
         save_strategy="epoch",
         save_total_limit=2,
         report_to="none",  # Disable wandb unless configured
+        eval_strategy="epoch" if dataset_size > 10 else "no",  # Eval if enough data
     )
 
     # Train
@@ -568,13 +593,24 @@ def inference_with_encrypted_dora(config: Dict[str, Any], user_id: str) -> Dict[
         # Initialize inference engine
         # CRITICAL: Disable cache temporarily to prevent wrong adapter usage
         # Cache may return adapter from different document if path/key hash collides
+        # NOTE: For production, consider using non-quantized base model for better performance
+        # QDoRA has 15x performance penalty; merging adapter after training is recommended
         logger.warning("Adapter cache DISABLED to prevent wrong adapter usage - investigating cache key collision")
+        logger.info("Using TinyLlama-Chat format matching (chat template)")
+        
         inference_engine = EphemeralDoRAInference(
             base_model_name=model_name,
             encryption_key=encryption_key,
             enable_cache=False,  # DISABLED: cache may return wrong adapter
             load_in_4bit=True,  # Use QDoRA for memory efficiency
+            # Set to False for better performance (but uses more memory)
         )
+        
+        # Verify tokenizer has chat template for format matching
+        if hasattr(inference_engine.tokenizer, 'chat_template') and inference_engine.tokenizer.chat_template:
+            logger.info("✓ Tokenizer chat template available - format matching enabled")
+        else:
+            logger.error("✗ Tokenizer missing chat template - format mismatch will occur!")
 
         # Run inference
         logger.info(f"Running inference: {prompt[:50]}...")
