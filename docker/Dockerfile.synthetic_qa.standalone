@@ -1,0 +1,73 @@
+# Standalone Dockerfile for Synthetic Q&A Generator
+# Can be built independently without entire project structure
+# Usage: docker build -f docker/Dockerfile.synthetic_qa.standalone -t synthetic-qa-generator .
+
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    curl \
+    build-essential \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python dependencies
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir \
+    # Core ML/AI
+    torch>=2.5.0 \
+    transformers>=4.46.0 \
+    accelerate>=1.1.0 \
+    bitsandbytes>=0.44.0 \
+    safetensors>=0.4.5 \
+    # Cryptography
+    pycryptodome>=3.19.0 \
+    cryptography>=41.0.0 \
+    # PDF Processing
+    pypdf>=4.0.0 \
+    # RunPod
+    runpod>=1.7.0 \
+    # Qwen3 specific
+    sentencepiece>=0.1.99 \
+    protobuf>=4.25.0 \
+    tokenizers>=0.15.0 \
+    # Utilities
+    python-dotenv>=1.0.0 \
+    scipy>=1.11.0
+
+# Copy only the handler file
+COPY src/synthetic_qa_handler.py /workspace/src/synthetic_qa_handler.py
+
+# Create __init__.py for src module
+RUN mkdir -p /workspace/src && \
+    touch /workspace/src/__init__.py
+
+# Environment variables for optimization
+ENV TOKENIZERS_PARALLELISM=false
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+ENV TRANSFORMERS_CACHE=/workspace/.cache/huggingface
+ENV HF_HOME=/workspace/.cache/huggingface
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+ENV HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets
+
+# Optimize for MoE models (Qwen3-235B)
+ENV PYTORCH_NO_CUDA_MEMORY_CACHING=0
+ENV CUDA_LAUNCH_BLOCKING=0
+
+# Create necessary directories
+RUN mkdir -p /workspace/outputs \
+    /workspace/.cache/huggingface \
+    /workspace/.cache/huggingface/models \
+    /workspace/.cache/huggingface/datasets
+
+# Health check for RunPod
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD python3 -c "import runpod; import torch; import transformers; print('OK')" || exit 1
+
+# For RunPod Serverless deployment
+CMD ["python3", "-u", "src/synthetic_qa_handler.py"]
+

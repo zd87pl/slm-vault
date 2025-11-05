@@ -1444,5 +1444,177 @@ A: answer here"""
                 f.write(json.dumps(record) + '\n')
         
         logger.info(f"Saved {len(qa_pairs)} Q&A pairs to {output_path}")
+    
+    def generate_synthetic_qa_via_runpod(
+        self,
+        pdf_path: str,
+        target_samples: int = 1000,
+        encryption_key_hex: Optional[str] = None
+    ) -> Tuple[List[Dict[str, str]], str]:
+        """
+        Generate 1,000+ Q&A pairs using Qwen3-235B-A22B-Instruct-2507 on RunPod (encrypted flow).
+        
+        This maintains end-to-end encryption:
+        1. Encrypt PDF client-side
+        2. Send encrypted PDF + key to RunPod
+        3. RunPod decrypts, generates Q&A, encrypts results
+        4. Return encrypted dataset + encryption key
+        
+        Args:
+            pdf_path: Path to PDF file
+            target_samples: Target number of Q&A pairs (default: 1000)
+            encryption_key_hex: Optional encryption key (generates new if None)
+            
+        Returns:
+            Tuple of (qa_pairs_list, encryption_key_hex)
+        """
+        import secrets
+        import base64
+        
+        # Import encryption (use same pattern as training_manager)
+        try:
+            from Crypto.Cipher import ChaCha20_Poly1305
+            from Crypto.Random import get_random_bytes
+            CRYPTO_BACKEND_LOCAL = "pycryptodome"
+        except ImportError:
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+                CRYPTO_BACKEND_LOCAL = "cryptography"
+            except ImportError:
+                raise RuntimeError("No encryption library available. Install: pip install pycryptodome")
+        
+        # Generate encryption key if not provided
+        if not encryption_key_hex:
+            encryption_key = secrets.token_bytes(32)
+            encryption_key_hex = encryption_key.hex()
+        else:
+            encryption_key = bytes.fromhex(encryption_key_hex)
+        
+        # Read and encrypt PDF
+        logger.info(f"Reading PDF: {pdf_path}")
+        with open(pdf_path, 'rb') as f:
+            pdf_bytes = f.read()
+        
+        logger.info(f"Encrypting PDF ({len(pdf_bytes)} bytes)...")
+        
+        # Encrypt PDF using XChaCha20-Poly1305
+        if CRYPTO_BACKEND_LOCAL == "pycryptodome":
+            nonce = get_random_bytes(24)
+            cipher = ChaCha20_Poly1305.new(key=encryption_key, nonce=nonce)
+            ciphertext, tag = cipher.encrypt_and_digest(pdf_bytes)
+        else:
+            nonce = secrets.token_bytes(24)
+            cipher = ChaCha20Poly1305(encryption_key)
+            ciphertext_with_tag = cipher.encrypt(nonce, pdf_bytes, None)
+            ciphertext = ciphertext_with_tag[:-16]
+            tag = ciphertext_with_tag[-16:]
+        
+        encrypted_pdf = json.dumps({
+            'ciphertext': base64.b64encode(ciphertext).decode('utf-8'),
+            'tag': base64.b64encode(tag).decode('utf-8'),
+            'nonce': base64.b64encode(nonce).decode('utf-8')
+        })
+        
+        logger.info(f"✓ Encrypted PDF ({len(encrypted_pdf)} bytes)")
+        
+        # Get synthetic generation endpoint (separate from training/inference)
+        synthetic_endpoint_id = os.getenv("RUNPOD_SYNTHETIC_ENDPOINT_ID") or self.endpoint_id
+        
+        if not synthetic_endpoint_id or not self.api_key:
+            raise RuntimeError(
+                "RunPod synthetic generation endpoint not configured. "
+                "Set RUNPOD_SYNTHETIC_ENDPOINT_ID environment variable or configure RunPod endpoint."
+            )
+        
+        # Send to RunPod synthetic generation endpoint
+        logger.info(f"Sending to RunPod endpoint {synthetic_endpoint_id} for generation...")
+        logger.info(f"Target: {target_samples} Q&A pairs using Qwen3-235B-A22B-Instruct-2507")
+        
+        payload = {
+            "input": {
+                "encrypted_pdf": encrypted_pdf,
+                "encryption_key_hex": encryption_key_hex,
+                "target_samples": target_samples
+            }
+        }
+        
+        runpod_url = f"https://api.runpod.ai/v2/{synthetic_endpoint_id}/run"
+        
+        try:
+            response = requests.post(
+                runpod_url,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                },
+                json=payload,
+                timeout=3600  # 1 hour timeout (generation can take 15-30 minutes)
+            )
+            
+            response.raise_for_status()
+            result = response.json()
+            
+            # Wait for completion (polling)
+            job_id = result.get('id')
+            if not job_id:
+                raise RuntimeError("No job ID returned from RunPod")
+            
+            logger.info(f"Job submitted: {job_id}. Waiting for completion...")
+            
+            # Poll for completion
+            max_wait = 3600  # 1 hour
+            poll_interval = 5  # Check every 5 seconds
+            start_time = time.time()
+            
+            while time.time() - start_time < max_wait:
+                status_response = requests.get(
+                    f"https://api.runpod.ai/v2/{synthetic_endpoint_id}/status/{job_id}",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=30
+                )
+                
+                status_data = status_response.json()
+                status = status_data.get("status")
+                
+                if status == "COMPLETED":
+                    output = status_data.get("output", {})
+                    if output.get("status") == "success":
+                        # Decrypt results
+                        logger.info("Decrypting results...")
+                        encrypted_dataset = output.get("encrypted_dataset")
+                        
+                        encrypted_package = json.loads(encrypted_dataset)
+                        ciphertext = base64.b64decode(encrypted_package['ciphertext'])
+                        tag = base64.b64decode(encrypted_package['tag'])
+                        nonce = base64.b64decode(encrypted_package['nonce'])
+                        
+                        if CRYPTO_BACKEND_LOCAL == "pycryptodome":
+                            cipher = ChaCha20_Poly1305.new(key=encryption_key, nonce=nonce)
+                            plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+                        else:
+                            cipher = ChaCha20Poly1305(encryption_key)
+                            plaintext = cipher.decrypt(nonce, ciphertext + tag, None)
+                        
+                        qa_pairs = json.loads(plaintext.decode('utf-8'))
+                        
+                        logger.info(f"✓ Generated {len(qa_pairs)} Q&A pairs")
+                        return qa_pairs, encryption_key_hex
+                    else:
+                        raise RuntimeError(f"Generation failed: {output.get('error')}")
+                
+                elif status == "FAILED":
+                    error_msg = status_data.get("error", "Unknown error")
+                    raise RuntimeError(f"RunPod job failed: {error_msg}")
+                
+                # Still processing
+                time.sleep(poll_interval)
+                elapsed = int(time.time() - start_time)
+                if elapsed % 30 == 0:  # Log every 30 seconds
+                    logger.info(f"Generation in progress... ({elapsed}s elapsed)")
+            
+            raise TimeoutError("Generation timed out after 1 hour")
+            
+        except requests.exceptions.RequestException as e:
+            raise RuntimeError(f"Failed to communicate with RunPod: {e}")
 
 

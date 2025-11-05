@@ -3351,7 +3351,7 @@ class VaultApp:
                     
                     # Offer to generate Q&A and train model
                     if self.qa_generator and self.training_manager and len(result['text_chunks']) > 0:
-                        self._offer_training(filename, result['text_chunks'])
+                        self._offer_training(filename, result['text_chunks'], pdf_path=file_path)
                 
                 # Schedule UI update on main thread
                 # Note: Flet's page.update() is thread-safe when called from background threads
@@ -3392,7 +3392,7 @@ class VaultApp:
         thread = threading.Thread(target=process_pdf, daemon=True)
         thread.start()
 
-    def _offer_training(self, filename: str, text_chunks: List[str]):
+    def _offer_training(self, filename: str, text_chunks: List[str], pdf_path: Optional[str] = None):
         """Offer to generate Q&A and train model after PDF processing."""
         # Check if training manager is initialized
         if not self.training_manager:
@@ -3422,7 +3422,7 @@ class VaultApp:
         def on_yes(e):
             dialog.open = False
             self.page.update()
-            self._start_training_workflow(filename, text_chunks)
+            self._start_training_workflow(filename, text_chunks, pdf_path=pdf_path)
         
         def on_no(e):
             dialog.open = False
@@ -3778,7 +3778,7 @@ class VaultApp:
         
         self.page.update()
     
-    def _start_training_workflow(self, filename: str, text_chunks: List[str]):
+    def _start_training_workflow(self, filename: str, text_chunks: List[str], pdf_path: Optional[str] = None):
         """Start Q&A generation and training workflow with progress dialog."""
         # Create progress dialog
         progress_dialog, phase_text, progress_bar, phase_status, encryption_indicator, phase_steps = self._create_training_progress_dialog(filename)
@@ -3811,44 +3811,86 @@ class VaultApp:
                 time.sleep(0.5)  # Brief pause to show phase 1
                 
                 # Phase 2: Knowledge extraction (Q&A generation)
-                total_chunks = len(text_chunks)
-                processed_chunks = [0]  # Use list to allow modification in nested function
-                
-                def update_phase2_progress(current: int, total: int):
-                    """Update progress during knowledge extraction."""
-                    progress = 0.25 + (current / total) * 0.25  # 25% to 50%
-                    submsg = f"Extracting knowledge from chunk {current}/{total}... (All data encrypted)"
-                    self._update_training_phase(
-                        phase_text, progress_bar, phase_status, phase_steps,
-                        phase=1,
-                        message="💡 Extracting knowledge from your content...",
-                        submessage=submsg,
-                        progress=progress
-                    )
-                
-                # Generate Q&A pairs with progress tracking
-                # We'll manually iterate through chunks to show progress
+                # Try synthetic generation first (automatic, 1000 samples)
+                use_synthetic = pdf_path and Path(pdf_path).exists() if pdf_path else False
                 qa_pairs = []
-                for i, chunk in enumerate(text_chunks):
-                    current = i + 1
-                    processed_chunks[0] = current
-                    
-                    # Update progress
-                    def update_progress():
-                        update_phase2_progress(current, total_chunks)
-                    
+                dataset_encryption_key_hex = None
+                
+                if use_synthetic:
+                    # Use synthetic generation with Qwen3-235B (1000 samples)
                     try:
-                        if hasattr(self.page, 'run_task'):
-                            self.page.run_task(update_progress)
-                        else:
-                            update_progress()
-                    except Exception:
-                        update_progress()
+                        def update_phase2_synthetic():
+                            self._update_training_phase(
+                                phase_text, progress_bar, phase_status, phase_steps,
+                                phase=1,
+                                message="💡 Generating knowledge with Qwen3-235B...",
+                                submessage="Creating 1,000+ high-quality Q&A pairs (All data encrypted)",
+                                progress=0.35
+                            )
+                        
+                        try:
+                            if hasattr(self.page, 'run_task'):
+                                self.page.run_task(update_phase2_synthetic)
+                            else:
+                                update_phase2_synthetic()
+                        except Exception:
+                            update_phase2_synthetic()
+                        
+                        logger.info("Using synthetic Q&A generation (Qwen3-235B-A22B-Instruct-2507)")
+                        qa_pairs, dataset_encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
+                            pdf_path=pdf_path,
+                            target_samples=1000,
+                            encryption_key_hex=None  # Generate new key
+                        )
+                        
+                        logger.info(f"✓ Generated {len(qa_pairs)} synthetic Q&A pairs")
+                        
+                    except Exception as e:
+                        logger.warning(f"Synthetic generation failed: {e}. Falling back to local generation...")
+                        use_synthetic = False
+                
+                if not use_synthetic:
+                    # Fallback: Use local generation (MLX/Ollama)
+                    total_chunks = len(text_chunks)
+                    processed_chunks = [0]  # Use list to allow modification in nested function
                     
-                    # Generate Q&A for this chunk
-                    chunk_pairs = self.qa_generator.generate_qa_pairs(chunk, num_pairs=3)
-                    if chunk_pairs:
-                        qa_pairs.extend(chunk_pairs)
+                    def update_phase2_progress(current: int, total: int):
+                        """Update progress during knowledge extraction."""
+                        progress = 0.25 + (current / total) * 0.25  # 25% to 50%
+                        submsg = f"Extracting knowledge from chunk {current}/{total}... (All data encrypted)"
+                        self._update_training_phase(
+                            phase_text, progress_bar, phase_status, phase_steps,
+                            phase=1,
+                            message="💡 Extracting knowledge from your content...",
+                            submessage=submsg,
+                            progress=progress
+                        )
+                    
+                    # Generate Q&A pairs with progress tracking
+                    for i, chunk in enumerate(text_chunks):
+                        current = i + 1
+                        processed_chunks[0] = current
+                        
+                        # Update progress
+                        def update_progress():
+                            update_phase2_progress(current, total_chunks)
+                        
+                        try:
+                            if hasattr(self.page, 'run_task'):
+                                self.page.run_task(update_progress)
+                            else:
+                                update_progress()
+                        except Exception:
+                            update_progress()
+                        
+                        # Generate Q&A for this chunk
+                        chunk_pairs = self.qa_generator.generate_qa_pairs(chunk, num_pairs=3)
+                        if chunk_pairs:
+                            qa_pairs.extend(chunk_pairs)
+                    
+                    # Generate encryption key for dataset
+                    import secrets
+                    dataset_encryption_key_hex = secrets.token_bytes(32).hex()
                 
                 if not qa_pairs:
                     progress_dialog.open = False
@@ -3872,8 +3914,13 @@ class VaultApp:
                 
                 # Phase 3: Uploading encrypted data (includes encryption)
                 import os
-                encryption_key = os.urandom(32)
-                encryption_key_hex = encryption_key.hex()
+                # Use existing encryption key if synthetic generation provided one, otherwise generate new
+                if dataset_encryption_key_hex:
+                    encryption_key = bytes.fromhex(dataset_encryption_key_hex)
+                    encryption_key_hex = dataset_encryption_key_hex
+                else:
+                    encryption_key = os.urandom(32)
+                    encryption_key_hex = encryption_key.hex()
                 
                 def update_phase3_start():
                     self._update_training_phase(

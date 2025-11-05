@@ -1,0 +1,58 @@
+# Dockerfile for Synthetic Q&A Generator (Qwen3-235B-A22B-Instruct-2507)
+# Optimized for RunPod Serverless endpoint
+# Model: Qwen3-235B-A22B-Instruct-2507 (MoE: 235B total, 22B activated)
+
+FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+
+WORKDIR /workspace
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    git \
+    wget \
+    curl \
+    build-essential \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and install Python dependencies
+COPY docker/requirements.txt /workspace/requirements.txt
+
+# Install Python dependencies with optimizations for large models
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir \
+    sentencepiece>=0.1.99 \
+    protobuf>=4.25.0 \
+    tokenizers>=0.15.0
+
+# Copy application code (only src/ is required for synthetic QA handler)
+COPY src/ /workspace/src/
+
+# Environment variables for optimization
+ENV TOKENIZERS_PARALLELISM=false
+ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
+ENV TRANSFORMERS_CACHE=/workspace/.cache/huggingface
+ENV HF_HOME=/workspace/.cache/huggingface
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+ENV HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets
+
+# Optimize for MoE models (Qwen3-235B)
+ENV PYTORCH_NO_CUDA_MEMORY_CACHING=0
+ENV CUDA_LAUNCH_BLOCKING=0
+
+# Create necessary directories
+RUN mkdir -p /workspace/outputs \
+    /workspace/.cache/huggingface \
+    /workspace/.cache/huggingface/models \
+    /workspace/.cache/huggingface/datasets
+
+# Health check for RunPod
+# Checks if RunPod and PyTorch are available
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD python3 -c "import runpod; import torch; import transformers; print('OK')" || exit 1
+
+# For RunPod Serverless deployment, start synthetic QA handler
+# The handler will lazy-load the model on first request
+CMD ["python3", "-u", "src/synthetic_qa_handler.py"]
+
