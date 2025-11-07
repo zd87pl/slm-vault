@@ -1,230 +1,251 @@
-# SLM Vault - WDVA Core Component
+# Enclave: Secure Vault for Agentic Web
 
-> Weight-Delta Vault Adapters (WDVA) - Core Vault Infrastructure for Genetic Fitness Platform
+> Secure Secret Storage with User-Controlled Access for AI Agents
 
 ## Overview
 
-This repository contains the core WDVA (Weight-Delta Vault Adapters) vault component for the genetic fitness platform. It implements the foundational cryptographic infrastructure, secure model storage, and privacy-preserving personalization layer that powers the larger genetic fitness ecosystem. This is the secure vault and SLM adaptation layer, not the complete platform.
+Enclave is a secure, privacy-preserving vault system that enables AI agents and web applications to access your secrets and knowledge with **explicit user consent**. Built with end-to-end encryption, fine-tuned language models, and Model Context Protocol (MCP) integration. **You control who accesses what, when.**
 
 ## The Problem
 
-Current health AI solutions are either:
-- **Generic**: One-size-fits-all models that ignore your unique biology
-- **Fragmented**: Genetic tests separate from fitness trackers separate from nutrition apps
-- **Privacy-invasive**: Your most intimate health data controlled by big tech companies
-- **Static**: Test results that never evolve with your changing health
+Current approaches to secret management for AI agents are either:
+- **Insecure**: API keys stored in plaintext or weakly encrypted
+- **No User Control**: Agents access secrets without explicit permission
+- **Fragmented**: Secrets scattered across different services and tools
+- **Privacy-Invasive**: Your secrets controlled by third-party services
+- **No Audit Trail**: No visibility into who accessed what and when
 
-## Our Solution: WDVA Technology
+## Our Solution: Enclave Vault
 
-**Weight-Delta Vault Adapters (WDVA)** enable:
-- **Encrypted Weight Deltas**: Per-user model adaptations stored as encrypted vaults with ephemeral runtime merging
-- **EVO2 Genetic Optimization**: Evolutionary algorithms optimizing fitness recommendations based on genomic variants
-- **MCP-Gated Consent**: Granular, cryptographically-enforced consent management with Model Context Protocol
-- **Genomics-Aware Processing**: Specialized VCF file handling with uncertainty quantification and non-diagnostic boundaries
-- **Cryptographic Right-to-be-Forgotten**: Immediate model forgetting through key destruction rather than data deletion
+**Enclave** provides:
+- **🔐 End-to-End Encryption**: All secrets encrypted client-side before storage - zero-knowledge architecture
+- **👤 User Consent**: Four-button consent system (Allow, Deny, Allow Always, Deny Always) for every access request
+- **🌐 Browser Extension**: Chrome/Comet extension for seamless secret management
+- **🤖 AI Agent Integration**: MCP server for Claude Desktop, Cursor, and other AI tools
+- **📚 Knowledge Extraction**: Fine-tune language models on your documents for personalized AI
+- **🔍 Activity Monitoring**: Track all secret access attempts with detailed logs
+- **🛡️ Policy-Based Access**: Granular control over which agents can access which secrets
+- **☁️ Cloud Sync**: Encrypted synchronization across devices
 
 ## Key Differentiators
 
-### 🧬 Multimodal Intelligence
-Seamlessly integrates genetic sequences, real-time biometrics, behavioral patterns, and contextual data into a unified health intelligence.
-
 ### 🔒 Privacy by Design
-Your model runs in isolated containers. Your data never trains anyone else's model. You can export, delete, or transfer everything at any time.
+Your secrets are encrypted client-side before storage. The backend never sees plaintext. You can export, delete, or transfer everything at any time.
 
-### 📈 Continuous Learning
-Unlike static genetic reports, your model evolves daily, learning from every workout, meal, and recovery pattern.
+### 👤 User Control
+Every access request requires explicit consent. You decide who can access what, with granular policies and audit logs.
+
+### 🌐 Agentic Web Ready
+Built for the agentic web - seamlessly integrates with LangChain, MCP, and other AI agent frameworks.
+
+### 📊 Complete Visibility
+Track every access attempt, see who requested what, and when. Full audit trail for security and compliance.
 
 ### 🚀 Accessible Everywhere
-Query your personal health AI through ChatGPT, mobile apps, wearables, or API—while maintaining complete data sovereignty.
+Manage secrets through browser extension, desktop GUI, CLI, or API - all with the same security guarantees.
 
-## Development Roadmap
-
-### Q4 2025 (Current) - Core Infrastructure
-- ✅ WDVA cryptographic architecture implemented
-- ✅ DoRA-based adapter system with production-ready test suite (66/66 tests passing)
-- ✅ EVO2 genetic optimizer integrated
-- ✅ RunPod Serverless deployment ready
-- ⏳ TEE integration for secure runtime merging
-
----
-
-# DoRA Implementation (v2.0) - Technical Details
-
-**Complete production-ready implementation of secure DoRA adapter training, encryption, and ephemeral inference.**
-
-## 🚀 Features
+## Features
 
 ### Core Capabilities
-- ✅ **DoRA Training**: Native support via Axolotl and PEFT (v0.9.0+)
-- ✅ **Military-Grade Encryption**: XChaCha20-Poly1305 with HKDF-SHA256 key derivation
-- ✅ **Ephemeral Inference**: Adapters loaded in-memory only, never persisted to disk
-- ✅ **LRU Adapter Caching**: Sub-10ms adapter switching for cached adapters
-- ✅ **Memory Security**: Secure zeroing, mlock support, proper CUDA synchronization
-- ✅ **Compression**: Optional zstd compression (30-50% storage reduction)
-- ✅ **RunPod Serverless**: Complete handler with weight application logic
+- ✅ **Secret Storage**: Secure storage of API keys, passwords, and credentials
+- ✅ **Client-Side Encryption**: AES-GCM encryption with master key derivation
+- ✅ **Consent Management**: Four-button system with persistent policies
+- ✅ **Browser Extension**: Chrome/Comet extension for easy secret management
+- ✅ **MCP Integration**: Model Context Protocol server for AI agent access
+- ✅ **LangChain Integration**: Native tools and retrievers for LangChain agents
+- ✅ **Activity Logging**: Complete audit trail of all access attempts
+- ✅ **Cloud Sync**: Encrypted synchronization across devices
 
-### Security Enhancements (v2.0)
-- 🔒 **Secure Memory Zeroing**: Cryptographic-grade memory clearing with ctypes
-- 🔒 **Memory Locking**: Prevent swapping to disk with mlock/munlock
-- 🔒 **Authenticated Encryption**: AAD prevents tampering
-- 🔒 **Key Rotation**: Built-in support for re-encryption with new keys
-- 🔒 **Stream Synchronization**: Proper CUDA stream handling for multi-stream safety
-- 🔒 **State Restoration**: Complete model state capture and restoration (including hooks)
+### Security Features
+- 🔒 **Zero-Knowledge Architecture**: Backend never sees plaintext secrets
+- 🔒 **End-to-End Encryption**: XChaCha20-Poly1305 with HKDF-SHA256 key derivation
+- 🔒 **Secure Memory**: Memory locking and secure zeroing
+- 🔒 **Policy Enforcement**: Granular access control with rate limiting
+- 🔒 **Audit Logging**: Complete visibility into all access attempts
 
-### Performance Optimizations
-- ⚡ **Adapter Caching**: 3-adapter LRU cache with configurable memory limits
-- ⚡ **QDoRA Support**: 4-bit quantization for 2-4GB VRAM usage
-- ⚡ **Compression**: 30-50% file size reduction with zstd
-- ⚡ **Lazy Decryption**: Decrypt only needed layers (planned)
-- ⚡ **CUDA Optimization**: Multi-stream support with proper synchronization
+### Knowledge Extraction (Optional)
+- 📚 **Document Processing**: Extract knowledge from PDFs and documents
+- 🤖 **Fine-Tuned Models**: Train personalized AI models on your data
+- 🔐 **Encrypted Adapters**: DoRA adapters encrypted and stored securely
+- ⚡ **Ephemeral Inference**: Adapters loaded in-memory only, never persisted
 
-## 📋 Quick Start
+## Quick Start
+
+### Browser Extension
+
+1. **Install Extension**:
+   - Open Chrome/Comet and navigate to `chrome://extensions/`
+   - Enable "Developer mode"
+   - Click "Load unpacked" and select `browser-extension/` directory
+
+2. **Set Master Password**:
+   - Click extension icon
+   - Set your master password (used to encrypt/decrypt secrets)
+
+3. **Add Your First Secret**:
+   - Click "Add Secret"
+   - Enter service name (e.g., "openai") and API key
+   - Click "Save"
+
+4. **Grant Access to AI Agents**:
+   - When an agent requests access, consent popup appears
+   - Choose Allow, Deny, Allow Always, or Deny Always
+
+### Desktop GUI
 
 ```bash
-# Run complete workflow (training → encryption → inference)
-python3 examples/complete_workflow.py \
-    --model-name TinyLlama/TinyLlama-1.1B-Chat-v1.0 \
-    --max-samples 100 \
-    --epochs 1 \
-    --use-4bit
+# Launch GUI
+./launch_enclave_gui.sh
+
+# Login and start managing secrets
 ```
 
-## 📦 Installation
+### MCP Server
+
+```bash
+# Start MCP server
+python -m advanced_vault.mcp_server
+
+# Configure in Claude Desktop or Cursor
+# MCP server will request consent for each access
+```
+
+### LangChain Integration
+
+```python
+from langchain_enclave import EnclaveSecretProvider, EnclaveKnowledgeRetriever
+
+# Get secret provider
+secret_tool = EnclaveSecretProvider(
+    api_key="your-api-key",
+    base_url="https://your-backend-url"
+)
+
+# Use in LangChain agent
+agent = initialize_agent(
+    tools=[secret_tool],
+    llm=llm,
+    agent=AgentType.ZERO_SHOT_REACT_DESCRIPTION
+)
+```
+
+## Architecture
+
+```
+User → Browser Extension / GUI → Encrypted Storage → Cloud Sync
+                ↓
+         Consent Manager
+                ↓
+    AI Agents (MCP/LangChain) → Policy Engine → Encrypted Secrets
+```
+
+**Key Components:**
+- `browser-extension/`: Chrome/Comet extension for secret management
+- `advanced_vault/core/`: Core vault with encryption and storage
+- `advanced_vault/mcp_server/`: MCP server for AI agent integration
+- `advanced_vault/backend/`: Backend API with policy engine
+- `langchain-enclave/`: LangChain integration package
+
+## Installation
+
+### Browser Extension
+
+```bash
+# Load unpacked extension in Chrome
+# See browser-extension/README.md for details
+```
+
+### Desktop GUI
 
 ```bash
 # Install dependencies
-pip install -r docker/requirements.txt
+pip install -r advanced_vault/gui/requirements.txt
 
-# Or use Docker
-docker build -t dora-wdva:latest -f docker/Dockerfile .
+# Launch GUI
+./launch_enclave_gui.sh
 ```
 
-## 🚢 RunPod Deployment
-
-Deploy to RunPod Serverless in 3 steps:
+### Backend API
 
 ```bash
-# 1. Build and push Docker image
-docker build -t your-username/dora-wdva:latest .
-docker push your-username/dora-wdva:latest
+# Install dependencies
+pip install -r advanced_vault/backend/requirements.txt
 
-# 2. Deploy to RunPod
-./scripts/deploy_runpod.sh
-
-# 3. Test endpoint
-export RUNPOD_API_KEY="your-key-here"
-./test_runpod.sh
+# Run backend
+cd advanced_vault/backend
+uvicorn main:app --reload
 ```
 
-See [RUNPOD_DEPLOYMENT.md](RUNPOD_DEPLOYMENT.md) for detailed deployment instructions and [RUNPOD_TROUBLESHOOTING.md](RUNPOD_TROUBLESHOOTING.md) for debugging guide.
+### LangChain Package
 
-## 📚 Documentation
+```bash
+# Install langchain-enclave
+cd langchain-enclave
+pip install -e .
+
+# Or from PyPI (when published)
+pip install langchain-enclave
+```
+
+## Documentation
 
 **📖 [Full Documentation Index](docs/README.md)** - Complete documentation organized by topic
 
 ### Quick Links
-- **[Quick Start Guide](docs/guides/QUICK_START.md)** - Get started quickly
-- **[Implementation Status](docs/implementation/STATUS.md)** - Current status and completed phases
-- **[Architecture](docs/architecture/WDVA_ARCHITECTURE.md)** - System architecture
-- **[Deployment Guide](docs/deployment/RUNPOD_DEPLOYMENT.md)** - Deploy to RunPod
-- **[Testing Guide](docs/testing/TESTING_GUIDE.md)** - Testing documentation
-- **[Security Analysis](docs/security/SECURITY_ANALYSIS_PDF_QA.md)** - Security documentation
+- **[Browser Extension Setup](docs/BROWSER_EXTENSION_SETUP.md)** - Extension installation and usage
+- **[LangChain Integration](docs/LANGCHAIN_INTEGRATION.md)** - Integrate with LangChain agents
+- **[MCP Integration](docs/MCP_INTEGRATION.md)** - Set up MCP server
+- **[Policy Guide](docs/POLICY_GUIDE.md)** - Configure access policies
+- **[API Detection](docs/BROWSER_EXTENSION_API_DETECTION.md)** - Monitor secret access
 
 ### Development
 - **[Backlog](BACKLOG.md)** - Active development backlog
 - **[Roadmap](ROADMAP.md)** - High-level development roadmap
-- **[Next Steps](docs/guides/NEXT_STEPS.md)** - Immediate next steps
 
-## 🏗️ Architecture
+## Security
 
-```
-Training → Encryption → Ephemeral Inference
-   DoRA      XChaCha20    In-Memory Only
-  (r=16)    +HKDF-SHA256  +LRU Caching
-```
+### Encryption
+- **Client-Side**: All secrets encrypted before leaving your device
+- **Algorithm**: AES-GCM (browser) / XChaCha20-Poly1305 (backend)
+- **Key Derivation**: PBKDF2 (browser) / HKDF-SHA256 (backend)
+- **Zero-Knowledge**: Backend never sees plaintext secrets
 
-Key components:
-- `src/dora_crypto.py`: Encryption/decryption with security hardening
-- `src/ephemeral_inference.py`: Inference engine with caching and cleanup
-- `src/utils/`: Memory security, adapter caching, CUDA utilities
+### Access Control
+- **Consent Required**: Every access requires explicit user approval
+- **Policy Engine**: Granular rules for agent access
+- **Rate Limiting**: Prevent abuse with configurable limits
+- **Audit Logging**: Complete trail of all access attempts
 
-## 💡 Usage Examples
+### Privacy
+- **No Tracking**: No analytics or tracking of your secrets
+- **Local-First**: Secrets stored locally, synced optionally
+- **Export/Delete**: Full control over your data
+- **Right to be Forgotten**: Delete secrets and policies anytime
 
-### Train DoRA Adapter
-```bash
-./scripts/train.sh standalone
-```
+## Use Cases
 
-### Encrypt Adapter
-```bash
-./scripts/encrypt_adapter.sh ./outputs/dora-adapter
-```
+### API Key Management
+Store API keys for OpenAI, Anthropic, GitHub, Stripe, and more. Grant access to AI agents with explicit consent.
 
-### Run Inference
-```python
-from src import EphemeralDoRAInference
+### Secret Sharing
+Share secrets with team members or AI agents while maintaining full control and audit trail.
 
-engine = EphemeralDoRAInference(
-    base_model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-    encryption_key=bytes.fromhex("your-key-here"),
-    enable_cache=True
-)
+### Knowledge Base
+Upload documents and create personalized AI knowledge bases with fine-tuned models.
 
-result = engine.inference_with_encrypted_adapter(
-    encrypted_path="./outputs/encrypted-adapter.json",
-    prompt="Explain quantum computing:",
-    max_tokens=256
-)
-```
+### Agentic Web Integration
+Integrate with LangChain, AutoGPT, and other agent frameworks with policy-based access control.
 
-## 🚀 Performance
+## Contributing
 
-| Metric | Value |
-|--------|-------|
-| Adapter switching (cached) | <5ms |
-| Cold adapter load | 150-250ms |
-| Memory usage (QDoRA) | 0.8-1.0GB VRAM |
-| Training cost (1K samples) | $0.09 on RTX 4090 |
+We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
 
-## 🔐 Security Features
+## License
 
-- XChaCha20-Poly1305 authenticated encryption
-- HKDF-SHA256 key derivation
-- Secure memory zeroing with ctypes
-- Memory locking (mlock) to prevent swapping
-- Zero disk persistence (ephemeral only)
-- Proper CUDA stream synchronization
+Copyright © 2025 Zygmunt Dyras. All rights reserved.
 
-## 📊 Testing
-
-### Local Testing
-```bash
-# Run all tests
-python3 tests/run_tests.py
-
-# Run specific tests
-python3 tests/test_encryption.py
-python3 tests/test_adapter_cache.py
-```
-
-### RunPod Endpoint Testing
-```bash
-# Quick health check (30 seconds)
-export RUNPOD_API_KEY="your-key-here"
-./test_runpod.sh
-
-# Comprehensive test suite (5-10 minutes)
-./test_runpod_comprehensive.sh
-
-# Full workflow test (Python)
-python3 test_full_workflow.py
-```
-
-See [TESTING_GUIDE.md](TESTING_GUIDE.md) for comprehensive testing documentation, load testing strategies, and performance benchmarks.
-
+**Proprietary Technology**: This software incorporates proprietary technology protected by provisional patent applications. Unauthorized use, reproduction, or distribution is prohibited.
 
 ---
 
-*Core cryptographic vault infrastructure for privacy-preserving genetic fitness AI.*
-
-Copyright © 2025 Zygmunt Dyras. All rights reserved.
+**Enclave: Secure secrets for the agentic web. You control who accesses what, when.**
