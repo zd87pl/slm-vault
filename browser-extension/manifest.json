@@ -1,0 +1,45 @@
+{
+  "manifest_version": 3,
+  "name": "Enclave Vault",
+  "version": "0.1.0",
+  "description": "Secure API key storage with consent-based access for AI agents",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "nativeMessaging"
+  ],
+  "host_permissions": [
+    "https://keen-curiosity-production-1288.up.railway.app/*"
+  ],
+  "background": {
+    "service_worker": "background/service-worker.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "48": "icons/icon-48.png",
+      "128": "icons/icon-128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["consent/consent.html"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}
+

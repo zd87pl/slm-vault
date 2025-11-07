@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enclave Vault</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <div class="popup-header">
+      <div class="header-content">
+        <div class="icon">🔐</div>
+        <div>
+          <h1>Enclave Vault</h1>
+          <p class="subtitle">Secure API Key Storage</p>
+        </div>
+      </div>
+      <div class="sync-status" id="sync-status">
+        <span class="status-indicator" id="status-indicator"></span>
+        <span class="status-text" id="status-text">Synced</span>
+      </div>
+    </div>
+
+    <div class="popup-content">
+      <div class="actions-bar">
+        <button class="btn btn-primary" id="add-secret-btn">
+          <span class="btn-icon">+</span>
+          <span>Add Secret</span>
+        </button>
+        <button class="btn btn-secondary" id="sync-btn">
+          <span class="btn-icon">🔄</span>
+          <span>Sync</span>
+        </button>
+      </div>
+
+      <div class="secrets-list" id="secrets-list">
+        <div class="loading" id="loading">Loading secrets...</div>
+      </div>
+
+      <div class="empty-state" id="empty-state" style="display: none;">
+        <div class="empty-icon">🔑</div>
+        <p>No secrets stored yet</p>
+        <p class="hint">Click "Add Secret" to get started</p>
+      </div>
+    </div>
+
+    <div class="popup-footer">
+      <a href="#" id="activity-link">Activity</a>
+      <a href="#" id="settings-link">Settings</a>
+      <span class="version">v0.1.0</span>
+    </div>
+  </div>
+
+  <!-- Add Secret Dialog -->
+  <div class="dialog-overlay" id="add-dialog" style="display: none;">
+    <div class="dialog">
+      <div class="dialog-header">
+        <h2>Add Secret</h2>
+        <button class="dialog-close" id="close-dialog-btn">×</button>
+      </div>
+      <div class="dialog-content">
+        <div class="form-group">
+          <label for="service-input">Service Name</label>
+          <input type="text" id="service-input" placeholder="e.g., openai, github, stripe" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="secret-input">API Key / Secret</label>
+          <input type="password" id="secret-input" placeholder="Enter your secret" autocomplete="off">
+          <button class="toggle-password" id="toggle-password-btn">👁</button>
+        </div>
+        <div class="form-group">
+          <label for="tags-input">Tags (comma-separated)</label>
+          <input type="text" id="tags-input" placeholder="e.g., production, api-key" autocomplete="off">
+        </div>
+        <div class="form-group">
+          <label for="description-input">Description (optional)</label>
+          <textarea id="description-input" placeholder="Optional description" rows="2"></textarea>
+        </div>
+      </div>
+      <div class="dialog-actions">
+        <button class="btn btn-secondary" id="cancel-btn">Cancel</button>
+        <button class="btn btn-primary" id="save-btn">Save</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>
+

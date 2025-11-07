@@ -22,6 +22,7 @@ class ConsentDecision(Enum):
     ALLOW_ONCE = "allow_once"
     ALLOW_ALWAYS = "allow_always"
     DENY = "deny"
+    DENY_ALWAYS = "deny_always"
 
 
 class ConsentManager:
@@ -83,33 +84,49 @@ class ConsentManager:
         Returns:
             App identifier (e.g., "claude-desktop", "cursor", "unknown")
         """
-        # Try to detect from environment
+        # Try to detect from environment variables (MCP may set these)
+        mcp_client = os.environ.get("MCP_CLIENT", "")
         parent_process = os.environ.get("PARENT_PROCESS", "")
         
-        if "claude" in parent_process.lower():
-            return "claude-desktop"
-        elif "cursor" in parent_process.lower():
-            return "cursor"
-        elif "vs-code" in parent_process.lower() or "code" in parent_process.lower():
-            return "vscode"
-        else:
-            # Try to detect from process tree
-            try:
-                import psutil
-                current = psutil.Process()
-                parent = current.parent()
-                if parent:
-                    parent_name = parent.name().lower()
-                    if "claude" in parent_name:
-                        return "claude-desktop"
-                    elif "cursor" in parent_name:
-                        return "cursor"
-                    elif "code" in parent_name:
-                        return "vscode"
-            except ImportError:
-                pass
-            
-            return "unknown"
+        # Check MCP-specific environment variables first
+        if mcp_client:
+            mcp_lower = mcp_client.lower()
+            if "claude" in mcp_lower:
+                return "claude-desktop"
+            elif "cursor" in mcp_lower:
+                return "cursor"
+            elif "vscode" in mcp_lower or "code" in mcp_lower:
+                return "vscode"
+        
+        # Try to detect from parent process env var
+        if parent_process:
+            parent_lower = parent_process.lower()
+            if "claude" in parent_lower:
+                return "claude-desktop"
+            elif "cursor" in parent_lower:
+                return "cursor"
+            elif "vs-code" in parent_lower or "code" in parent_lower:
+                return "vscode"
+        
+        # Try to detect from process tree
+        try:
+            import psutil
+            current = psutil.Process()
+            parent = current.parent()
+            if parent:
+                parent_name = parent.name().lower()
+                if "claude" in parent_name:
+                    return "claude-desktop"
+                elif "cursor" in parent_name:
+                    return "cursor"
+                elif "code" in parent_name:
+                    return "vscode"
+        except ImportError:
+            pass
+        except Exception:
+            pass  # If psutil fails for any reason, fall through to unknown
+        
+        return "unknown"
     
     def _show_notification(self, app_name: str, tool_name: str, query_preview: str = "") -> Optional[ConsentDecision]:
         """
@@ -156,6 +173,8 @@ class ConsentManager:
                             return ConsentDecision.ALLOW_ONCE
                         elif "Always Allow" in output:
                             return ConsentDecision.ALLOW_ALWAYS
+                        elif "Deny Always" in output:
+                            return ConsentDecision.DENY_ALWAYS
                         elif "Deny" in output:
                             return ConsentDecision.DENY
                 except subprocess.TimeoutExpired:
@@ -170,7 +189,7 @@ class ConsentManager:
                     import subprocess
                     # Use zenity for interactive dialog
                     script = f'''
-                    zenity --question --title "{title}" --text "{message}\\n\\nChoose an option:" --extra-button "Allow Once" --extra-button "Always Allow" --ok-label "Deny" --timeout=30
+                    zenity --question --title "{title}" --text "{message}\\n\\nChoose an option:" --extra-button "Allow Once" --extra-button "Always Allow" --extra-button "Deny Always" --ok-label "Deny" --timeout=30
                     echo $?
                     '''
                     
@@ -186,6 +205,8 @@ class ConsentManager:
                         return ConsentDecision.ALLOW_ALWAYS
                     elif "Allow Once" in result.stdout:
                         return ConsentDecision.ALLOW_ONCE
+                    elif "Deny Always" in result.stdout:
+                        return ConsentDecision.DENY_ALWAYS
                     else:
                         return ConsentDecision.DENY
                 except Exception as e:
@@ -241,15 +262,19 @@ class ConsentManager:
                 logger.info(f"Auto-approved for {app_identifier} (always allow)")
                 return True
         
-        # Check if app is explicitly denied
+        # Check if app is explicitly denied (including deny_always)
         if app_identifier in self.permissions:
             app_perms = self.permissions[app_identifier]
-            if app_perms.get("denied", False):
-                logger.info(f"Access denied for {app_identifier} (explicitly denied)")
+            if app_perms.get("deny_always", False) or app_perms.get("denied", False):
+                logger.info(f"Access denied for {app_identifier} (permanently denied)")
                 return False
         
-        # Show notification and get user decision
-        decision = self._show_notification(app_name, tool_name, query_preview)
+        # Try browser extension first (if available)
+        decision = self._try_extension_consent(app_identifier, tool_name, query_preview)
+        
+        # Fallback to OS notification if extension not available
+        if decision is None:
+            decision = self._show_notification(app_name, tool_name, query_preview)
         
         if decision is None:
             # Notification failed - default to deny for security
@@ -258,12 +283,19 @@ class ConsentManager:
         
         # Handle decision
         if decision == ConsentDecision.DENY:
-            # Record denial
+            # Record one-time denial (no storage)
+            logger.info(f"One-time denial for {app_identifier}")
+            return False
+        
+        elif decision == ConsentDecision.DENY_ALWAYS:
+            # Record permanent denial
             if app_identifier not in self.permissions:
                 self.permissions[app_identifier] = {}
             self.permissions[app_identifier]["denied"] = True
+            self.permissions[app_identifier]["deny_always"] = True
             self.permissions[app_identifier]["last_denied"] = datetime.now().isoformat()
             self._save_permissions()
+            logger.info(f"Permanent denial set for {app_identifier}")
             return False
         
         elif decision == ConsentDecision.ALLOW_ALWAYS:
@@ -302,5 +334,55 @@ class ConsentManager:
     def get_permissions(self) -> Dict[str, Dict]:
         """Get all permissions."""
         return self.permissions.copy()
+    
+    def _try_extension_consent(
+        self,
+        app_identifier: str,
+        tool_name: str,
+        query_preview: str = ""
+    ) -> Optional[ConsentDecision]:
+        """
+        Try to get consent via browser extension.
+        
+        Uses native messaging host to communicate with extension.
+        Returns None if extension not available (falls back to OS notifications).
+        """
+        try:
+            import json
+            import subprocess
+            import platform
+            import os
+            
+            # Check if native messaging host is available
+            # Native messaging host is a small executable that bridges MCP server and extension
+            # For POC, we'll check if extension is installed and use a simple approach
+            
+            # Try to use native messaging host if available
+            # The host executable should be at:
+            # macOS: ~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.enclave.vault.json
+            # Linux: ~/.config/google-chrome/NativeMessagingHosts/com.enclave.vault.json
+            # Windows: Registry or similar location
+            
+            if platform.system() == "Darwin":
+                host_config_path = Path.home() / "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.enclave.vault.json"
+            elif platform.system() == "Linux":
+                host_config_path = Path.home() / ".config/google-chrome/NativeMessagingHosts/com.enclave.vault.json"
+            else:
+                # Windows - would use registry
+                host_config_path = None
+            
+            # For now, extension consent is handled via message passing
+            # MCP server can check extension availability, but for POC we'll use OS notifications
+            # Future: Implement native messaging host executable
+            
+            # Check if we can detect extension via environment variable or config
+            # This is a placeholder - actual implementation would use native messaging host
+            
+            logger.debug("Extension consent check: Native messaging host not yet implemented, using OS notifications")
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Extension consent not available: {e}")
+            return None
 
 

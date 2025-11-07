@@ -1,0 +1,10 @@
+{
+  "name": "com.enclave.vault",
+  "description": "Enclave Vault Native Messaging Host",
+  "path": "/path/to/enclave-native-host",
+  "type": "stdio",
+  "allowed_origins": [
+    "chrome-extension://YOUR_EXTENSION_ID_HERE/"
+  ]
+}
+

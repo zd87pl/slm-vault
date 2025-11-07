@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enclave - Consent Request</title>
+  <link rel="stylesheet" href="consent.css">
+</head>
+<body>
+  <div class="consent-container">
+    <div class="consent-header">
+      <div class="icon">🔐</div>
+      <h1>Access Request</h1>
+    </div>
+
+    <div class="consent-content">
+      <div class="request-info">
+        <div class="info-row">
+          <span class="label">Agent:</span>
+          <span class="value" id="agent-name">-</span>
+        </div>
+        <div class="info-row">
+          <span class="label">Service:</span>
+          <span class="value" id="service-name">-</span>
+        </div>
+        <div class="info-row">
+          <span class="label">Action:</span>
+          <span class="value" id="tool-name">-</span>
+        </div>
+        <div class="info-row" id="query-row" style="display: none;">
+          <span class="label">Query:</span>
+          <span class="value" id="query-preview">-</span>
+        </div>
+      </div>
+
+      <div class="consent-message">
+        <p>This AI agent wants to access your stored secret.</p>
+        <p class="hint">Choose how to handle this request:</p>
+      </div>
+    </div>
+
+    <div class="consent-actions">
+      <button class="btn btn-deny" id="deny-btn">
+        <span class="btn-icon">✕</span>
+        <span class="btn-text">Deny</span>
+      </button>
+      <button class="btn btn-deny-always" id="deny-always-btn">
+        <span class="btn-icon">🚫</span>
+        <span class="btn-text">Deny Always</span>
+      </button>
+      <button class="btn btn-allow" id="allow-btn">
+        <span class="btn-icon">✓</span>
+        <span class="btn-text">Allow</span>
+      </button>
+      <button class="btn btn-allow-always" id="allow-always-btn">
+        <span class="btn-icon">✓✓</span>
+        <span class="btn-text">Allow Always</span>
+      </button>
+    </div>
+  </div>
+
+  <script src="consent.js"></script>
+</body>
+</html>
+
