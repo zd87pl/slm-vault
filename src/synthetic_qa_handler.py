@@ -1,13 +1,13 @@
 """
 Secure Synthetic Q&A Generator for WDVA
 
-Generates 1,000+ Q&A pairs using Qwen3-235B-A22B-Instruct-2507 (MoE model).
+Generates 1,000+ Q&A pairs using Qwen3-30B-A3B (MoE model).
 Maintains end-to-end encryption - PDF never exposed in plaintext.
 
-Model: Qwen3-235B-A22B-Instruct-2507
-- 235B total parameters, 22B activated (MoE)
-- Native 256K context (extendable to 1M)
-- Excellent for high-quality synthetic data generation
+Model: Qwen3-30B-A3B
+- 30.5B total parameters, 3.3B activated (MoE)
+- Native 32K context (extendable to 131K with YaRN)
+- Excellent quality-to-cost ratio for synthetic data generation
 """
 
 import runpod
@@ -57,7 +57,7 @@ except ImportError:
 
 class SecureSyntheticGenerator:
     """
-    Generate synthetic Q&A pairs using Qwen3-235B-A22B-Instruct-2507.
+    Generate synthetic Q&A pairs using Qwen3-30B-A3B.
     
     Maintains end-to-end encryption:
     - PDF encrypted before network transmission
@@ -66,11 +66,11 @@ class SecureSyntheticGenerator:
     """
     
     def __init__(self):
-        """Initialize with Qwen3-235B-A22B-Instruct-2507 model."""
-        self.model_name = "Qwen/Qwen3-235B-A22B-Instruct-2507"
+        """Initialize with Qwen3-30B-A3B model."""
+        self.model_name = "Qwen/Qwen3-30B-A3B"
         
         logger.info(f"Loading model: {self.model_name}")
-        logger.info("Model specs: 235B total params, 22B activated (MoE), 256K context")
+        logger.info("Model specs: 30.5B total params, 3.3B activated (MoE), 32K-131K context")
         
         # Load model with 4-bit quantization for efficiency
         # MoE models are more efficient than dense models
@@ -140,9 +140,49 @@ class SecureSyntheticGenerator:
         logger.info(f"✓ Extracted {len(text)} characters from {len(reader.pages)} pages")
         return text
     
+    def _validate_qa_pair(self, question: str, answer: str) -> bool:
+        """
+        Validate a single Q&A pair for quality.
+        
+        Returns:
+            True if pair is valid, False otherwise
+        """
+        # Check minimum lengths
+        if len(question.strip()) < 15 or len(answer.strip()) < 30:
+            logger.debug(f"Rejected: Too short (Q:{len(question)}, A:{len(answer)})")
+            return False
+        
+        # Check for empty/placeholder content
+        placeholder_phrases = [
+            "question here", "answer here", "your question", "your answer",
+            "...", "xxx", "placeholder", "[insert", "example question"
+        ]
+        combined = (question + " " + answer).lower()
+        if any(phrase in combined for phrase in placeholder_phrases):
+            logger.debug(f"Rejected: Contains placeholder")
+            return False
+        
+        # Question should look like a question (has question mark or starts with question word)
+        question_lower = question.lower().strip()
+        question_indicators = ["what", "how", "why", "when", "where", "which", "who", 
+                              "can", "does", "is", "are", "will", "would", "should",
+                              "explain", "describe", "compare", "analyze", "?"]
+        has_question_indicator = any(question_lower.startswith(w) or w in question_lower 
+                                     for w in question_indicators)
+        if not has_question_indicator:
+            logger.debug(f"Rejected: Doesn't look like a question: {question[:50]}")
+            return False
+        
+        # Answer should have substance (at least 5 words)
+        if len(answer.split()) < 5:
+            logger.debug(f"Rejected: Answer too short ({len(answer.split())} words)")
+            return False
+        
+        return True
+    
     def generate_qa_pairs(self, chunk_text: str, num_pairs: int = 20) -> List[Dict[str, str]]:
         """
-        Generate Q&A pairs using Qwen3-235B-A22B-Instruct-2507.
+        Generate Q&A pairs using Qwen3-30B-A3B.
         
         Args:
             chunk_text: Document chunk to generate Q&A from
@@ -152,43 +192,34 @@ class SecureSyntheticGenerator:
             List of Q&A pairs [{"question": "...", "answer": "..."}]
         """
         # Format prompt for Qwen3 chat template
+        # Qwen3 supports "thinking mode" - we use /no_think for faster, direct output
         messages = [
             {
                 "role": "system",
-                "content": "You are an expert at creating high-quality training data for fine-tuning language models. Generate diverse, comprehensive question-answer pairs that cover different aspects and cognitive levels."
+                "content": """You are an expert at creating high-quality training data for fine-tuning language models. 
+You MUST output ONLY a valid JSON array - no explanations, no markdown, no additional text.
+Each Q&A pair should be comprehensive and directly grounded in the source document."""
             },
             {
                 "role": "user",
-                "content": f"""Generate {num_pairs} diverse question-answer pairs from this document section.
+                "content": f"""/no_think
+Generate exactly {num_pairs} question-answer pairs from this document.
 
-DOCUMENT SECTION:
+DOCUMENT:
 {chunk_text}
 
 REQUIREMENTS:
-1. Create questions testing different cognitive levels:
-   - Factual recall: "What is X?"
-   - Conceptual understanding: "Why does X work?"
-   - Application: "How would you use X?"
-   - Analysis: "Compare X and Y"
-   - Synthesis: "How could X be improved?"
+- Questions must be specific, clear, and answerable from the document
+- Answers must be 2-4 sentences, comprehensive, and factually grounded
+- Include varied question types: factual, conceptual, analytical
+- Each pair must relate to the document content
+- Output ONLY the JSON array, nothing else
 
-2. Vary question difficulty (easy, medium, hard)
-
-3. Make answers comprehensive (3-5 sentences) and grounded in the document
-
-4. Ensure questions are specific and answerable from the text
-
-5. Avoid yes/no questions
-
-OUTPUT FORMAT: JSON array with objects containing "question" and "answer" fields.
-
-Example:
+OUTPUT (JSON array only):
 [
-  {{"question": "What is the main purpose of X?", "answer": "The main purpose of X is..."}},
-  {{"question": "How does Y work?", "answer": "Y works by..."}}
-]
-
-Generate exactly {num_pairs} Q&A pairs now:"""
+  {{"question": "...", "answer": "..."}},
+  ...
+]"""
             }
         ]
         
@@ -202,13 +233,13 @@ Generate exactly {num_pairs} Q&A pairs now:"""
         # Tokenize
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         
-        # Generate
+        # Generate with lower temperature for consistent JSON output
         logger.debug(f"Generating {num_pairs} Q&A pairs (max_tokens=4096)...")
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
                 max_new_tokens=4096,
-                temperature=0.7,
+                temperature=0.4,  # Lower temp for consistent JSON structure
                 top_p=0.9,
                 top_k=50,
                 do_sample=True,
@@ -251,16 +282,26 @@ Generate exactly {num_pairs} Q&A pairs now:"""
             if not isinstance(qa_pairs, list):
                 raise ValueError(f"Expected list, got {type(qa_pairs)}")
             
-            # Convert to standard format
+            # Convert to standard format with quality validation
             formatted_pairs = []
+            rejected_count = 0
             for qa in qa_pairs:
                 if isinstance(qa, dict) and "question" in qa and "answer" in qa:
-                    formatted_pairs.append({
-                        "question": qa["question"].strip(),
-                        "answer": qa["answer"].strip()
-                    })
+                    question = qa["question"].strip()
+                    answer = qa["answer"].strip()
+                    
+                    # Quality validation
+                    if self._validate_qa_pair(question, answer):
+                        formatted_pairs.append({
+                            "question": question,
+                            "answer": answer
+                        })
+                    else:
+                        rejected_count += 1
             
-            logger.info(f"✓ Generated {len(formatted_pairs)} Q&A pairs")
+            if rejected_count > 0:
+                logger.info(f"Quality filter rejected {rejected_count} pairs")
+            logger.info(f"✓ Generated {len(formatted_pairs)} valid Q&A pairs")
             return formatted_pairs
             
         except json.JSONDecodeError as e:
@@ -273,7 +314,7 @@ Generate exactly {num_pairs} Q&A pairs now:"""
     
     def encrypt_results(self, data: List[Dict], encryption_key: bytes) -> str:
         """
-        Encrypt generated dataset using XChaCha20-Poly1305.
+        Encrypt generated dataset using XChaCha20-Poly1305 or ChaCha20-Poly1305.
         
         Args:
             data: List of Q&A pairs
@@ -285,14 +326,15 @@ Generate exactly {num_pairs} Q&A pairs now:"""
         # Serialize data
         plaintext = json.dumps(data).encode('utf-8')
         
-        # Generate nonce
-        nonce = secrets.token_bytes(24)
-        
-        # Encrypt
+        # Encrypt - nonce size depends on crypto backend
         if CRYPTO_BACKEND == "pycryptodome":
+            # XChaCha20-Poly1305 uses 24-byte nonce
+            nonce = secrets.token_bytes(24)
             cipher = ChaCha20_Poly1305.new(key=encryption_key, nonce=nonce)
             ciphertext, tag = cipher.encrypt_and_digest(plaintext)
         else:
+            # cryptography's ChaCha20Poly1305 uses 12-byte nonce
+            nonce = secrets.token_bytes(12)
             cipher = ChaCha20Poly1305(encryption_key)
             ciphertext_with_tag = cipher.encrypt(nonce, plaintext, None)
             ciphertext = ciphertext_with_tag[:-16]
@@ -358,7 +400,7 @@ def handler(event):
         
         # Initialize generator (lazy load)
         if generator is None:
-            logger.info("Initializing Qwen3-235B-A22B-Instruct-2507...")
+            logger.info("Initializing Qwen3-30B-A3B (MoE: 3.3B active)...")
             generator = SecureSyntheticGenerator()
         
         # Decrypt PDF
@@ -417,6 +459,9 @@ def handler(event):
                 "output": qa["answer"]
             })
         
+        # Store count before encryption (for return value)
+        num_samples = len(training_data)
+        
         # Encrypt results
         logger.info("Encrypting results...")
         encrypted_dataset = generator.encrypt_results(training_data, encryption_key)
@@ -431,8 +476,8 @@ def handler(event):
         return {
             "status": "success",
             "encrypted_dataset": encrypted_dataset,
-            "num_samples": len(training_data),
-            "model": "Qwen3-235B-A22B-Instruct-2507"
+            "num_samples": num_samples,
+            "model": "Qwen3-30B-A3B"
         }
     
     except Exception as e:
