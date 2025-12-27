@@ -1,8 +1,12 @@
 # Standalone Dockerfile for Synthetic Q&A Generator
 # Can be built independently without entire project structure
 # Usage: docker build -f docker/Dockerfile.synthetic_qa.standalone -t synthetic-qa-generator .
+#
+# Model: Qwen3-30B-A3B (MoE: 30.5B total, 3.3B activated)
+# IMPORTANT: Mount a RunPod Network Volume at /runpod-volume for model caching
 
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+# Use RunPod's latest PyTorch image with Blackwell (sm_120) support
+FROM runpod/pytorch:2.6.0-py3.11-cuda12.6.3-cudnn-devel-ubuntu22.04
 
 WORKDIR /workspace
 
@@ -48,15 +52,34 @@ COPY src/synthetic_qa_handler.py /workspace/src/synthetic_qa_handler.py
 RUN mkdir -p /workspace/src && \
     touch /workspace/src/__init__.py
 
+# Create startup script inline
+RUN echo '#!/bin/bash\n\
+set -e\n\
+echo "=== Synthetic Q&A Handler Startup ==="\n\
+if [ -d "/runpod-volume" ] && [ -w "/runpod-volume" ]; then\n\
+    echo "✓ RunPod Network Volume detected"\n\
+    mkdir -p /runpod-volume/huggingface/hub\n\
+    export HF_HOME=/runpod-volume/huggingface\n\
+    export TRANSFORMERS_CACHE=/runpod-volume/huggingface\n\
+else\n\
+    echo "⚠ No volume - using local cache"\n\
+    export HF_HOME=/workspace/.cache/huggingface\n\
+    export TRANSFORMERS_CACHE=/workspace/.cache/huggingface\n\
+fi\n\
+exec python3 -u src/synthetic_qa_handler.py' > /workspace/start.sh && \
+    chmod +x /workspace/start.sh
+
 # Environment variables for optimization
 ENV TOKENIZERS_PARALLELISM=false
 ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-ENV TRANSFORMERS_CACHE=/workspace/.cache/huggingface
-ENV HF_HOME=/workspace/.cache/huggingface
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
-ENV HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets
 
-# Optimize for MoE models (Qwen3-235B)
+# Default to volume cache, startup script will adjust if not mounted
+ENV HF_HOME=/runpod-volume/huggingface
+ENV TRANSFORMERS_CACHE=/runpod-volume/huggingface
+ENV HF_DATASETS_CACHE=/runpod-volume/huggingface/datasets
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+
+# Optimize for MoE models (Qwen3-30B-A3B)
 ENV PYTORCH_NO_CUDA_MEMORY_CACHING=0
 ENV CUDA_LAUNCH_BLOCKING=0
 
@@ -71,5 +94,5 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD python3 -c "import runpod; import torch; import transformers; print('OK')" || exit 1
 
 # For RunPod Serverless deployment
-CMD ["python3", "-u", "src/synthetic_qa_handler.py"]
+CMD ["/workspace/start.sh"]
 

@@ -1,8 +1,13 @@
-# Dockerfile for Synthetic Q&A Generator (Qwen3-235B-A22B-Instruct-2507)
+# Dockerfile for Synthetic Q&A Generator (Qwen3-30B-A3B)
 # Optimized for RunPod Serverless endpoint
-# Model: Qwen3-235B-A22B-Instruct-2507 (MoE: 235B total, 22B activated)
+# Model: Qwen3-30B-A3B (MoE: 30.5B total, 3.3B activated)
+#
+# IMPORTANT: Mount a RunPod Network Volume at /runpod-volume for model caching
+# This prevents re-downloading the model on each cold start (~4GB download)
 
-FROM pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+# Use RunPod's latest PyTorch image with Blackwell (sm_120) support
+# CUDA 12.6+ required for Blackwell GPUs (RTX PRO 6000, etc.)
+FROM runpod/pytorch:2.6.0-py3.11-cuda12.6.3-cudnn-devel-ubuntu22.04
 
 WORKDIR /workspace
 
@@ -30,19 +35,26 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # Copy application code (only src/ is required for synthetic QA handler)
 COPY src/ /workspace/src/
 
+# Copy startup script
+COPY docker/start_qa_handler.sh /workspace/start_qa_handler.sh
+RUN chmod +x /workspace/start_qa_handler.sh
+
 # Environment variables for optimization
 ENV TOKENIZERS_PARALLELISM=false
 ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
-ENV TRANSFORMERS_CACHE=/workspace/.cache/huggingface
-ENV HF_HOME=/workspace/.cache/huggingface
-ENV HF_HUB_ENABLE_HF_TRANSFER=1
-ENV HF_DATASETS_CACHE=/workspace/.cache/huggingface/datasets
 
-# Optimize for MoE models (Qwen3-235B)
+# Use RunPod Network Volume for persistent model cache (if mounted)
+# Falls back to /workspace/.cache if no volume is mounted
+ENV HF_HOME=/runpod-volume/huggingface
+ENV TRANSFORMERS_CACHE=/runpod-volume/huggingface
+ENV HF_DATASETS_CACHE=/runpod-volume/huggingface/datasets
+ENV HF_HUB_ENABLE_HF_TRANSFER=1
+
+# Optimize for MoE models (Qwen3-30B-A3B)
 ENV PYTORCH_NO_CUDA_MEMORY_CACHING=0
 ENV CUDA_LAUNCH_BLOCKING=0
 
-# Create necessary directories
+# Create necessary directories (both volume and local fallback)
 RUN mkdir -p /workspace/outputs \
     /workspace/.cache/huggingface \
     /workspace/.cache/huggingface/models \
@@ -54,6 +66,6 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
     CMD python3 -c "import runpod; import torch; import transformers; print('OK')" || exit 1
 
 # For RunPod Serverless deployment, start synthetic QA handler
-# The handler will lazy-load the model on first request
-CMD ["python3", "-u", "src/synthetic_qa_handler.py"]
+# The startup script handles volume detection and cache setup
+CMD ["/workspace/start_qa_handler.sh"]
 
