@@ -50,21 +50,12 @@ os.environ["TEMP"] = TEMP_DIR
 os.environ["TMP"] = TEMP_DIR
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "3600"  # 1 hour timeout for large models
 
-# CRITICAL: Override huggingface_hub cache BEFORE importing transformers
-# API changed in newer versions - try multiple approaches
-try:
-    # Try the old API (huggingface_hub < 0.20)
-    import huggingface_hub.constants as hf_constants
-    hf_constants.HF_HUB_CACHE = os.path.join(CACHE_DIR, "hub")
-    hf_constants.HUGGINGFACE_HUB_CACHE = os.path.join(CACHE_DIR, "hub")
-    print(f"[HF_HUB] Cache overridden via constants module", file=sys.stderr)
-except (ImportError, AttributeError):
-    pass
-
-# Import huggingface_hub for version check
-import huggingface_hub
-print(f"[HF_HUB] Version: {huggingface_hub.__version__}", file=sys.stderr)
-print(f"[HF_HUB] Using env vars for cache: HF_HOME={os.environ.get('HF_HOME')}", file=sys.stderr)
+# huggingface_hub v1.0+ uses environment variables only for cache configuration
+# The HF_HOME, HF_HUB_CACHE, etc. env vars are already set above
+# Reference: https://huggingface.co/docs/huggingface_hub/package_reference/environment_variables
+print(f"[HF_HUB] Cache configured via env vars:", file=sys.stderr)
+print(f"  HF_HOME={os.environ.get('HF_HOME')}", file=sys.stderr)
+print(f"  HF_HUB_CACHE={os.environ.get('HF_HUB_CACHE')}", file=sys.stderr)
 
 # Now import everything else
 import runpod
