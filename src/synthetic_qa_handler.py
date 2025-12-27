@@ -479,8 +479,11 @@ def handler(event):
         logger.info(f"✓ Split into {len(chunks)} chunks")
         
         # Calculate pairs per chunk
-        pairs_per_chunk = max(20, target_samples // len(chunks))
-        logger.info(f"Generating {pairs_per_chunk} pairs per chunk...")
+        # Limit to 10-15 pairs per chunk to keep generation time reasonable
+        # 10 pairs × ~30 seconds × 4 chunks = ~20 minutes (acceptable)
+        pairs_per_chunk = min(15, max(5, target_samples // len(chunks)))
+        logger.info(f"Generating {pairs_per_chunk} pairs per chunk (capped for speed)...")
+        logger.info(f"Expected total: ~{pairs_per_chunk * len(chunks)} pairs")
         
         # Generate Q&A pairs from each chunk
         all_qa_pairs = []
