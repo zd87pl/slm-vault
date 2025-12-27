@@ -1,5 +1,5 @@
 # Dockerfile for Synthetic Q&A Generator (Qwen3-30B-A3B)
-# Optimized for RunPod Serverless endpoint with vLLM (5-10x faster)
+# Uses official vLLM image for reliable, fast inference
 # Model: Qwen3-30B-A3B (MoE: 30.5B total, 3.3B activated)
 #
 # IMPORTANT: Mount a RunPod Network Volume at /runpod-volume for model caching
@@ -7,39 +7,23 @@
 #
 # Performance:
 # - With vLLM: ~2-5 minutes for 100 samples
-# - With transformers fallback: ~15-20 minutes for 100 samples
+# - Fallback to transformers if vLLM fails: ~15-20 minutes
 
-# Use RunPod's PyTorch image with CUDA 12.4
-FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
+# Use official vLLM image - guarantees vLLM works correctly
+FROM vllm/vllm-openai:latest
 
 WORKDIR /workspace
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    git \
-    wget \
-    curl \
-    build-essential \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Install additional dependencies for our handler
+# vLLM image already has torch, transformers, etc.
+RUN pip install --no-cache-dir \
+    runpod>=1.7.0 \
+    pycryptodome>=3.19.0 \
+    pypdf>=4.0.0 \
+    hf_transfer>=0.1.0 \
+    bitsandbytes>=0.44.0
 
-# Copy requirements and install Python dependencies
-COPY docker/requirements.txt /workspace/requirements.txt
-
-# Install Python dependencies with vLLM for fast inference
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir \
-    sentencepiece>=0.1.99 \
-    protobuf>=4.25.0 \
-    tokenizers>=0.15.0 \
-    hf_transfer>=0.1.0 && \
-    # Install vLLM for 5-10x faster inference
-    pip install --no-cache-dir vllm>=0.6.0 && \
-    # Reinstall torchvision to match PyTorch version (fixes nms operator error)
-    pip install --no-cache-dir --force-reinstall torchvision --index-url https://download.pytorch.org/whl/cu124
-
-# Copy application code (only src/ is required for synthetic QA handler)
+# Copy application code
 COPY src/ /workspace/src/
 
 # Copy startup script
@@ -48,31 +32,19 @@ RUN chmod +x /workspace/start_qa_handler.sh
 
 # Environment variables for optimization
 ENV TOKENIZERS_PARALLELISM=false
-ENV PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:512
 
 # Use RunPod Network Volume for persistent model cache (if mounted)
-# Falls back to /workspace/.cache if no volume is mounted
 ENV HF_HOME=/runpod-volume/huggingface
-ENV TRANSFORMERS_CACHE=/runpod-volume/huggingface
-ENV HF_DATASETS_CACHE=/runpod-volume/huggingface/datasets
+ENV HF_HUB_CACHE=/runpod-volume/huggingface/hub
 ENV HF_HUB_ENABLE_HF_TRANSFER=1
 
-# Optimize for MoE models (Qwen3-30B-A3B)
-ENV PYTORCH_NO_CUDA_MEMORY_CACHING=0
-ENV CUDA_LAUNCH_BLOCKING=0
+# Create fallback cache directories
+RUN mkdir -p /workspace/.cache/huggingface/hub
 
-# Create necessary directories (both volume and local fallback)
-RUN mkdir -p /workspace/outputs \
-    /workspace/.cache/huggingface \
-    /workspace/.cache/huggingface/models \
-    /workspace/.cache/huggingface/datasets
-
-# Health check for RunPod
-# Checks if RunPod and PyTorch are available
+# Health check - verify vLLM is available
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD python3 -c "import runpod; import torch; import transformers; print('OK')" || exit 1
+    CMD python3 -c "import runpod; import vllm; print('OK')" || exit 1
 
-# For RunPod Serverless deployment, start synthetic QA handler
-# The startup script handles volume detection and cache setup
+# Start the QA handler
 CMD ["/workspace/start_qa_handler.sh"]
 
