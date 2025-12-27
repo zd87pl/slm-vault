@@ -5,8 +5,9 @@
 # Model: Qwen3-30B-A3B (MoE: 30.5B total, 3.3B activated)
 # IMPORTANT: Mount a RunPod Network Volume at /runpod-volume for model caching
 
-# Use RunPod's latest PyTorch image with Blackwell (sm_120) support
-FROM runpod/pytorch:2.6.0-py3.11-cuda12.6.3-cudnn-devel-ubuntu22.04
+# Use RunPod's PyTorch image
+# Note: Blackwell GPUs (sm_120) require PyTorch nightly or 2.6+ when released
+FROM runpod/pytorch:2.4.0-py3.11-cuda12.4.1-devel-ubuntu22.04
 
 WORKDIR /workspace
 
