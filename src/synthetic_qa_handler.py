@@ -10,13 +10,36 @@ Model: Qwen3-30B-A3B
 - Excellent quality-to-cost ratio for synthetic data generation
 """
 
+import os
+import sys
+
+# CRITICAL: Set cache directory BEFORE importing transformers/huggingface
+# This ensures model downloads go to the network volume, not container disk
+VOLUME_PATH = "/runpod-volume"
+FALLBACK_CACHE = "/workspace/.cache/huggingface"
+
+if os.path.isdir(VOLUME_PATH) and os.access(VOLUME_PATH, os.W_OK):
+    CACHE_DIR = os.path.join(VOLUME_PATH, "huggingface")
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    print(f"[CACHE] Using network volume: {CACHE_DIR}", file=sys.stderr)
+else:
+    CACHE_DIR = FALLBACK_CACHE
+    os.makedirs(CACHE_DIR, exist_ok=True)
+    print(f"[CACHE] WARNING: Using container disk (no volume): {CACHE_DIR}", file=sys.stderr)
+
+# Set ALL cache-related environment variables before any imports
+os.environ["HF_HOME"] = CACHE_DIR
+os.environ["HF_HUB_CACHE"] = os.path.join(CACHE_DIR, "hub")
+os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
+os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(CACHE_DIR, "hub")
+os.environ["XDG_CACHE_HOME"] = os.path.dirname(CACHE_DIR)
+
+# Now import everything else
 import runpod
 import json
 import base64
 import secrets
 import logging
-import sys
-import os
 from pathlib import Path
 from typing import Dict, Any, List
 import io
@@ -28,6 +51,10 @@ logging.basicConfig(
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
+
+# Log cache configuration
+logger.info(f"HF_HOME={os.environ.get('HF_HOME')}")
+logger.info(f"TRANSFORMERS_CACHE={os.environ.get('TRANSFORMERS_CACHE')}")
 
 # Try PyCryptodome first, fallback to cryptography
 try:
