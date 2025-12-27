@@ -45,6 +45,15 @@ os.environ["TEMP"] = TEMP_DIR
 os.environ["TMP"] = TEMP_DIR
 os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "3600"  # 1 hour timeout for large models
 
+# CRITICAL: Override huggingface_hub constants BEFORE importing transformers
+# This is necessary because the library caches these at import time
+import huggingface_hub
+huggingface_hub.constants.HF_HUB_CACHE = os.path.join(CACHE_DIR, "hub")
+huggingface_hub.constants.HUGGINGFACE_HUB_CACHE = os.path.join(CACHE_DIR, "hub")
+# Also patch the default cache path function
+huggingface_hub.constants.default_cache_path = lambda: CACHE_DIR
+print(f"[HF_HUB] Cache overridden to: {huggingface_hub.constants.HF_HUB_CACHE}", file=sys.stderr)
+
 # Now import everything else
 import runpod
 import json
