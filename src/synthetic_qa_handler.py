@@ -281,24 +281,24 @@ class SecureSyntheticGenerator:
     
     def _build_prompt(self, chunk_text: str, num_pairs: int) -> str:
         """Build the prompt for Q&A generation."""
+        # Qwen3 format - /no_think must be first user message content
         return f"""<|im_start|>system
-You are an expert at creating high-quality training data. Output ONLY a valid JSON array.<|im_end|>
+You are a JSON generator. You output ONLY valid JSON arrays, nothing else. No explanations, no markdown, just JSON.<|im_end|>
 <|im_start|>user
 /no_think
-Generate {num_pairs} Q&A pairs from this document. Output JSON array only.
 
-DOCUMENT:
+Create exactly {num_pairs} question-answer pairs from this text. Return ONLY a JSON array.
+
+TEXT:
 {chunk_text}
 
-REQUIREMENTS:
-- Questions: specific, clear, answerable from document
-- Answers: 2-4 sentences, factually grounded
-- Variety: factual, conceptual, analytical questions
-
-OUTPUT (JSON only):
-[{{"question": "...", "answer": "..."}}]<|im_end|>
+Return this exact format (valid JSON array):
+[
+  {{"question": "What is X?", "answer": "X is..."}},
+  {{"question": "How does Y work?", "answer": "Y works by..."}}
+]<|im_end|>
 <|im_start|>assistant
-"""
+["""
 
     def _parse_response(self, response: str) -> List[Dict[str, str]]:
         """Parse JSON Q&A pairs from model response."""
@@ -310,24 +310,42 @@ OUTPUT (JSON only):
             response = response.split("<|im_end|>")[0]
         
         # Remove control characters that break JSON parsing
-        # Keep only printable ASCII and common unicode
         response = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', response)
-        # Also clean up any escaped control chars
-        response = response.replace('\\n', '\n').replace('\\t', ' ')
+        
+        # Since our prompt ends with "[", the response continues the array
+        # Prepend "[" if the response doesn't start with it
+        if not response.startswith('['):
+            response = '[' + response
         
         try:
-            # Extract JSON array
+            # Try to find and extract JSON array
             if "```json" in response:
                 json_str = response.split("```json")[1].split("```")[0].strip()
             elif "```" in response:
-                json_str = response.split("```")[1].split("```")[0].strip()
+                parts = response.split("```")
+                if len(parts) >= 2:
+                    json_str = parts[1].strip()
+                else:
+                    json_str = response
             else:
+                # Find the JSON array boundaries
                 start = response.find('[')
                 end = response.rfind(']') + 1
                 if start >= 0 and end > start:
                     json_str = response[start:end]
+                elif start >= 0:
+                    # No closing bracket - try to add one and parse
+                    json_str = response[start:] + ']'
                 else:
+                    # Log first 200 chars of response for debugging
+                    logger.warning(f"No JSON array found. Response starts with: {response[:200]}")
                     raise ValueError("No JSON array found")
+            
+            # Try to fix common JSON issues
+            # Remove trailing commas before ]
+            json_str = re.sub(r',\s*]', ']', json_str)
+            # Remove trailing commas before }
+            json_str = re.sub(r',\s*}', '}', json_str)
             
             qa_pairs = json.loads(json_str)
             
@@ -338,15 +356,17 @@ OUTPUT (JSON only):
             formatted_pairs = []
             for qa in qa_pairs:
                 if isinstance(qa, dict) and "question" in qa and "answer" in qa:
-                    question = qa["question"].strip()
-                    answer = qa["answer"].strip()
+                    question = str(qa["question"]).strip()
+                    answer = str(qa["answer"]).strip()
                     if self._validate_qa_pair(question, answer):
                         formatted_pairs.append({"question": question, "answer": answer})
             
             return formatted_pairs
             
         except (json.JSONDecodeError, ValueError) as e:
+            # Log more info for debugging
             logger.warning(f"Parse failed: {e}")
+            logger.debug(f"Response (first 500 chars): {response[:500]}")
             return []
 
     def generate_qa_pairs_batch(self, chunks: List[str], num_pairs_per_chunk: int = 10) -> List[Dict[str, str]]:
