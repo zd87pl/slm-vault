@@ -31,7 +31,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
     sentencepiece>=0.1.99 \
     protobuf>=4.25.0 \
     tokenizers>=0.15.0 \
-    hf_transfer>=0.1.0
+    hf_transfer>=0.1.0 && \
+    # Reinstall torchvision to match PyTorch version (fixes nms operator error)
+    pip install --no-cache-dir --force-reinstall torchvision --index-url https://download.pytorch.org/whl/cu124
 
 # Copy application code (only src/ is required for synthetic QA handler)
 COPY src/ /workspace/src/

@@ -44,7 +44,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
     python-dotenv>=1.0.0 \
     scipy>=1.11.0 \
     # Fast HuggingFace downloads
-    hf_transfer>=0.1.0
+    hf_transfer>=0.1.0 && \
+    # Reinstall torchvision to match PyTorch version (fixes nms operator error)
+    pip install --no-cache-dir --force-reinstall torchvision --index-url https://download.pytorch.org/whl/cu124
 
 # Copy only the handler file
 COPY src/synthetic_qa_handler.py /workspace/src/synthetic_qa_handler.py
