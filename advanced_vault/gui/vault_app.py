@@ -4937,7 +4937,7 @@ class VaultApp:
                     return
                 
                 # Phase 3: Uploading encrypted data (includes encryption)
-                import os
+                # Note: os is imported at module level - don't re-import here!
                 # Use existing encryption key if synthetic generation provided one, otherwise generate new
                 if dataset_encryption_key_hex:
                     encryption_key = bytes.fromhex(dataset_encryption_key_hex)
