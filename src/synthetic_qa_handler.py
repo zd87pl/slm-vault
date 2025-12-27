@@ -20,11 +20,16 @@ FALLBACK_CACHE = "/workspace/.cache/huggingface"
 
 if os.path.isdir(VOLUME_PATH) and os.access(VOLUME_PATH, os.W_OK):
     CACHE_DIR = os.path.join(VOLUME_PATH, "huggingface")
+    TEMP_DIR = os.path.join(VOLUME_PATH, "tmp")
     os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(TEMP_DIR, exist_ok=True)
     print(f"[CACHE] Using network volume: {CACHE_DIR}", file=sys.stderr)
+    print(f"[TEMP] Using network volume temp: {TEMP_DIR}", file=sys.stderr)
 else:
     CACHE_DIR = FALLBACK_CACHE
+    TEMP_DIR = "/workspace/tmp"
     os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(TEMP_DIR, exist_ok=True)
     print(f"[CACHE] WARNING: Using container disk (no volume): {CACHE_DIR}", file=sys.stderr)
 
 # Set ALL cache-related environment variables before any imports
@@ -33,6 +38,12 @@ os.environ["HF_HUB_CACHE"] = os.path.join(CACHE_DIR, "hub")
 os.environ["TRANSFORMERS_CACHE"] = CACHE_DIR
 os.environ["HUGGINGFACE_HUB_CACHE"] = os.path.join(CACHE_DIR, "hub")
 os.environ["XDG_CACHE_HOME"] = os.path.dirname(CACHE_DIR)
+
+# CRITICAL: Set temp directory to volume - HF downloads to temp first, then moves
+os.environ["TMPDIR"] = TEMP_DIR
+os.environ["TEMP"] = TEMP_DIR
+os.environ["TMP"] = TEMP_DIR
+os.environ["HF_HUB_DOWNLOAD_TIMEOUT"] = "3600"  # 1 hour timeout for large models
 
 # Now import everything else
 import runpod
