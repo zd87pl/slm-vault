@@ -314,6 +314,43 @@ class StorageManager {
       request.onerror = () => reject(request.error);
     });
   }
+
+  /**
+   * Get master key hash (for checking if password is set)
+   */
+  async getMasterKeyHash() {
+    const { masterPassword } = await chrome.storage.local.get(['masterPassword']);
+    if (!masterPassword) return null;
+    
+    // Return a hash indicator (not the actual password)
+    const encoder = new TextEncoder();
+    const data = encoder.encode(masterPassword);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+
+  /**
+   * Get auth token
+   */
+  async getAuthToken() {
+    const { accessToken } = await chrome.storage.local.get(['accessToken']);
+    return accessToken || null;
+  }
+
+  /**
+   * Set auth token
+   */
+  async setAuthToken(token) {
+    await chrome.storage.local.set({ accessToken: token });
+  }
+
+  /**
+   * Clear auth token
+   */
+  async clearAuthToken() {
+    await chrome.storage.local.remove(['accessToken', 'refreshToken']);
+  }
 }
 
 // Export singleton instance

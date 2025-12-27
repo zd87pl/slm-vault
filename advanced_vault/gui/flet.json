@@ -1,0 +1,24 @@
+{
+  "name": "Enclave",
+  "version": "0.1.0",
+  "description": "Secure Encrypted Vault with AI Inference",
+  "bundleId": "com.enclave.vault",
+  "pythonVersion": "3.11",
+  "requirementsFile": "requirements.txt",
+  "assetsDir": "assets",
+  "macos": {
+    "appId": "com.enclave.vault",
+    "category": "public.app-category.productivity",
+    "minOsVersion": "10.13",
+    "icon": "assets/icon.icns"
+  },
+  "env": {
+    "SUPABASE_URL": "https://ibiapabkyskoazpgcymo.supabase.co",
+    "SUPABASE_ANON_KEY": "",
+    "ENCLAVE_BACKEND_URL": "https://keen-curiosity-production-1288.up.railway.app",
+    "RUNPOD_QA_ENDPOINT_ID": "",
+    "RUNPOD_API_KEY": "",
+    "RUNPOD_QA_API_KEY": ""
+  }
+}
+

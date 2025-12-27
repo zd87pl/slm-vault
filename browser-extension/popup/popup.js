@@ -23,7 +23,7 @@ function setupEventListeners() {
   document.getElementById('toggle-password-btn').addEventListener('click', togglePassword);
   document.getElementById('settings-link').addEventListener('click', (e) => {
     e.preventDefault();
-    chrome.tabs.create({ url: chrome.runtime.getURL('popup/popup.html#settings') });
+    chrome.tabs.create({ url: chrome.runtime.getURL('settings/settings.html') });
   });
 
   document.getElementById('activity-link').addEventListener('click', async (e) => {

@@ -14,11 +14,55 @@ class VaultClient {
   }
 
   /**
+   * Set base URL
+   */
+  setBaseUrl(baseUrl) {
+    this.baseUrl = baseUrl.replace(/\/$/, '');
+  }
+
+  /**
    * Set authentication tokens
    */
   setAuth(accessToken, refreshToken) {
     this.accessToken = accessToken;
     this.refreshToken = refreshToken;
+  }
+
+  /**
+   * Login with email and password
+   */
+  async login(email, password) {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/auth/login`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          email,
+          password
+        })
+      });
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ detail: response.statusText }));
+        return { success: false, error: error.detail || 'Login failed' };
+      }
+
+      const data = await response.json();
+      this.accessToken = data.access_token;
+      this.refreshToken = data.refresh_token;
+
+      // Save to storage
+      await chrome.storage.local.set({
+        accessToken: this.accessToken,
+        refreshToken: this.refreshToken
+      });
+
+      return { success: true, token: this.accessToken };
+    } catch (error) {
+      return { success: false, error: error.message };
+    }
   }
 
   /**

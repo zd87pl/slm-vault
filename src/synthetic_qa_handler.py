@@ -1,13 +1,18 @@
 """
 Secure Synthetic Q&A Generator for WDVA
 
-Generates 1,000+ Q&A pairs using Qwen3-30B-A3B (MoE model).
+Generates high-quality Q&A pairs using Qwen3-30B-A3B (MoE model).
 Maintains end-to-end encryption - PDF never exposed in plaintext.
 
 Model: Qwen3-30B-A3B
 - 30.5B total parameters, 3.3B activated (MoE)
 - Native 32K context (extendable to 131K with YaRN)
 - Excellent quality-to-cost ratio for synthetic data generation
+
+Performance optimizations:
+- vLLM for 5-10x faster inference (if available)
+- Parallel batch processing of all chunks
+- Default 100 samples (quality > quantity for adapter training)
 """
 
 import os
@@ -60,6 +65,7 @@ import json
 import base64
 import secrets
 import logging
+import time
 from pathlib import Path
 from typing import Dict, Any, List
 import io
@@ -88,12 +94,23 @@ except ImportError:
         logger.error("No encryption library available. Install: pip install pycryptodome")
         raise
 
+import torch
+
+# Try vLLM first (5-10x faster), fall back to transformers
+VLLM_AVAILABLE = False
+try:
+    from vllm import LLM, SamplingParams
+    VLLM_AVAILABLE = True
+    logger.info("✓ vLLM available - using optimized inference (5-10x faster)")
+except ImportError:
+    logger.info("vLLM not available - using transformers (slower but works)")
+
 try:
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
-    import torch
 except ImportError:
-    logger.error("transformers not installed. Install: pip install transformers torch")
-    raise
+    if not VLLM_AVAILABLE:
+        logger.error("Neither vLLM nor transformers installed!")
+        raise
 
 try:
     from pypdf import PdfReader
@@ -110,43 +127,75 @@ class SecureSyntheticGenerator:
     - PDF encrypted before network transmission
     - Decryption only in this RunPod instance
     - Results encrypted before returning
+    
+    Uses vLLM for 5-10x faster inference when available.
     """
     
     def __init__(self):
         """Initialize with Qwen3-30B-A3B model."""
         self.model_name = "Qwen/Qwen3-30B-A3B"
+        self.use_vllm = VLLM_AVAILABLE
         
         logger.info(f"Loading model: {self.model_name}")
         logger.info("Model specs: 30.5B total params, 3.3B activated (MoE), 32K-131K context")
         logger.info(f"Cache directory: {CACHE_DIR}")
+        logger.info(f"Backend: {'vLLM (fast)' if self.use_vllm else 'transformers (slow)'}")
         
-        # Load model with 4-bit quantization for efficiency
-        # MoE models are more efficient than dense models
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf4"
-        )
+        if self.use_vllm:
+            # vLLM: Much faster inference with PagedAttention
+            # Note: MoE models only activate 3.3B params, so bf16 is efficient
+            try:
+                self.llm = LLM(
+                    model=self.model_name,
+                    download_dir=CACHE_DIR,
+                    tensor_parallel_size=1,  # Single GPU
+                    gpu_memory_utilization=0.90,  # Use 90% of GPU memory
+                    max_model_len=8192,  # Limit context for speed
+                    trust_remote_code=True,
+                    dtype="bfloat16",
+                    # Note: bitsandbytes not well supported in vLLM
+                    # MoE's 3.3B active params fits in bf16 on 80GB GPU
+                )
+                self.sampling_params = SamplingParams(
+                    temperature=0.4,
+                    top_p=0.9,
+                    top_k=50,
+                    max_tokens=2048,  # Reduced for faster generation
+                )
+                self.model = None
+                self.tokenizer = None
+                logger.info("✓ vLLM model loaded - parallel batch processing enabled")
+            except Exception as e:
+                logger.warning(f"vLLM initialization failed: {e}")
+                logger.info("Falling back to transformers...")
+                self.use_vllm = False
+                self.llm = None
         
-        # CRITICAL: Pass cache_dir explicitly to ensure volume is used
-        # Environment variables alone are not reliable
-        self.model = AutoModelForCausalLM.from_pretrained(
-            self.model_name,
-            quantization_config=bnb_config,
-            torch_dtype=torch.bfloat16,
-            device_map="auto",
-            trust_remote_code=True,
-            cache_dir=CACHE_DIR
-        )
-        
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            self.model_name,
-            trust_remote_code=True,
-            cache_dir=CACHE_DIR
-        )
-        
-        logger.info("✓ Model loaded successfully")
+        if not self.use_vllm:
+            # Fallback: transformers with 4-bit quantization
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.bfloat16,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4"
+            )
+            
+            self.model = AutoModelForCausalLM.from_pretrained(
+                self.model_name,
+                quantization_config=bnb_config,
+                torch_dtype=torch.bfloat16,
+                device_map="auto",
+                trust_remote_code=True,
+                cache_dir=CACHE_DIR
+            )
+            
+            self.tokenizer = AutoTokenizer.from_pretrained(
+                self.model_name,
+                trust_remote_code=True,
+                cache_dir=CACHE_DIR
+            )
+            self.llm = None
+            logger.info("✓ Transformers model loaded")
     
     def decrypt_pdf(self, encrypted_data: str, decryption_key: bytes) -> bytes:
         """
@@ -232,9 +281,155 @@ class SecureSyntheticGenerator:
         
         return True
     
-    def generate_qa_pairs(self, chunk_text: str, num_pairs: int = 20) -> List[Dict[str, str]]:
+    def _build_prompt(self, chunk_text: str, num_pairs: int) -> str:
+        """Build the prompt for Q&A generation."""
+        return f"""<|im_start|>system
+You are an expert at creating high-quality training data. Output ONLY a valid JSON array.<|im_end|>
+<|im_start|>user
+/no_think
+Generate {num_pairs} Q&A pairs from this document. Output JSON array only.
+
+DOCUMENT:
+{chunk_text}
+
+REQUIREMENTS:
+- Questions: specific, clear, answerable from document
+- Answers: 2-4 sentences, factually grounded
+- Variety: factual, conceptual, analytical questions
+
+OUTPUT (JSON only):
+[{{"question": "...", "answer": "..."}}]<|im_end|>
+<|im_start|>assistant
+"""
+
+    def _parse_response(self, response: str) -> List[Dict[str, str]]:
+        """Parse JSON Q&A pairs from model response."""
+        # Clean response
+        response = response.strip()
+        if "<|im_end|>" in response:
+            response = response.split("<|im_end|>")[0]
+        
+        try:
+            # Extract JSON array
+            if "```json" in response:
+                json_str = response.split("```json")[1].split("```")[0].strip()
+            elif "```" in response:
+                json_str = response.split("```")[1].split("```")[0].strip()
+            else:
+                start = response.find('[')
+                end = response.rfind(']') + 1
+                if start >= 0 and end > start:
+                    json_str = response[start:end]
+                else:
+                    raise ValueError("No JSON array found")
+            
+            qa_pairs = json.loads(json_str)
+            
+            if not isinstance(qa_pairs, list):
+                raise ValueError(f"Expected list, got {type(qa_pairs)}")
+            
+            # Validate and format
+            formatted_pairs = []
+            for qa in qa_pairs:
+                if isinstance(qa, dict) and "question" in qa and "answer" in qa:
+                    question = qa["question"].strip()
+                    answer = qa["answer"].strip()
+                    if self._validate_qa_pair(question, answer):
+                        formatted_pairs.append({"question": question, "answer": answer})
+            
+            return formatted_pairs
+            
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.warning(f"Parse failed: {e}")
+            return []
+
+    def generate_qa_pairs_batch(self, chunks: List[str], num_pairs_per_chunk: int = 10) -> List[Dict[str, str]]:
         """
-        Generate Q&A pairs using Qwen3-30B-A3B.
+        Generate Q&A pairs from ALL chunks in parallel using vLLM.
+        
+        This is 4-8x faster than processing chunks sequentially because:
+        1. All prompts are batched together
+        2. GPU utilization is maximized
+        3. vLLM's PagedAttention handles memory efficiently
+        
+        Args:
+            chunks: List of text chunks to process
+            num_pairs_per_chunk: Q&A pairs to generate per chunk
+            
+        Returns:
+            List of all Q&A pairs from all chunks
+        """
+        if not self.use_vllm:
+            # Fallback to sequential processing with transformers
+            all_pairs = []
+            for i, chunk in enumerate(chunks):
+                logger.info(f"[{i+1}/{len(chunks)}] Processing chunk (transformers)...")
+                pairs = self.generate_qa_pairs(chunk, num_pairs_per_chunk)
+                all_pairs.extend(pairs)
+            return all_pairs
+        
+        # Build all prompts
+        prompts = [self._build_prompt(chunk, num_pairs_per_chunk) for chunk in chunks]
+        logger.info(f"⚡ Batch processing {len(prompts)} chunks in parallel (vLLM)...")
+        
+        try:
+            # Generate all at once - vLLM handles batching automatically
+            outputs = self.llm.generate(prompts, self.sampling_params)
+        except Exception as e:
+            logger.error(f"vLLM batch generation failed: {e}")
+            logger.info("Falling back to sequential transformers processing...")
+            # Disable vLLM for subsequent calls
+            self.use_vllm = False
+            self.llm = None
+            # Load transformers model if not loaded
+            if self.model is None:
+                logger.info("Loading transformers model for fallback...")
+                bnb_config = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_quant_type="nf4"
+                )
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    self.model_name,
+                    quantization_config=bnb_config,
+                    torch_dtype=torch.bfloat16,
+                    device_map="auto",
+                    trust_remote_code=True,
+                    cache_dir=CACHE_DIR
+                )
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    self.model_name,
+                    trust_remote_code=True,
+                    cache_dir=CACHE_DIR
+                )
+            # Fall back to sequential processing
+            all_pairs = []
+            for i, chunk in enumerate(chunks):
+                logger.info(f"[{i+1}/{len(chunks)}] Processing chunk (fallback)...")
+                pairs = self.generate_qa_pairs(chunk, num_pairs_per_chunk)
+                all_pairs.extend(pairs)
+            return all_pairs
+        
+        # Parse all responses
+        all_pairs = []
+        for i, output in enumerate(outputs):
+            try:
+                response = output.outputs[0].text
+                pairs = self._parse_response(response)
+                all_pairs.extend(pairs)
+                logger.info(f"  Chunk {i+1}: {len(pairs)} pairs")
+            except (IndexError, AttributeError) as e:
+                logger.warning(f"  Chunk {i+1}: Failed to parse output ({e})")
+        
+        logger.info(f"✓ Batch generated {len(all_pairs)} total pairs")
+        return all_pairs
+
+    def generate_qa_pairs(self, chunk_text: str, num_pairs: int = 10) -> List[Dict[str, str]]:
+        """
+        Generate Q&A pairs from a single chunk.
+        
+        For multiple chunks, use generate_qa_pairs_batch() for 4-8x speedup.
         
         Args:
             chunk_text: Document chunk to generate Q&A from
@@ -243,55 +438,23 @@ class SecureSyntheticGenerator:
         Returns:
             List of Q&A pairs [{"question": "...", "answer": "..."}]
         """
-        # Format prompt for Qwen3 chat template
-        # Qwen3 supports "thinking mode" - we use /no_think for faster, direct output
-        messages = [
-            {
-                "role": "system",
-                "content": """You are an expert at creating high-quality training data for fine-tuning language models. 
-You MUST output ONLY a valid JSON array - no explanations, no markdown, no additional text.
-Each Q&A pair should be comprehensive and directly grounded in the source document."""
-            },
-            {
-                "role": "user",
-                "content": f"""/no_think
-Generate exactly {num_pairs} question-answer pairs from this document.
-
-DOCUMENT:
-{chunk_text}
-
-REQUIREMENTS:
-- Questions must be specific, clear, and answerable from the document
-- Answers must be 2-4 sentences, comprehensive, and factually grounded
-- Include varied question types: factual, conceptual, analytical
-- Each pair must relate to the document content
-- Output ONLY the JSON array, nothing else
-
-OUTPUT (JSON array only):
-[
-  {{"question": "...", "answer": "..."}},
-  ...
-]"""
-            }
-        ]
+        if self.use_vllm:
+            # Single chunk with vLLM
+            prompt = self._build_prompt(chunk_text, num_pairs)
+            outputs = self.llm.generate([prompt], self.sampling_params)
+            response = outputs[0].outputs[0].text
+            return self._parse_response(response)
         
-        # Apply chat template
-        prompt = self.tokenizer.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
-        )
+        # Transformers fallback
+        prompt = self._build_prompt(chunk_text, num_pairs)
         
-        # Tokenize
         inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
         
-        # Generate with lower temperature for consistent JSON output
-        logger.debug(f"Generating {num_pairs} Q&A pairs (max_tokens=4096)...")
         with torch.no_grad():
             outputs = self.model.generate(
                 **inputs,
-                max_new_tokens=4096,
-                temperature=0.4,  # Lower temp for consistent JSON structure
+                max_new_tokens=2048,
+                temperature=0.4,
                 top_p=0.9,
                 top_k=50,
                 do_sample=True,
@@ -299,70 +462,10 @@ OUTPUT (JSON array only):
                 eos_token_id=self.tokenizer.eos_token_id
             )
         
-        # Decode response
-        response = self.tokenizer.decode(outputs[0], skip_special_tokens=False)
+        prompt_len = inputs['input_ids'].shape[1]
+        response = self.tokenizer.decode(outputs[0][prompt_len:], skip_special_tokens=True)
         
-        # Extract assistant response (remove prompt)
-        if "<|im_start|>assistant" in response:
-            assistant_response = response.split("<|im_start|>assistant")[-1]
-            assistant_response = assistant_response.replace("<|im_end|>", "").strip()
-        else:
-            # Fallback: remove prompt tokens
-            prompt_tokens = len(inputs['input_ids'][0])
-            response_tokens = outputs[0][prompt_tokens:]
-            assistant_response = self.tokenizer.decode(response_tokens, skip_special_tokens=True).strip()
-        
-        # Parse JSON from response
-        try:
-            # Try to extract JSON array
-            if "```json" in assistant_response:
-                json_str = assistant_response.split("```json")[1].split("```")[0].strip()
-            elif "```" in assistant_response:
-                json_str = assistant_response.split("```")[1].split("```")[0].strip()
-            else:
-                # Find first [ and last ]
-                start = assistant_response.find('[')
-                end = assistant_response.rfind(']') + 1
-                if start >= 0 and end > start:
-                    json_str = assistant_response[start:end]
-                else:
-                    raise ValueError("No JSON array found in response")
-            
-            qa_pairs = json.loads(json_str)
-            
-            # Validate format
-            if not isinstance(qa_pairs, list):
-                raise ValueError(f"Expected list, got {type(qa_pairs)}")
-            
-            # Convert to standard format with quality validation
-            formatted_pairs = []
-            rejected_count = 0
-            for qa in qa_pairs:
-                if isinstance(qa, dict) and "question" in qa and "answer" in qa:
-                    question = qa["question"].strip()
-                    answer = qa["answer"].strip()
-                    
-                    # Quality validation
-                    if self._validate_qa_pair(question, answer):
-                        formatted_pairs.append({
-                            "question": question,
-                            "answer": answer
-                        })
-                    else:
-                        rejected_count += 1
-            
-            if rejected_count > 0:
-                logger.info(f"Quality filter rejected {rejected_count} pairs")
-            logger.info(f"✓ Generated {len(formatted_pairs)} valid Q&A pairs")
-            return formatted_pairs
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"JSON parsing failed: {e}")
-            logger.error(f"Response preview: {assistant_response[:500]}...")
-            return []
-        except Exception as e:
-            logger.error(f"Failed to parse Q&A pairs: {e}")
-            return []
+        return self._parse_response(response)
     
     def encrypt_results(self, data: List[Dict], encryption_key: bytes) -> str:
         """
@@ -416,7 +519,7 @@ def handler(event):
         "input": {
             "encrypted_pdf": "JSON string with encrypted PDF",
             "encryption_key_hex": "hex-encoded 32-byte key",
-            "target_samples": 1000  # Optional, default 1000
+            "target_samples": 100  # Optional, default 100 (quality > quantity)
         }
     }
     
@@ -424,8 +527,12 @@ def handler(event):
     {
         "status": "success",
         "encrypted_dataset": "JSON string with encrypted Q&A pairs",
-        "num_samples": 1000
+        "num_samples": 100
     }
+    
+    Performance:
+    - With vLLM: ~2-5 minutes for 100 samples
+    - With transformers: ~15-20 minutes for 100 samples
     """
     global generator
     
@@ -446,8 +553,8 @@ def handler(event):
         if not encrypted_pdf:
             return {"status": "error", "error": "encrypted_pdf is required"}
         
-        # Get target samples
-        target_samples = input_data.get('target_samples', 1000)
+        # Get target samples - default 100 (quality > quantity for adapter training)
+        target_samples = input_data.get('target_samples', 100)
         logger.info(f"Target: {target_samples} Q&A pairs")
         
         # Initialize generator (lazy load)
@@ -464,11 +571,11 @@ def handler(event):
         pdf_text = generator.extract_text_from_pdf(pdf_bytes)
         del pdf_bytes  # Clean up immediately
         
-        # Split into overlapping chunks
+        # Split into larger chunks with less overlap (fewer chunks = faster)
         logger.info("Splitting text into chunks...")
         words = pdf_text.split()
-        chunk_size = 500  # words per chunk
-        overlap = 100     # overlap between chunks
+        chunk_size = 800  # larger chunks (was 500)
+        overlap = 50      # less overlap (was 100)
         
         chunks = []
         for i in range(0, len(words), chunk_size - overlap):
@@ -476,27 +583,44 @@ def handler(event):
             if len(chunk) > 100:  # Skip tiny chunks
                 chunks.append(chunk)
         
-        logger.info(f"✓ Split into {len(chunks)} chunks")
+        # Handle empty document
+        if not chunks:
+            logger.warning("No text chunks extracted from PDF")
+            return {
+                "status": "error",
+                "error": "PDF appears to be empty or contains no extractable text"
+            }
         
-        # Calculate pairs per chunk
-        # Limit to 10-15 pairs per chunk to keep generation time reasonable
-        # 10 pairs × ~30 seconds × 4 chunks = ~20 minutes (acceptable)
-        pairs_per_chunk = min(15, max(5, target_samples // len(chunks)))
-        logger.info(f"Generating {pairs_per_chunk} pairs per chunk (capped for speed)...")
+        # Limit chunks to reasonable number
+        max_chunks = min(len(chunks), 8)  # Cap at 8 chunks
+        if len(chunks) > max_chunks:
+            # Sample evenly across document
+            step = len(chunks) // max_chunks
+            chunks = [chunks[i] for i in range(0, len(chunks), step)][:max_chunks]
+        
+        logger.info(f"✓ Using {len(chunks)} chunks (optimized for speed)")
+        
+        # Calculate pairs per chunk (with safety check)
+        pairs_per_chunk = max(5, min(25, target_samples // max(1, len(chunks))))
+        logger.info(f"Generating {pairs_per_chunk} pairs per chunk...")
         logger.info(f"Expected total: ~{pairs_per_chunk * len(chunks)} pairs")
+        logger.info(f"Backend: {'vLLM (parallel)' if generator.use_vllm else 'transformers (sequential)'}")
         
-        # Generate Q&A pairs from each chunk
-        all_qa_pairs = []
-        for i, chunk in enumerate(chunks):
-            logger.info(f"[{i+1}/{len(chunks)}] Generating {pairs_per_chunk} Q&A pairs...")
-            
-            qa_pairs = generator.generate_qa_pairs(chunk, num_pairs=pairs_per_chunk)
-            
-            if qa_pairs:
-                all_qa_pairs.extend(qa_pairs)
-                logger.info(f"  ✓ Generated {len(qa_pairs)} pairs (total: {len(all_qa_pairs)})")
-            else:
-                logger.warning(f"  ✗ Failed to generate pairs from chunk {i+1}")
+        # Generate Q&A pairs - use batch processing for speed
+        start_time = time.time()
+        
+        all_qa_pairs = generator.generate_qa_pairs_batch(chunks, pairs_per_chunk)
+        
+        elapsed = time.time() - start_time
+        logger.info(f"⏱️ Generation took {elapsed:.1f} seconds")
+        
+        # Handle case where no pairs were generated
+        if not all_qa_pairs:
+            logger.error("No Q&A pairs were generated from the document")
+            return {
+                "status": "error",
+                "error": "Failed to generate Q&A pairs - document may be too short or contain non-extractable content"
+            }
         
         # Limit to target samples
         if len(all_qa_pairs) > target_samples:

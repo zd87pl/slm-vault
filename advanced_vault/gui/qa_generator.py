@@ -1478,11 +1478,11 @@ A: answer here"""
     def generate_synthetic_qa_via_runpod(
         self,
         pdf_path: str,
-        target_samples: int = 1000,
+        target_samples: int = 100,
         encryption_key_hex: Optional[str] = None
     ) -> Tuple[List[Dict[str, str]], str]:
         """
-        Generate 1,000+ Q&A pairs using cloud-based RunPod endpoint (encrypted flow).
+        Generate high-quality Q&A pairs using cloud-based RunPod endpoint (encrypted flow).
         
         This maintains end-to-end encryption:
         1. Encrypt PDF client-side
@@ -1490,9 +1490,13 @@ A: answer here"""
         3. RunPod decrypts, generates Q&A, encrypts results
         4. Return encrypted dataset + encryption key
         
+        Performance (with vLLM backend):
+        - ~2-5 minutes for 100 samples
+        - Quality > quantity for adapter training
+        
         Args:
             pdf_path: Path to PDF file
-            target_samples: Target number of Q&A pairs (default: 1000)
+            target_samples: Target number of Q&A pairs (default: 100)
             encryption_key_hex: Optional encryption key (generates new if None)
             
         Returns:

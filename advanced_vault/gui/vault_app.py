@@ -45,8 +45,12 @@ from welcome_screen import WelcomeScreen
 from error_helper import make_user_friendly, format_error_snackbar
 from mcp_setup import MCPSetupHelper
 from modern_sidebar import ModernSidebar
+from config_loader import apply_config, validate_config, show_config_status
 
 logger = logging.getLogger(__name__)
+
+# Load configuration early (before app initialization)
+apply_config()
 
 
 class VaultApp:
@@ -105,6 +109,13 @@ class VaultApp:
         self.page.bgcolor = LightTheme.BG_PRIMARY
 
         # Backend configuration
+        # Validate configuration
+        is_valid, missing = validate_config()
+        if not is_valid:
+            logger.warning(f"Configuration incomplete. Missing: {', '.join(missing)}")
+            logger.info(f"Config status: {show_config_status()}")
+            # Continue anyway - some features may not work
+        
         self.backend_url = os.getenv(
             "ENCLAVE_BACKEND_URL",
             "https://keen-curiosity-production-1288.up.railway.app"
@@ -4847,7 +4858,7 @@ class VaultApp:
                                 
                                 qa_pairs, dataset_encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
                                     pdf_path=pdf_path,
-                                    target_samples=1000,
+                                    target_samples=100,  # Quality > quantity for adapter training
                                     encryption_key_hex=None  # Generate new key
                                 )
                                 

@@ -51,11 +51,14 @@ class ActivityLogger:
             result_summary: Brief summary of result (e.g., "Found 4 entries")
             metadata: Additional metadata
         """
+        # Generate friendly app name
+        app_name = self._format_app_name(app_identifier)
+        
         log_entry = {
             "timestamp": datetime.now().isoformat(),
             "tool_name": tool_name,
             "app_identifier": app_identifier,
-            "app_name": app_identifier.replace("-", " ").title(),
+            "app_name": app_name,
             "query_preview": query_preview,
             "granted": granted,
             "result_summary": result_summary,
@@ -70,6 +73,43 @@ class ActivityLogger:
             logger.debug(f"Logged activity: {tool_name} from {app_identifier}")
         except Exception as e:
             logger.error(f"Failed to log activity: {e}")
+    
+    def _format_app_name(self, app_identifier: str) -> str:
+        """
+        Format app identifier into a friendly display name.
+        
+        Args:
+            app_identifier: App identifier (e.g., "claude-desktop", "unknown", etc.)
+            
+        Returns:
+            Friendly app name (e.g., "Claude via Enclave MCP", "Cursor", etc.)
+        """
+        # MCP-specific mappings for better display names
+        app_mappings = {
+            "claude-desktop": "Claude via Enclave MCP",
+            "claude": "Claude via Enclave MCP",
+            "cursor": "Cursor via Enclave MCP",
+            "vscode": "VS Code via Enclave MCP",
+            "unknown": "Unknown via Enclave MCP",
+        }
+        
+        # Check for exact match first
+        if app_identifier.lower() in app_mappings:
+            return app_mappings[app_identifier.lower()]
+        
+        # Check for partial matches (e.g., "claude" in "claude-desktop")
+        app_lower = app_identifier.lower()
+        for key, value in app_mappings.items():
+            if key in app_lower or app_lower in key:
+                return value
+        
+        # Default: format as title case and add "via Enclave MCP" if it's an MCP request
+        # (Since this logger is only used by MCP server, all requests are via MCP)
+        formatted = app_identifier.replace("-", " ").replace("_", " ").title()
+        if formatted.lower() not in ["unknown", "none", ""]:
+            return f"{formatted} via Enclave MCP"
+        else:
+            return "Claude via Enclave MCP"  # Default fallback for unknown MCP requests
     
     def get_recent_activity(self, limit: int = 50) -> list:
         """

@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enclave Vault - Settings</title>
+  <link rel="stylesheet" href="settings.css">
+</head>
+<body>
+  <div class="settings-container">
+    <div class="settings-header">
+      <div class="header-content">
+        <a href="popup.html" class="back-link">← Back</a>
+        <h1>Settings</h1>
+      </div>
+    </div>
+
+    <div class="settings-content">
+      <!-- Master Password Section -->
+      <section class="settings-section">
+        <h2>Master Password</h2>
+        <p class="section-description">
+          Your master password encrypts all secrets locally. It's never sent to the server.
+        </p>
+        
+        <div id="master-password-status" class="status-box">
+          <span class="status-icon">🔒</span>
+          <span class="status-text">Master password is set</span>
+        </div>
+
+        <div class="form-group">
+          <label for="current-password">Current Password</label>
+          <input type="password" id="current-password" placeholder="Enter current password" autocomplete="off">
+        </div>
+
+        <div class="form-group">
+          <label for="new-password">New Password</label>
+          <input type="password" id="new-password" placeholder="Enter new password" autocomplete="off">
+          <div class="password-strength" id="password-strength"></div>
+        </div>
+
+        <div class="form-group">
+          <label for="confirm-password">Confirm New Password</label>
+          <input type="password" id="confirm-password" placeholder="Confirm new password" autocomplete="off">
+        </div>
+
+        <button class="btn btn-primary" id="change-password-btn">Change Password</button>
+      </section>
+
+      <!-- Backend Configuration Section -->
+      <section class="settings-section">
+        <h2>Backend Configuration</h2>
+        <p class="section-description">
+          Configure the Enclave backend API endpoint for syncing secrets.
+        </p>
+
+        <div class="form-group">
+          <label for="backend-url">Backend URL</label>
+          <input type="url" id="backend-url" placeholder="https://your-backend.railway.app" autocomplete="off">
+          <small class="hint">Default: https://keen-curiosity-production-1288.up.railway.app</small>
+        </div>
+
+        <button class="btn btn-secondary" id="test-connection-btn">Test Connection</button>
+        <div id="connection-status" class="status-box" style="display: none;"></div>
+      </section>
+
+      <!-- Authentication Section -->
+      <section class="settings-section">
+        <h2>Authentication</h2>
+        <p class="section-description">
+          Manage your Enclave account authentication.
+        </p>
+
+        <div id="auth-status" class="status-box">
+          <span class="status-icon" id="auth-icon">🔓</span>
+          <span class="status-text" id="auth-text">Not authenticated</span>
+        </div>
+
+        <div id="login-form" class="auth-form">
+          <div class="form-group">
+            <label for="email">Email</label>
+            <input type="email" id="email" placeholder="your@email.com" autocomplete="email">
+          </div>
+
+          <div class="form-group">
+            <label for="password">Password</label>
+            <input type="password" id="password" placeholder="Enter password" autocomplete="current-password">
+          </div>
+
+          <button class="btn btn-primary" id="login-btn">Login</button>
+        </div>
+
+        <div id="logout-section" style="display: none;">
+          <button class="btn btn-secondary" id="logout-btn">Logout</button>
+        </div>
+      </section>
+
+      <!-- Data Management Section -->
+      <section class="settings-section">
+        <h2>Data Management</h2>
+        <p class="section-description">
+          Export or clear your local data.
+        </p>
+
+        <div class="button-group">
+          <button class="btn btn-secondary" id="export-data-btn">Export Data</button>
+          <button class="btn btn-danger" id="clear-data-btn">Clear All Data</button>
+        </div>
+      </section>
+
+      <!-- About Section -->
+      <section class="settings-section">
+        <h2>About</h2>
+        <div class="about-content">
+          <p><strong>Enclave Vault</strong></p>
+          <p>Version: <span id="version">0.1.0</span></p>
+          <p>Secure API key storage with consent-based access for AI agents.</p>
+          <p class="links">
+            <a href="#" id="privacy-link">Privacy Policy</a> |
+            <a href="#" id="support-link">Support</a>
+          </p>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <script type="module" src="settings.js"></script>
+</body>
+</html>
+
+
+

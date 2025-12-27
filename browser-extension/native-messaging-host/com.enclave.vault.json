@@ -1,7 +1,7 @@
 {
   "name": "com.enclave.vault",
-  "description": "Enclave Vault Native Messaging Host",
-  "path": "/path/to/enclave-native-host",
+  "description": "Enclave Vault Native Messaging Host - Bridges MCP server and browser extension",
+  "path": "/path/to/browser-extension/native-messaging-host/enclave-native-host.py",
   "type": "stdio",
   "allowed_origins": [
     "chrome-extension://YOUR_EXTENSION_ID_HERE/"

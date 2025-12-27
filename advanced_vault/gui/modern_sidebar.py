@@ -7,6 +7,7 @@ Provides a polished, desktop-app-style sidebar navigation.
 import flet as ft
 from theme import ModernTheme
 from sleek_theme import SleekTheme
+from light_theme import LightTheme
 from typing import Callable, Optional, List, Dict
 
 
@@ -60,7 +61,7 @@ class ModernSidebar:
                                     width=32,
                                     height=32,
                                     border_radius=8,
-                                    bgcolor=SleekTheme.ACCENT_PRIMARY + "20",
+                                    bgcolor=LightTheme.ACCENT_BLUE_LIGHT,
                                     alignment=ft.alignment.center,
                                 ),
                                 ft.Container(width=8),
@@ -68,14 +69,14 @@ class ModernSidebar:
                                     [
                                         ft.Text(
                                             "Enclave",
-                                            size=SleekTheme.FONT_SIZE_LG,
+                                            size=LightTheme.FONT_SIZE_LG,
                                             weight=ft.FontWeight.W_600,
-                                            color=SleekTheme.TEXT_PRIMARY,
+                                            color=LightTheme.TEXT_PRIMARY,
                                         ),
                                         ft.Text(
                                             "Secure Vault",
-                                            size=SleekTheme.FONT_SIZE_XS,
-                                            color=SleekTheme.TEXT_MUTED,
+                                            size=LightTheme.FONT_SIZE_XS,
+                                            color=LightTheme.TEXT_MUTED,
                                         ),
                                     ],
                                     spacing=0,
@@ -86,8 +87,8 @@ class ModernSidebar:
                     ],
                     spacing=0,
                 ),
-                padding=ft.padding.all(SleekTheme.PADDING_LG),
-                border=ft.border.only(bottom=ft.border.BorderSide(1, SleekTheme.BORDER_COLOR)),
+                padding=ft.padding.all(LightTheme.PADDING_LG),
+                border=ft.border.only(bottom=ft.border.BorderSide(1, LightTheme.BORDER_COLOR)),
             )
         )
         
@@ -113,8 +114,8 @@ class ModernSidebar:
         
         nav_items_column.append(
             ft.Container(
-                height=SleekTheme.SPACING_MD,
-                margin=ft.margin.only(top=SleekTheme.SPACING_MD, bottom=SleekTheme.SPACING_MD),
+                height=LightTheme.SPACING_MD,
+                margin=ft.margin.only(top=LightTheme.SPACING_MD, bottom=LightTheme.SPACING_MD),
             )
         )
         
@@ -137,8 +138,8 @@ class ModernSidebar:
         
         nav_items_column.append(
             ft.Container(
-                height=SleekTheme.SPACING_MD,
-                margin=ft.margin.only(top=SleekTheme.SPACING_MD, bottom=SleekTheme.SPACING_MD),
+                height=LightTheme.SPACING_MD,
+                margin=ft.margin.only(top=LightTheme.SPACING_MD, bottom=LightTheme.SPACING_MD),
             )
         )
         
@@ -147,6 +148,7 @@ class ModernSidebar:
             {"icon": ft.Icons.PSYCHOLOGY_OUTLINED, "selected": ft.Icons.PSYCHOLOGY_ROUNDED, "label": "Training", "idx": 2},
             {"icon": ft.Icons.HISTORY_OUTLINED, "selected": ft.Icons.HISTORY_ROUNDED, "label": "Activity", "idx": 3},
             {"icon": ft.Icons.BAR_CHART_OUTLINED, "selected": ft.Icons.BAR_CHART_ROUNDED, "label": "Statistics", "idx": 4},
+            {"icon": ft.Icons.SECURITY_OUTLINED, "selected": ft.Icons.SECURITY_ROUNDED, "label": "LangChain", "idx": 6},
         ]
         
         for item in secondary_items:
@@ -162,8 +164,8 @@ class ModernSidebar:
         
         nav_items_column.append(
             ft.Container(
-                height=SleekTheme.SPACING_MD,
-                margin=ft.margin.only(top=SleekTheme.SPACING_MD, bottom=SleekTheme.SPACING_MD),
+                height=LightTheme.SPACING_MD,
+                margin=ft.margin.only(top=LightTheme.SPACING_MD, bottom=LightTheme.SPACING_MD),
             )
         )
         
@@ -204,8 +206,8 @@ class ModernSidebar:
                 expand=True,
             ),
             width=240,
-            bgcolor=ModernTheme.BG_SECONDARY,
-            border=ft.border.only(right=ft.border.BorderSide(1, ModernTheme.BORDER_COLOR)),
+            bgcolor=LightTheme.BG_SECONDARY,
+            border=ft.border.only(right=ft.border.BorderSide(1, LightTheme.BORDER_COLOR)),
         )
     
     def _create_nav_item(
@@ -220,20 +222,20 @@ class ModernSidebar:
         
         # Active indicator (left border)
         active_indicator = ft.Container(
-            width=2,
-            height=28,
-            bgcolor=SleekTheme.ACCENT_PRIMARY,
+            width=3,
+            height=32,
+            bgcolor=LightTheme.ACCENT_PRIMARY,
             border_radius=ft.border_radius.only(
-                top_right=1,
-                bottom_right=1
+                top_right=2,
+                bottom_right=2
             ),
             visible=is_selected,
             margin=ft.margin.only(right=8),
         )
         
         # Icon container
-        icon_color = SleekTheme.ACCENT_PRIMARY if is_selected else SleekTheme.TEXT_SECONDARY
-        bg_color = SleekTheme.ACCENT_PRIMARY + "15" if is_selected else "transparent"
+        icon_color = LightTheme.ACCENT_PRIMARY if is_selected else LightTheme.TEXT_SECONDARY
+        bg_color = LightTheme.ACCENT_BLUE_LIGHT if is_selected else "transparent"
         
         return ft.Container(
             content=ft.Row(
@@ -242,7 +244,7 @@ class ModernSidebar:
                     ft.Container(
                         content=ft.Icon(
                             selected_icon if is_selected else icon,
-                            size=SleekTheme.ICON_SIZE_SM,
+                            size=LightTheme.ICON_SIZE_SM,
                             color=icon_color,
                         ),
                         width=32,
@@ -254,16 +256,16 @@ class ModernSidebar:
                     ft.Container(width=8),
                     ft.Text(
                         label,
-                        size=SleekTheme.FONT_SIZE_BASE,
+                        size=LightTheme.FONT_SIZE_BASE,
                         weight=ft.FontWeight.W_500 if is_selected else ft.FontWeight.NORMAL,
-                        color=SleekTheme.TEXT_PRIMARY if is_selected else SleekTheme.TEXT_SECONDARY,
+                        color=LightTheme.TEXT_PRIMARY if is_selected else LightTheme.TEXT_SECONDARY,
                     ),
                 ],
                 spacing=0,
             ),
-            padding=ft.padding.symmetric(horizontal=SleekTheme.PADDING_SM, vertical=SleekTheme.PADDING_XS),
+            padding=ft.padding.symmetric(horizontal=LightTheme.PADDING_SM, vertical=LightTheme.PADDING_XS),
             border_radius=8,
-            bgcolor=SleekTheme.BG_HOVER if is_selected else "transparent",
+            bgcolor=LightTheme.BG_HOVER if is_selected else "transparent",
             on_click=lambda e, idx=index: self.on_nav_change(idx),
             tooltip=label,
             animate=ft.Animation(150, ft.AnimationCurve.EASE_OUT),

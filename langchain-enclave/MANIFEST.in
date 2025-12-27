@@ -1,0 +1,8 @@
+include README.md
+include QUICKSTART.md
+include API_REFERENCE.md
+include CHANGELOG.md
+include LICENSE
+recursive-include examples *.py *.ipynb
+recursive-include tests *.py
+

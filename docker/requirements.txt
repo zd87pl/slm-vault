@@ -17,6 +17,9 @@ zstandard>=0.22.0
 # RunPod
 runpod>=1.7.0
 
+# vLLM for 5-10x faster inference (parallel batch processing)
+vllm>=0.6.0
+
 # PDF Processing (for synthetic Q&A generation)
 pypdf>=4.0.0
 

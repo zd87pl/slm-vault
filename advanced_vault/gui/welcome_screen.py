@@ -6,6 +6,7 @@ Shows onboarding flow with tutorial and sample data options.
 
 import flet as ft
 from sleek_theme import SleekTheme
+from light_theme import LightTheme
 from typing import Callable, Optional
 
 logger = None
@@ -47,12 +48,12 @@ class WelcomeScreen:
                                     content=ft.Icon(
                                         ft.Icons.LOCK_ROUNDED,
                                         size=96,
-                                        color=SleekTheme.ACCENT_PRIMARY,
+                                        color=LightTheme.ACCENT_PRIMARY,
                                     ),
                                     padding=32,
                                     border_radius=24,
-                                    bgcolor=SleekTheme.BG_ELEVATED,
-                                    border=ft.border.all(2, SleekTheme.ACCENT_PRIMARY + "40"),
+                                    bgcolor=LightTheme.BG_ELEVATED,
+                                    border=ft.border.all(2, LightTheme.ACCENT_PRIMARY + "40"),
                                     # Subtle shadow effect (via elevated background)
                                 ),
                                 ft.Container(height=40),
@@ -60,14 +61,14 @@ class WelcomeScreen:
                                     "Welcome to Enclave",
                                     size=42,
                                     weight=ft.FontWeight.BOLD,
-                                    color=SleekTheme.TEXT_PRIMARY,
+                                    color=LightTheme.TEXT_PRIMARY,
                                     text_align=ft.TextAlign.CENTER,
                                 ),
                                 ft.Container(height=16),
                                 ft.Text(
                                     "Your encrypted vault with AI-powered knowledge extraction",
                                     size=17,
-                                    color=SleekTheme.TEXT_SECONDARY,
+                                    color=LightTheme.TEXT_SECONDARY,
                                     text_align=ft.TextAlign.CENTER,
                                 ),
                                 ft.Container(height=64),
@@ -124,7 +125,7 @@ class WelcomeScreen:
                                     icon=ft.Icons.ARROW_FORWARD_ROUNDED,
                                     on_click=self._on_get_started,
                                     style=ft.ButtonStyle(
-                                        bgcolor=SleekTheme.ACCENT_PRIMARY,
+                                        bgcolor=LightTheme.ACCENT_PRIMARY,
                                         color="white",
                                         padding=ft.padding.symmetric(horizontal=48, vertical=20),
                                         shape=ft.RoundedRectangleBorder(radius=12),
@@ -140,11 +141,11 @@ class WelcomeScreen:
                                     icon=ft.Icons.AUTO_AWESOME_ROUNDED,
                                     on_click=self._on_add_sample,
                                     style=ft.ButtonStyle(
-                                        bgcolor=SleekTheme.BG_ELEVATED,
-                                        color=SleekTheme.TEXT_PRIMARY,
+                                        bgcolor=LightTheme.BG_ELEVATED,
+                                        color=LightTheme.TEXT_PRIMARY,
                                         padding=ft.padding.symmetric(horizontal=40, vertical=16),
                                         shape=ft.RoundedRectangleBorder(radius=12),
-                                        side=ft.BorderSide(1.5, SleekTheme.BORDER_COLOR),
+                                        side=ft.BorderSide(1.5, LightTheme.BORDER_COLOR),
                                     ),
                                     height=52,
                                 ),
@@ -159,12 +160,12 @@ class WelcomeScreen:
                                                 value=False,
                                                 on_change=self._on_checkbox_change,
                                                 label=None,
-                                                fill_color=SleekTheme.ACCENT_PRIMARY,
+                                                fill_color=LightTheme.ACCENT_PRIMARY,
                                             ),
                                             ft.Text(
                                                 "Skip tutorial",
                                                 size=13,
-                                                color=SleekTheme.TEXT_SECONDARY,
+                                                color=LightTheme.TEXT_SECONDARY,
                                             ),
                                         ],
                                         spacing=8,
@@ -183,7 +184,7 @@ class WelcomeScreen:
                 scroll=ft.ScrollMode.AUTO,  # Allow scroll only if content exceeds viewport
                 spacing=0,
             ),
-            bgcolor=SleekTheme.BG_PRIMARY,
+            bgcolor=LightTheme.BG_PRIMARY,
             padding=80,  # More padding for breathing room
             expand=True,
             alignment=ft.alignment.center,
@@ -198,11 +199,11 @@ class WelcomeScreen:
                         content=ft.Icon(
                             icon,
                             size=28,
-                            color=SleekTheme.ACCENT_PRIMARY,
+                            color=LightTheme.ACCENT_PRIMARY,
                         ),
                         padding=14,
                         border_radius=12,
-                        bgcolor=SleekTheme.ACCENT_PRIMARY + "20",  # Slightly more visible
+                        bgcolor=LightTheme.ACCENT_PRIMARY + "20",  # Slightly more visible
                     ),
                     ft.Container(width=20),
                     ft.Column(
@@ -211,13 +212,13 @@ class WelcomeScreen:
                                 title,
                                 size=16,
                                 weight=ft.FontWeight.BOLD,
-                                color=SleekTheme.TEXT_PRIMARY,
+                                color=LightTheme.TEXT_PRIMARY,
                             ),
                             ft.Container(height=6),
                             ft.Text(
                                 description,
                                 size=14,
-                                color=SleekTheme.TEXT_SECONDARY,
+                                color=LightTheme.TEXT_SECONDARY,
                             ),
                         ],
                         spacing=0,

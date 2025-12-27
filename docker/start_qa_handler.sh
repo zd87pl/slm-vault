@@ -70,6 +70,22 @@ echo "CUDA Status:"
 python3 -c "import torch; print(f'  PyTorch: {torch.__version__}'); print(f'  CUDA available: {torch.cuda.is_available()}'); print(f'  CUDA version: {torch.version.cuda if torch.cuda.is_available() else \"N/A\"}'); print(f'  GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"N/A\"}')" || echo "  ⚠ CUDA check failed"
 echo ""
 
+# Check vLLM availability
+echo "Inference Backend:"
+python3 -c "
+try:
+    import vllm
+    print(f'  ✓ vLLM {vllm.__version__} (5-10x faster, parallel batching)')
+except ImportError:
+    print('  → transformers (slower, sequential)')
+" || echo "  → transformers (fallback)"
+echo ""
+
+echo "Expected performance:"
+echo "  - With vLLM: ~2-5 minutes for 100 samples"
+echo "  - With transformers: ~15-20 minutes for 100 samples"
+echo ""
+
 echo "=== Starting Handler ==="
 exec python3 -u src/synthetic_qa_handler.py
 

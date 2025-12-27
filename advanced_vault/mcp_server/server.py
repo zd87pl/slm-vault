@@ -7,8 +7,9 @@ to AI agents (Claude Desktop, Cursor, etc.)
 
 import os
 import logging
+import requests
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Sequence, Optional
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
@@ -49,6 +50,14 @@ class VaultMCPServer:
         
         # Initialize activity logger
         self.activity_logger = ActivityLogger(vault_path=str(self.vault_path))
+
+        # API configuration (for LangChain tools)
+        # Can be set via environment variable or configured later
+        self.api_key = os.getenv("ENCLAVE_API_KEY")
+        self.api_base_url = os.getenv(
+            "ENCLAVE_API_BASE_URL",
+            "https://keen-curiosity-production-1288.up.railway.app"
+        )
 
         # Create MCP server
         self.server = Server("personal-vault")
@@ -180,6 +189,52 @@ class VaultMCPServer:
                         "type": "object",
                         "properties": {}
                     }
+                ),
+                Tool(
+                    name="langchain_get_secret",
+                    description="Retrieve a secret from Enclave vault with policy enforcement (LangChain integration). Requires API key configuration. Returns encrypted secret that needs client-side decryption.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "service": {
+                                "type": "string",
+                                "description": "Service name (e.g., 'openai', 'github')"
+                            },
+                            "tag": {
+                                "type": "string",
+                                "description": "Optional tag filter"
+                            }
+                        },
+                        "required": ["service"]
+                    }
+                ),
+                Tool(
+                    name="langchain_query_knowledge",
+                    description="Query a knowledge adapter via DoRA inference (LangChain integration). Requires API key configuration and adapter_id.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "adapter_id": {
+                                "type": "string",
+                                "description": "Adapter UUID to query"
+                            },
+                            "query": {
+                                "type": "string",
+                                "description": "User query to ask the adapter"
+                            },
+                            "temperature": {
+                                "type": "number",
+                                "description": "Generation temperature (0.0-1.0, default: 0.3)",
+                                "default": 0.3
+                            },
+                            "max_tokens": {
+                                "type": "integer",
+                                "description": "Maximum tokens to generate (default: 512)",
+                                "default": 512
+                            }
+                        },
+                        "required": ["adapter_id", "query"]
+                    }
                 )
             ]
 
@@ -248,6 +303,12 @@ class VaultMCPServer:
                 elif name == "vault_stats":
                     result = await self._handle_stats(vault, arguments)
                     result_summary = "Retrieved statistics"
+                elif name == "langchain_get_secret":
+                    result = await self._handle_langchain_get_secret(arguments)
+                    result_summary = f"Retrieved secret for {arguments.get('service', 'unknown')}"
+                elif name == "langchain_query_knowledge":
+                    result = await self._handle_langchain_query_knowledge(arguments)
+                    result_summary = "Queried knowledge adapter"
                 else:
                     raise ValueError(f"Unknown tool: {name}")
                 
@@ -400,6 +461,168 @@ class VaultMCPServer:
         ]
 
         return [TextContent(type="text", text="\n".join(lines))]
+
+    async def _handle_langchain_get_secret(self, args: dict) -> Sequence[TextContent]:
+        """Handle langchain_get_secret tool call."""
+        if not self.api_key:
+            return [TextContent(
+                type="text",
+                text="❌ Error: Enclave API key not configured. Set ENCLAVE_API_KEY environment variable."
+            )]
+
+        service = args.get("service")
+        tag = args.get("tag")
+
+        try:
+            url = f"{self.api_base_url}/api/langchain/secrets/retrieve"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {}
+            if service:
+                payload["service"] = service
+            if tag:
+                payload["tag"] = tag
+
+            response = requests.post(url, json=payload, headers=headers, timeout=30)
+
+            if response.status_code == 401:
+                return [TextContent(
+                    type="text",
+                    text="❌ Error: Invalid API key. Please check your ENCLAVE_API_KEY."
+                )]
+            elif response.status_code == 403:
+                error_detail = response.json().get("detail", "Access denied")
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Policy violation: {error_detail}"
+                )]
+            elif response.status_code == 404:
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Secret not found for service: {service}"
+                )]
+            elif response.status_code >= 500:
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Server error: {response.json().get('detail', 'Unknown error')}"
+                )]
+
+            result = response.json()
+            encrypted_secret = result.get("secret", "")
+            service_name = result.get("service", service)
+
+            return [TextContent(
+                type="text",
+                text=f"✅ Retrieved secret for {service_name}\n\n"
+                     f"Encrypted secret (base64): {encrypted_secret[:50]}...\n\n"
+                     f"Note: This secret is encrypted and requires client-side decryption with your master key."
+            )]
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to retrieve secret via API: {e}")
+            return [TextContent(
+                type="text",
+                text=f"❌ Network error: {str(e)}"
+            )]
+        except Exception as e:
+            logger.error(f"Unexpected error in langchain_get_secret: {e}")
+            return [TextContent(
+                type="text",
+                text=f"❌ Error: {str(e)}"
+            )]
+
+    async def _handle_langchain_query_knowledge(self, args: dict) -> Sequence[TextContent]:
+        """Handle langchain_query_knowledge tool call."""
+        if not self.api_key:
+            return [TextContent(
+                type="text",
+                text="❌ Error: Enclave API key not configured. Set ENCLAVE_API_KEY environment variable."
+            )]
+
+        adapter_id = args.get("adapter_id")
+        query = args.get("query")
+        temperature = args.get("temperature", 0.3)
+        max_tokens = args.get("max_tokens", 512)
+
+        if not adapter_id or not query:
+            return [TextContent(
+                type="text",
+                text="❌ Error: adapter_id and query are required"
+            )]
+
+        try:
+            url = f"{self.api_base_url}/api/langchain/knowledge/query"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Content-Type": "application/json"
+            }
+            payload = {
+                "adapter_id": adapter_id,
+                "query": query,
+                "temperature": temperature,
+                "max_tokens": max_tokens
+            }
+
+            response = requests.post(url, json=payload, headers=headers, timeout=180)
+
+            if response.status_code == 401:
+                return [TextContent(
+                    type="text",
+                    text="❌ Error: Invalid API key. Please check your ENCLAVE_API_KEY."
+                )]
+            elif response.status_code == 403:
+                error_detail = response.json().get("detail", "Access denied")
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Policy violation: {error_detail}"
+                )]
+            elif response.status_code == 404:
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Adapter not found: {adapter_id}"
+                )]
+            elif response.status_code >= 500:
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Server error: {response.json().get('detail', 'Unknown error')}"
+                )]
+
+            result = response.json()
+            answer = result.get("answer", "")
+
+            if not answer:
+                return [TextContent(
+                    type="text",
+                    text="❌ No answer returned from adapter"
+                )]
+
+            return [TextContent(
+                type="text",
+                text=f"✅ Knowledge Query Result\n\n"
+                     f"Query: {query}\n"
+                     f"Adapter: {adapter_id}\n\n"
+                     f"Answer:\n{answer}"
+            )]
+
+        except requests.exceptions.Timeout:
+            return [TextContent(
+                type="text",
+                text="❌ Timeout: Knowledge query took too long (>3 minutes). Try again or check adapter status."
+            )]
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to query knowledge via API: {e}")
+            return [TextContent(
+                type="text",
+                text=f"❌ Network error: {str(e)}"
+            )]
+        except Exception as e:
+            logger.error(f"Unexpected error in langchain_query_knowledge: {e}")
+            return [TextContent(
+                type="text",
+                text=f"❌ Error: {str(e)}"
+            )]
 
 
 def create_vault_server(vault_path: str = "~/.vault") -> VaultMCPServer:

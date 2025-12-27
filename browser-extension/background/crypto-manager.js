@@ -137,6 +137,40 @@ class CryptoManager {
   }
 
   /**
+   * Verify master password
+   */
+  async verifyMasterPassword(password) {
+    try {
+      const { masterPassword } = await chrome.storage.local.get(['masterPassword']);
+      return masterPassword === password;
+    } catch (error) {
+      return false;
+    }
+  }
+
+  /**
+   * Encrypt secret with specific password (for re-encryption)
+   */
+  async encryptSecret(plaintext, password) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const key = await this.deriveMasterKey(password, salt);
+    const encoder = new TextEncoder();
+    const data = encoder.encode(plaintext);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    
+    const encrypted = await crypto.subtle.encrypt(
+      { name: 'AES-GCM', iv: iv },
+      key,
+      data
+    );
+    
+    return {
+      encryptedData: this.arrayBufferToBase64(encrypted),
+      nonce: this.arrayBufferToBase64(iv)
+    };
+  }
+
+  /**
    * Clear master key from memory
    */
   clearMasterKey() {
