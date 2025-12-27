@@ -109,6 +109,7 @@ class SecureSyntheticGenerator:
         
         logger.info(f"Loading model: {self.model_name}")
         logger.info("Model specs: 30.5B total params, 3.3B activated (MoE), 32K-131K context")
+        logger.info(f"Cache directory: {CACHE_DIR}")
         
         # Load model with 4-bit quantization for efficiency
         # MoE models are more efficient than dense models
@@ -119,17 +120,21 @@ class SecureSyntheticGenerator:
             bnb_4bit_quant_type="nf4"
         )
         
+        # CRITICAL: Pass cache_dir explicitly to ensure volume is used
+        # Environment variables alone are not reliable
         self.model = AutoModelForCausalLM.from_pretrained(
             self.model_name,
             quantization_config=bnb_config,
             torch_dtype=torch.bfloat16,
             device_map="auto",
-            trust_remote_code=True
+            trust_remote_code=True,
+            cache_dir=CACHE_DIR
         )
         
         self.tokenizer = AutoTokenizer.from_pretrained(
             self.model_name,
-            trust_remote_code=True
+            trust_remote_code=True,
+            cache_dir=CACHE_DIR
         )
         
         logger.info("✓ Model loaded successfully")
