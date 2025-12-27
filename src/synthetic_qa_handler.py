@@ -302,10 +302,18 @@ OUTPUT (JSON only):
 
     def _parse_response(self, response: str) -> List[Dict[str, str]]:
         """Parse JSON Q&A pairs from model response."""
+        import re
+        
         # Clean response
         response = response.strip()
         if "<|im_end|>" in response:
             response = response.split("<|im_end|>")[0]
+        
+        # Remove control characters that break JSON parsing
+        # Keep only printable ASCII and common unicode
+        response = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', response)
+        # Also clean up any escaped control chars
+        response = response.replace('\\n', '\n').replace('\\t', ' ')
         
         try:
             # Extract JSON array
