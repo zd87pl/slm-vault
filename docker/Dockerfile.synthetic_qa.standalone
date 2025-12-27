@@ -37,7 +37,9 @@ RUN pip install --no-cache-dir --upgrade pip && \
     tokenizers>=0.15.0 \
     # Utilities
     python-dotenv>=1.0.0 \
-    scipy>=1.11.0
+    scipy>=1.11.0 \
+    # Fast HuggingFace downloads
+    hf_transfer>=0.1.0
 
 # Copy only the handler file
 COPY src/synthetic_qa_handler.py /workspace/src/synthetic_qa_handler.py

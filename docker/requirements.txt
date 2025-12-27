@@ -24,6 +24,9 @@ pypdf>=4.0.0
 python-dotenv>=1.0.0
 scipy>=1.11.0
 
+# Fast HuggingFace downloads (required when HF_HUB_ENABLE_HF_TRANSFER=1)
+hf_transfer>=0.1.0
+
 # Optional: Training with Axolotl
 # axolotl[flash-attn,deepspeed]>=0.4.0
 

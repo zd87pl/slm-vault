@@ -21,6 +21,16 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
+# QA generation endpoint environment variable name
+# This endpoint is separate from the inference endpoint used by the backend
+# Set RUNPOD_QA_ENDPOINT_ID environment variable to configure the QA generation endpoint
+SYNTHETIC_QA_ENDPOINT_ID_ENV = "RUNPOD_QA_ENDPOINT_ID"
+
+# API key for QA generation endpoint (can be overridden via environment variable)
+# Uses RUNPOD_QA_API_KEY if set, otherwise falls back to RUNPOD_API_KEY
+# This allows separate API keys for QA generation vs inference if needed
+SYNTHETIC_QA_API_KEY_ENV = "RUNPOD_QA_API_KEY"
+
 # Try to import MLX generator (Apple Silicon only)
 try:
     from qa_generator_mlx import MLXQAGenerator
@@ -51,6 +61,10 @@ class QAGenerator:
             ollama_base_url: Optional Ollama base URL for fallback (defaults to http://localhost:11434)
             ollama_model: Optional Ollama model for fallback (defaults to tinyllama, can upgrade to llama3.2:3b)
         """
+        # Ensure RUNPOD_QA_API_KEY is set by default from RUNPOD_API_KEY
+        # This ensures QA generation endpoint works by default
+        self._ensure_qa_api_key_set()
+        
         self.endpoint_id = runpod_endpoint_id or os.getenv("RUNPOD_ENDPOINT_ID")
         self.api_key = runpod_api_key or os.getenv("RUNPOD_API_KEY")
         self.base_url = f"https://api.runpod.ai/v2/{self.endpoint_id}" if self.endpoint_id else None
@@ -80,6 +94,22 @@ class QAGenerator:
         
         if not self.endpoint_id or not self.api_key:
             logger.warning("RunPod endpoint not configured. Q&A generation will use MLX/Ollama fallback if available.")
+    
+    def _ensure_qa_api_key_set(self):
+        """
+        Ensure RUNPOD_QA_API_KEY is set by default from RUNPOD_API_KEY.
+        This ensures the QA generation endpoint works by default when RUNPOD_API_KEY is configured.
+        """
+        runpod_api_key = os.getenv("RUNPOD_API_KEY")
+        qa_api_key = os.getenv(SYNTHETIC_QA_API_KEY_ENV)
+        
+        if not qa_api_key and runpod_api_key:
+            os.environ[SYNTHETIC_QA_API_KEY_ENV] = runpod_api_key
+            logger.debug(f"Set {SYNTHETIC_QA_API_KEY_ENV} to RUNPOD_API_KEY by default (QA endpoint will be used)")
+        elif qa_api_key:
+            logger.debug(f"{SYNTHETIC_QA_API_KEY_ENV} already set (explicit value)")
+        elif not runpod_api_key:
+            logger.debug("RUNPOD_API_KEY not set - QA generation will use local MLX/Ollama fallback")
     
     def is_ollama_available(self) -> bool:
         """
@@ -1452,7 +1482,7 @@ A: answer here"""
         encryption_key_hex: Optional[str] = None
     ) -> Tuple[List[Dict[str, str]], str]:
         """
-        Generate 1,000+ Q&A pairs using Qwen3-235B-A22B-Instruct-2507 on RunPod (encrypted flow).
+        Generate 1,000+ Q&A pairs using cloud-based RunPod endpoint (encrypted flow).
         
         This maintains end-to-end encryption:
         1. Encrypt PDF client-side
@@ -1497,13 +1527,13 @@ A: answer here"""
         
         logger.info(f"Encrypting PDF ({len(pdf_bytes)} bytes)...")
         
-        # Encrypt PDF using XChaCha20-Poly1305
+        # Encrypt PDF using XChaCha20-Poly1305 (24-byte nonce) or ChaCha20Poly1305 (12-byte nonce)
         if CRYPTO_BACKEND_LOCAL == "pycryptodome":
-            nonce = get_random_bytes(24)
+            nonce = get_random_bytes(24)  # XChaCha20-Poly1305 uses 24-byte nonce
             cipher = ChaCha20_Poly1305.new(key=encryption_key, nonce=nonce)
             ciphertext, tag = cipher.encrypt_and_digest(pdf_bytes)
         else:
-            nonce = secrets.token_bytes(24)
+            nonce = secrets.token_bytes(12)  # ChaCha20Poly1305 uses 12-byte nonce
             cipher = ChaCha20Poly1305(encryption_key)
             ciphertext_with_tag = cipher.encrypt(nonce, pdf_bytes, None)
             ciphertext = ciphertext_with_tag[:-16]
@@ -1518,17 +1548,51 @@ A: answer here"""
         logger.info(f"✓ Encrypted PDF ({len(encrypted_pdf)} bytes)")
         
         # Get synthetic generation endpoint (separate from training/inference)
-        synthetic_endpoint_id = os.getenv("RUNPOD_SYNTHETIC_ENDPOINT_ID") or self.endpoint_id
+        # Uses RUNPOD_QA_ENDPOINT_ID environment variable if set
+        synthetic_endpoint_id = os.getenv(SYNTHETIC_QA_ENDPOINT_ID_ENV)
         
-        if not synthetic_endpoint_id or not self.api_key:
+        if not synthetic_endpoint_id:
             raise RuntimeError(
-                "RunPod synthetic generation endpoint not configured. "
-                "Set RUNPOD_SYNTHETIC_ENDPOINT_ID environment variable or configure RunPod endpoint."
+                f"QA generation endpoint not configured. "
+                f"Set {SYNTHETIC_QA_ENDPOINT_ID_ENV} environment variable to configure the QA generation endpoint."
             )
         
+        # API key for QA generation endpoint
+        # Default behavior: RUNPOD_QA_API_KEY defaults to RUNPOD_API_KEY if not set
+        # This ensures QA endpoint works by default when RUNPOD_API_KEY is set
+        runpod_api_key = os.getenv("RUNPOD_API_KEY")
+        qa_api_key = os.getenv(SYNTHETIC_QA_API_KEY_ENV)
+        
+        # Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default if not explicitly set
+        # This ensures the QA endpoint is used by default
+        if not qa_api_key and runpod_api_key:
+            os.environ[SYNTHETIC_QA_API_KEY_ENV] = runpod_api_key
+            qa_api_key = runpod_api_key
+            logger.debug(f"Set {SYNTHETIC_QA_API_KEY_ENV} to RUNPOD_API_KEY by default")
+        
+        # Priority: 1) RUNPOD_QA_API_KEY env var (now set by default), 2) constructor api_key, 3) RUNPOD_API_KEY env var
+        api_key = qa_api_key or self.api_key or runpod_api_key
+        
+        if not api_key:
+            raise RuntimeError(
+                "RunPod API key not configured for QA generation. "
+                f"Set {SYNTHETIC_QA_API_KEY_ENV} or RUNPOD_API_KEY environment variable, "
+                "or pass runpod_api_key to QAGenerator constructor."
+            )
+        
+        # Log which API key source is being used (for debugging)
+        if qa_api_key and qa_api_key == runpod_api_key:
+            logger.debug(f"Using RUNPOD_API_KEY (default) for QA generation endpoint via {SYNTHETIC_QA_API_KEY_ENV}")
+        elif qa_api_key:
+            logger.debug(f"Using {SYNTHETIC_QA_API_KEY_ENV} for QA generation endpoint")
+        elif runpod_api_key:
+            logger.debug("Using RUNPOD_API_KEY for QA generation endpoint")
+        
         # Send to RunPod synthetic generation endpoint
+        # Using QA generation endpoint (separate from inference endpoint)
+        logger.info(f"Using QA generation endpoint: {synthetic_endpoint_id}")
         logger.info(f"Sending to RunPod endpoint {synthetic_endpoint_id} for generation...")
-        logger.info(f"Target: {target_samples} Q&A pairs using Qwen3-235B-A22B-Instruct-2507")
+        logger.info(f"Target: {target_samples} Q&A pairs")
         
         payload = {
             "input": {
@@ -1544,7 +1608,7 @@ A: answer here"""
             response = requests.post(
                 runpod_url,
                 headers={
-                    "Authorization": f"Bearer {self.api_key}",
+                    "Authorization": f"Bearer {api_key}",
                     "Content-Type": "application/json"
                 },
                 json=payload,
@@ -1569,7 +1633,7 @@ A: answer here"""
             while time.time() - start_time < max_wait:
                 status_response = requests.get(
                     f"https://api.runpod.ai/v2/{synthetic_endpoint_id}/status/{job_id}",
-                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    headers={"Authorization": f"Bearer {api_key}"},
                     timeout=30
                 )
                 

@@ -13,6 +13,7 @@ import requests
 import logging
 import base64
 import tempfile
+import shutil
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -39,6 +40,7 @@ from training_manager import TrainingManager
 from folder_manager import FolderManager
 from theme import ModernTheme
 from sleek_theme import SleekTheme
+from light_theme import LightTheme
 from welcome_screen import WelcomeScreen
 from error_helper import make_user_friendly, format_error_snackbar
 from mcp_setup import MCPSetupHelper
@@ -52,9 +54,13 @@ class VaultApp:
 
     def __init__(self, page: ft.Page):
         """Initialize the app."""
+        # Ensure RUNPOD_QA_API_KEY is set by default from RUNPOD_API_KEY
+        # This ensures QA generation endpoint works by default
+        self._ensure_qa_api_key_set()
+        
         self.page = page
         self.page.title = "🔐 Enclave"
-        self.page.theme_mode = ft.ThemeMode.DARK
+        self.page.theme_mode = ft.ThemeMode.LIGHT  # Changed to light theme
         self.page.padding = 0
         
         # Set window size to 70% of screen (professional app sizing)
@@ -80,23 +86,23 @@ class VaultApp:
         self.page.window.min_width = 800
         self.page.window.min_height = 600
         
-        # Set up sleek theme
+        # Set up light theme (Hugging Face inspired)
         self.page.theme = ft.Theme(
-            color_scheme_seed=SleekTheme.ACCENT_PRIMARY,
+            color_scheme_seed=LightTheme.ACCENT_PRIMARY,
             font_family="System",
             text_theme=ft.TextTheme(
-                display_large=ft.TextStyle(size=32, weight=ft.FontWeight.BOLD),
-                display_medium=ft.TextStyle(size=24, weight=ft.FontWeight.BOLD),
-                headline_large=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD),
-                title_large=ft.TextStyle(size=16, weight=ft.FontWeight.BOLD),
-                body_large=ft.TextStyle(size=13),
-                body_medium=ft.TextStyle(size=12),
-                label_large=ft.TextStyle(size=12, weight=ft.FontWeight.W_500),
+                display_large=ft.TextStyle(size=32, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                display_medium=ft.TextStyle(size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                headline_large=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                title_large=ft.TextStyle(size=16, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                body_large=ft.TextStyle(size=14, color=LightTheme.TEXT_PRIMARY),
+                body_medium=ft.TextStyle(size=13, color=LightTheme.TEXT_SECONDARY),
+                label_large=ft.TextStyle(size=12, weight=ft.FontWeight.W_500, color=LightTheme.TEXT_PRIMARY),
             ),
         )
         
-        # Set page background
-        self.page.bgcolor = SleekTheme.BG_PRIMARY
+        # Set page background (light theme)
+        self.page.bgcolor = LightTheme.BG_PRIMARY
 
         # Backend configuration
         self.backend_url = os.getenv(
@@ -230,7 +236,7 @@ class VaultApp:
         progress_text = ft.Text(
             initial_message,
             size=14,
-            color=SleekTheme.TEXT_PRIMARY,
+            color=LightTheme.TEXT_PRIMARY,
             text_align=ft.TextAlign.LEFT,
             selectable=False,
         )
@@ -238,18 +244,18 @@ class VaultApp:
             "",
             size=18,
             weight=ft.FontWeight.BOLD,
-            color=SleekTheme.ACCENT_PRIMARY,
+            color=LightTheme.ACCENT_PRIMARY,
         )
         time_remaining_text = ft.Text(
             "",
             size=12,
-            color=SleekTheme.TEXT_MUTED,
+            color=LightTheme.TEXT_MUTED,
         )
         progress_bar = ft.ProgressBar(
             width=dialog_width - 80,  # Account for padding
             value=0.0,
-            color=SleekTheme.ACCENT_PRIMARY,
-            bgcolor=SleekTheme.BG_ELEVATED,
+            color=LightTheme.ACCENT_PRIMARY,
+            bgcolor=LightTheme.BG_ELEVATED,
             bar_height=8,  # Slightly thicker for better visibility
         )
         
@@ -297,12 +303,13 @@ class VaultApp:
                     title,
                     size=20,
                     weight=ft.FontWeight.BOLD,
-                    color=SleekTheme.TEXT_PRIMARY,
+                    color=LightTheme.TEXT_PRIMARY,
                 ),
                 padding=ft.padding.only(bottom=8),
             ),
             content=content_container,
             actions=[],
+            bgcolor=LightTheme.BG_ELEVATED,
             shape=ft.RoundedRectangleBorder(radius=16),  # Modern rounded corners
         )
         
@@ -680,7 +687,7 @@ class VaultApp:
                         
                         self.page.snack_bar = ft.SnackBar(
                             content=ft.Text(snackbar_text),
-                            bgcolor=SleekTheme.ACCENT_PRIMARY,
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
                             duration=3000,
                         )
                         self.page.snack_bar.open = True
@@ -870,7 +877,7 @@ class VaultApp:
             # Show success message
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"✅ Added {added_count} sample secrets!"),
-                bgcolor=ModernTheme.ACCENT_SUCCESS,
+                bgcolor=LightTheme.ACCENT_SUCCESS,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -879,7 +886,7 @@ class VaultApp:
             logger.error(f"Error adding sample data: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"❌ Error adding sample data: {str(e)}"),
-                bgcolor=ModernTheme.ACCENT_ERROR,
+                bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -937,39 +944,33 @@ class VaultApp:
         content = ft.Container(
             content=ft.Column(
                 [
-                    # Header - centered
+                    # Welcome header (simplified - logo is in sidebar)
                     ft.Container(
                         content=ft.Column(
                             [
-                                ft.Icon(
-                                    ft.Icons.LOCK_ROUNDED, 
-                                    size=64, 
-                                    color=SleekTheme.ACCENT_PRIMARY
-                                ),
-                                ft.Container(height=16),
                                 ft.Text(
-                                    "🔐 Enclave Vault",
-                                    size=36,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=SleekTheme.TEXT_PRIMARY,
+                                    f"Welcome back, {user_email}",
+                                    size=20,
+                                    weight=ft.FontWeight.W_600,
+                                    color=LightTheme.TEXT_PRIMARY,
                                     text_align=ft.TextAlign.CENTER,
                                 ),
                                 ft.Container(height=8),
                                 ft.Text(
-                                    f"Welcome back, {user_email}",
-                                    size=18,
-                                    color=SleekTheme.TEXT_SECONDARY,
+                                    "Quick actions and recent activity",
+                                    size=14,
+                                    color=LightTheme.TEXT_SECONDARY,
                                     text_align=ft.TextAlign.CENTER,
                                 ),
                             ],
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                             spacing=0,
                         ),
-                        padding=ft.padding.only(bottom=48),
+                        padding=ft.padding.only(bottom=32),
                         alignment=ft.alignment.center,
                     ),
                     
-                    # Large Action Buttons - 2x2 grid
+                    # Compact Action Buttons - 2x2 grid (smaller)
                     ft.Container(
                         content=ft.Column(
                             [
@@ -980,36 +981,29 @@ class VaultApp:
                                             "📚 Add Knowledge",
                                             "Upload PDF documents\nand train AI models",
                                             ft.Icons.UPLOAD_FILE_ROUNDED,
-                                            SleekTheme.ACCENT_PRIMARY,
+                                            LightTheme.ACCENT_PRIMARY,
                                             lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'knowledge') or self.load_secrets()),
                                         ),
                                         self._create_large_action_button(
                                             "🔑 View Secrets",
                                             f"{secrets_count} encrypted secrets\nstored securely",
                                             ft.Icons.LOCK_ROUNDED,
-                                            SleekTheme.ACCENT_SUCCESS,
+                                            LightTheme.ACCENT_SUCCESS,
                                             lambda e: (self.page.clean(), self.build_ui(), self.page.update()),
                                         ),
                                     ],
                                     spacing=24,
                                     alignment=ft.MainAxisAlignment.CENTER,
                                 ),
-                                ft.Container(height=24),
+                                ft.Container(height=16),
                                 # Second row
                                 ft.Row(
                                     [
                                         self._create_large_action_button(
-                                            "📊 Access Log",
-                                            "View activity history\nand access records",
-                                            ft.Icons.HISTORY_ROUNDED,
-                                            SleekTheme.ACCENT_WARNING,
-                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'activity') or self.load_secrets()),
-                                        ),
-                                        self._create_large_action_button(
                                             "⚙️ Settings",
-                                            "Configure components\nand preferences",
+                                            "Configure components",
                                             ft.Icons.SETTINGS_ROUNDED,
-                                            SleekTheme.TEXT_SECONDARY,
+                                            LightTheme.TEXT_SECONDARY,
                                             lambda e: (self.page.clean(), self.build_ui(), self.page.update(), self.show_settings()),
                                         ),
                                     ],
@@ -1022,7 +1016,12 @@ class VaultApp:
                         padding=ft.padding.symmetric(horizontal=32),
                     ),
                     
-                    ft.Container(height=48),
+                    ft.Container(height=32),
+                    
+                    # Recent Activity Section
+                    self._create_recent_activity_section(),
+                    
+                    ft.Container(height=32),
                     
                     # Quick stats footer - clickable links
                     ft.Container(
@@ -1036,13 +1035,13 @@ class VaultApp:
                                                     str(knowledge_count),
                                                     size=24,
                                                     weight=ft.FontWeight.BOLD,
-                                                    color=SleekTheme.ACCENT_PRIMARY,
+                                                    color=LightTheme.ACCENT_PRIMARY,
                                                     text_align=ft.TextAlign.CENTER,
                                                 ),
                                                 ft.Text(
                                                     "Documents",
                                                     size=12,
-                                                    color=SleekTheme.TEXT_SECONDARY,
+                                                    color=LightTheme.TEXT_SECONDARY,
                                                     text_align=ft.TextAlign.CENTER,
                                                 ),
                                             ],
@@ -1052,15 +1051,15 @@ class VaultApp:
                                         on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'knowledge') or self.load_secrets()),
                                         style=ft.ButtonStyle(
                                             bgcolor="transparent",
-                                            color=SleekTheme.TEXT_PRIMARY,
+                                            color=LightTheme.TEXT_PRIMARY,
                                             elevation=0,
-                                            overlay_color=SleekTheme.ACCENT_PRIMARY + "10",
+                                            overlay_color=LightTheme.ACCENT_PRIMARY + "10",
                                         ),
                                     ),
                                     padding=16,
                                     width=120,
                                 ),
-                                ft.VerticalDivider(width=1, color=SleekTheme.BORDER_COLOR),
+                                ft.VerticalDivider(width=1, color=LightTheme.BORDER_COLOR),
                                 ft.Container(
                                     content=ft.ElevatedButton(
                                         content=ft.Column(
@@ -1069,13 +1068,13 @@ class VaultApp:
                                                     str(secrets_count),
                                                     size=24,
                                                     weight=ft.FontWeight.BOLD,
-                                                    color=SleekTheme.ACCENT_SUCCESS,
+                                                    color=LightTheme.ACCENT_SUCCESS,
                                                     text_align=ft.TextAlign.CENTER,
                                                 ),
                                                 ft.Text(
                                                     "Secrets",
                                                     size=12,
-                                                    color=SleekTheme.TEXT_SECONDARY,
+                                                    color=LightTheme.TEXT_SECONDARY,
                                                     text_align=ft.TextAlign.CENTER,
                                                 ),
                                             ],
@@ -1085,15 +1084,15 @@ class VaultApp:
                                         on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'selected_type', 'secret') or setattr(self.type_filter, 'value', 'secret') or self.load_secrets()),
                                         style=ft.ButtonStyle(
                                             bgcolor="transparent",
-                                            color=SleekTheme.TEXT_PRIMARY,
+                                            color=LightTheme.TEXT_PRIMARY,
                                             elevation=0,
-                                            overlay_color=SleekTheme.ACCENT_SUCCESS + "10",
+                                            overlay_color=LightTheme.ACCENT_SUCCESS + "10",
                                         ),
                                     ),
                                     padding=16,
                                     width=120,
                                 ),
-                                ft.VerticalDivider(width=1, color=SleekTheme.BORDER_COLOR),
+                                ft.VerticalDivider(width=1, color=LightTheme.BORDER_COLOR),
                                 ft.Container(
                                     content=ft.ElevatedButton(
                                         content=ft.Column(
@@ -1101,12 +1100,12 @@ class VaultApp:
                                                 ft.Icon(
                                                     ft.Icons.CHECK_CIRCLE_ROUNDED if (ocr_ready and qa_ready) else ft.Icons.WARNING_ROUNDED,
                                                     size=24,
-                                                    color=SleekTheme.ACCENT_SUCCESS if (ocr_ready and qa_ready) else SleekTheme.ACCENT_WARNING,
+                                                    color=LightTheme.ACCENT_SUCCESS if (ocr_ready and qa_ready) else LightTheme.ACCENT_WARNING,
                                                 ),
                                                 ft.Text(
                                                     "Ready" if (ocr_ready and qa_ready) else "Setup",
                                                     size=12,
-                                                    color=SleekTheme.ACCENT_SUCCESS if (ocr_ready and qa_ready) else SleekTheme.ACCENT_WARNING,
+                                                    color=LightTheme.ACCENT_SUCCESS if (ocr_ready and qa_ready) else LightTheme.ACCENT_WARNING,
                                                     text_align=ft.TextAlign.CENTER,
                                                 ),
                                             ],
@@ -1116,9 +1115,9 @@ class VaultApp:
                                         on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), self.show_settings()),
                                         style=ft.ButtonStyle(
                                             bgcolor="transparent",
-                                            color=SleekTheme.TEXT_PRIMARY,
+                                            color=LightTheme.TEXT_PRIMARY,
                                             elevation=0,
-                                            overlay_color=SleekTheme.ACCENT_WARNING + "10",
+                                            overlay_color=LightTheme.ACCENT_WARNING + "10",
                                         ),
                                     ),
                                     padding=16,
@@ -1129,7 +1128,7 @@ class VaultApp:
                             spacing=0,
                         ),
                         padding=ft.padding.symmetric(vertical=24, horizontal=32),
-                        bgcolor=SleekTheme.BG_ELEVATED,
+                        bgcolor=LightTheme.BG_ELEVATED,
                         border_radius=12,
                         margin=ft.margin.symmetric(horizontal=48),
                     ),
@@ -1161,51 +1160,235 @@ class VaultApp:
         self.page.update()
     
     def _create_large_action_button(self, title: str, subtitle: str, icon: str, color: str, on_click) -> ft.Container:
-        """Create a large, prominent action button."""
+        """Create a compact action button (smaller for better fit)."""
         return ft.Container(
             content=ft.ElevatedButton(
-                content=ft.Column(
+                content=ft.Row(
                     [
-                        ft.Container(height=8),
                         ft.Icon(
                             icon,
-                            size=48,
+                            size=24,
                             color=color,
                         ),
-                        ft.Container(height=16),
-                        ft.Text(
-                            title,
-                            size=20,
-                            weight=ft.FontWeight.BOLD,
-                            color=SleekTheme.TEXT_PRIMARY,
-                            text_align=ft.TextAlign.CENTER,
+                        ft.Container(width=12),
+                        ft.Column(
+                            [
+                                ft.Text(
+                                    title,
+                                    size=14,
+                                    weight=ft.FontWeight.W_600,
+                                    color=LightTheme.TEXT_PRIMARY,
+                                    text_align=ft.TextAlign.LEFT,
+                                ),
+                                ft.Text(
+                                    subtitle,
+                                    size=12,
+                                    color=LightTheme.TEXT_SECONDARY,
+                                    text_align=ft.TextAlign.LEFT,
+                                ),
+                            ],
+                            spacing=2,
+                            horizontal_alignment=ft.CrossAxisAlignment.START,
+                            tight=True,
                         ),
-                        ft.Container(height=8),
-                        ft.Text(
-                            subtitle,
-                            size=13,
-                            color=SleekTheme.TEXT_SECONDARY,
-                            text_align=ft.TextAlign.CENTER,
-                        ),
-                        ft.Container(height=8),
                     ],
                     spacing=0,
-                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                    tight=True,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 on_click=on_click,
                 style=ft.ButtonStyle(
-                    bgcolor=SleekTheme.BG_ELEVATED,
-                    color=SleekTheme.TEXT_PRIMARY,
-                    padding=ft.padding.all(32),
-                    elevation=2,
-                    overlay_color=SleekTheme.ACCENT_PRIMARY + "20",
+                    bgcolor=LightTheme.BG_ELEVATED,
+                    color=LightTheme.TEXT_PRIMARY,
+                    padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                    elevation=1,
+                    overlay_color=LightTheme.ACCENT_PRIMARY + "10",
                     animation_duration=200,
                 ),
             ),
-            width=280,
-            height=220,
+            width=240,
         )
+    
+    def _create_recent_activity_section(self) -> ft.Container:
+        """Create recent activity section for Home screen."""
+        try:
+            # Initialize activity logger
+            activity_logger = ActivityLogger(vault_path=str(self.vault_path))
+            
+            # Get recent activity (limit to 5 for Home screen)
+            activities = activity_logger.get_recent_activity(limit=5)
+            
+            activity_items = []
+            
+            # Section header
+            activity_items.append(
+                ft.Row(
+                    [
+                        ft.Text(
+                            "Recent Activity",
+                            size=18,
+                            weight=ft.FontWeight.BOLD,
+                            color=LightTheme.TEXT_PRIMARY,
+                        ),
+                        ft.Container(expand=True),
+                        ft.TextButton(
+                            "View All",
+                            icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+                            on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'activity') or self.load_secrets()),
+                            style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
+                        ),
+                    ],
+                    spacing=0,
+                )
+            )
+            
+            activity_items.append(ft.Container(height=16))
+            
+            if not activities:
+                # Empty state
+                activity_items.append(
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Icon(
+                                    ft.Icons.HISTORY_ROUNDED,
+                                    size=40,
+                                    color=LightTheme.TEXT_MUTED,
+                                ),
+                                ft.Container(height=8),
+                                ft.Text(
+                                    "No recent activity",
+                                    size=14,
+                                    color=LightTheme.TEXT_SECONDARY,
+                                    text_align=ft.TextAlign.CENTER,
+                                ),
+                            ],
+                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                            spacing=0,
+                        ),
+                        padding=24,
+                        alignment=ft.alignment.center,
+                    )
+                )
+            else:
+                # Show activity entries (compact)
+                for activity in activities:
+                    timestamp = activity.get('timestamp', '')
+                    try:
+                        from datetime import datetime
+                        dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        # Format: "2h ago" or "Yesterday" or date
+                        now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+                        diff = now - dt
+                        if diff.total_seconds() < 3600:
+                            time_str = f"{int(diff.total_seconds() / 60)}m ago"
+                        elif diff.total_seconds() < 86400:
+                            time_str = f"{int(diff.total_seconds() / 3600)}h ago"
+                        elif diff.days == 1:
+                            time_str = "Yesterday"
+                        else:
+                            time_str = dt.strftime('%b %d')
+                    except:
+                        time_str = timestamp[:10] if len(timestamp) > 10 else timestamp
+                    
+                    tool_name = activity.get('tool_name', 'unknown')
+                    app_name = activity.get('app_name', 'Unknown App')
+                    granted = activity.get('granted', False)
+                    query_preview = activity.get('query_preview', '')[:50]  # Truncate
+                    
+                    # Tool icon mapping
+                    tool_icons = {
+                        'vault_store': ft.Icons.ADD_CIRCLE_ROUNDED,
+                        'vault_recall': ft.Icons.SEARCH_ROUNDED,
+                        'vault_list_entries': ft.Icons.LIST_ROUNDED,
+                        'vault_delete': ft.Icons.DELETE_ROUNDED,
+                        'vault_stats': ft.Icons.BAR_CHART_ROUNDED,
+                    }
+                    tool_icon = tool_icons.get(tool_name, ft.Icons.SETTINGS_ROUNDED)
+                    
+                    # Status color
+                    status_color = LightTheme.ACCENT_SUCCESS if granted else LightTheme.ACCENT_ERROR
+                    
+                    # Create compact activity item
+                    activity_items.append(
+                        ft.Container(
+                            content=ft.Row(
+                                [
+                                    ft.Icon(
+                                        tool_icon,
+                                        size=20,
+                                        color=LightTheme.TEXT_SECONDARY,
+                                    ),
+                                    ft.Container(width=12),
+                                    ft.Column(
+                                        [
+                                            ft.Text(
+                                                tool_name.replace('vault_', '').replace('_', ' ').title(),
+                                                size=13,
+                                                weight=ft.FontWeight.W_500,
+                                                color=LightTheme.TEXT_PRIMARY,
+                                            ),
+                                            ft.Text(
+                                                query_preview or app_name,
+                                                size=12,
+                                                color=LightTheme.TEXT_SECONDARY,
+                                            ),
+                                        ],
+                                        spacing=2,
+                                        tight=True,
+                                        expand=True,
+                                    ),
+                                    ft.Container(width=8),
+                                    ft.Column(
+                                        [
+                                            ft.Icon(
+                                                ft.Icons.CHECK_CIRCLE_ROUNDED if granted else ft.Icons.CANCEL_ROUNDED,
+                                                size=16,
+                                                color=status_color,
+                                            ),
+                                            ft.Text(
+                                                time_str,
+                                                size=11,
+                                                color=LightTheme.TEXT_MUTED,
+                                            ),
+                                        ],
+                                        spacing=2,
+                                        horizontal_alignment=ft.CrossAxisAlignment.END,
+                                        tight=True,
+                                    ),
+                                ],
+                                spacing=0,
+                                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                            ),
+                            padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                            bgcolor=LightTheme.BG_ELEVATED,
+                            border_radius=8,
+                            margin=ft.margin.only(bottom=8),
+                            on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'activity') or self.load_secrets()),
+                        )
+                    )
+            
+            return ft.Container(
+                content=ft.Column(
+                    activity_items,
+                    spacing=0,
+                    tight=True,
+                ),
+                padding=ft.padding.all(20),
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=12,
+                margin=ft.margin.symmetric(horizontal=48),
+            )
+            
+        except Exception as e:
+            logger.error(f"Error creating recent activity section: {e}")
+            return ft.Container(
+                content=ft.Text(
+                    "Unable to load activity",
+                    size=14,
+                    color=LightTheme.TEXT_SECONDARY,
+                ),
+                padding=20,
+            )
     
     def _create_stat_card(self, title: str, count: int, subtitle: str, icon: str) -> ft.Container:
         """Create a statistics card."""
@@ -1214,23 +1397,23 @@ class VaultApp:
                 [
                     ft.Row(
                         [
-                            ft.Icon(icon, size=24, color=SleekTheme.ACCENT_PRIMARY),
+                            ft.Icon(icon, size=24, color=LightTheme.ACCENT_PRIMARY),
                             ft.Text(
                                 str(count),
                                 size=32,
                                 weight=ft.FontWeight.BOLD,
-                                color=SleekTheme.TEXT_PRIMARY,
+                                color=LightTheme.TEXT_PRIMARY,
                             ),
                         ],
                         spacing=8,
                     ),
-                    ft.Text(title, size=14, weight=ft.FontWeight.W_500, color=SleekTheme.TEXT_PRIMARY),
-                    ft.Text(subtitle, size=12, color=SleekTheme.TEXT_SECONDARY),
+                    ft.Text(title, size=14, weight=ft.FontWeight.W_500, color=LightTheme.TEXT_PRIMARY),
+                    ft.Text(subtitle, size=12, color=LightTheme.TEXT_SECONDARY),
                 ],
                 spacing=4,
             ),
             padding=24,
-            bgcolor=SleekTheme.BG_ELEVATED,
+            bgcolor=LightTheme.BG_ELEVATED,
             border_radius=12,
             width=200,
         )
@@ -1241,17 +1424,17 @@ class VaultApp:
             content=ft.ElevatedButton(
                 content=ft.Column(
                     [
-                        ft.Icon(icon, size=32, color=SleekTheme.ACCENT_PRIMARY),
+                        ft.Icon(icon, size=32, color=LightTheme.ACCENT_PRIMARY),
                         ft.Text(title, size=14, weight=ft.FontWeight.W_500),
-                        ft.Text(subtitle, size=12, color=SleekTheme.TEXT_SECONDARY),
+                        ft.Text(subtitle, size=12, color=LightTheme.TEXT_SECONDARY),
                     ],
                     spacing=8,
                     horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 ),
                 on_click=on_click,
                 style=ft.ButtonStyle(
-                    bgcolor=SleekTheme.BG_ELEVATED,
-                    color=SleekTheme.TEXT_PRIMARY,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                    color=LightTheme.TEXT_PRIMARY,
                     padding=ft.padding.all(24),
                 ),
             ),
@@ -1266,7 +1449,7 @@ class VaultApp:
                     ft.Icon(icon, size=20, color=color),
                     ft.Column(
                         [
-                            ft.Text(title, size=14, weight=ft.FontWeight.W_500, color=SleekTheme.TEXT_PRIMARY),
+                            ft.Text(title, size=14, weight=ft.FontWeight.W_500, color=LightTheme.TEXT_PRIMARY),
                             ft.Text(status, size=12, color=color),
                         ],
                         spacing=2,
@@ -1275,7 +1458,7 @@ class VaultApp:
                 spacing=12,
             ),
             padding=16,
-            bgcolor=SleekTheme.BG_ELEVATED,
+            bgcolor=LightTheme.BG_ELEVATED,
             border_radius=8,
             width=250,
         )
@@ -1287,7 +1470,7 @@ class VaultApp:
             try:
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text("🔐 Inicjalizacja Enclave Vault..."),
-                    bgcolor=SleekTheme.ACCENT_PRIMARY,
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
                     duration=3000,
                 )
                 self.page.snack_bar.open = True
@@ -1397,6 +1580,22 @@ class VaultApp:
                 self.training_manager = None
                 self._component_status["qa"]["status"] = "error"
                 self._component_status["qa"]["message"] = f"Error: {str(e)}"
+    
+    def _ensure_qa_api_key_set(self):
+        """
+        Ensure RUNPOD_QA_API_KEY is set by default from RUNPOD_API_KEY.
+        This ensures the QA generation endpoint works by default when RUNPOD_API_KEY is configured.
+        """
+        runpod_api_key = os.getenv("RUNPOD_API_KEY")
+        qa_api_key = os.getenv("RUNPOD_QA_API_KEY")
+        
+        if not qa_api_key and runpod_api_key:
+            os.environ["RUNPOD_QA_API_KEY"] = runpod_api_key
+            logger.info("Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default (QA endpoint will be used)")
+        elif qa_api_key:
+            logger.debug(f"RUNPOD_QA_API_KEY already set (explicit value)")
+        elif not runpod_api_key:
+            logger.debug("RUNPOD_API_KEY not set - QA generation will use local MLX/Ollama fallback")
 
     def sync_from_cloud(self):
         """Sync entries from cloud on login."""
@@ -1460,15 +1659,15 @@ class VaultApp:
         
         if self.backend_status == "connected":
             self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
-            self.compute_pipeline_icon.icon_color = ModernTheme.ACCENT_SUCCESS
+            self.compute_pipeline_icon.icon_color = LightTheme.ACCENT_SUCCESS
             self.compute_pipeline_icon.tooltip = "Compute Pipeline: Connected ✓"
         elif self.backend_status == "disconnected":
             self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
-            self.compute_pipeline_icon.icon_color = ModernTheme.ACCENT_ERROR
+            self.compute_pipeline_icon.icon_color = LightTheme.ACCENT_ERROR
             self.compute_pipeline_icon.tooltip = "Compute Pipeline: Disconnected"
         else:
             self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
-            self.compute_pipeline_icon.icon_color = ModernTheme.ACCENT_WARNING
+            self.compute_pipeline_icon.icon_color = LightTheme.ACCENT_WARNING
             self.compute_pipeline_icon.tooltip = "Compute Pipeline: Checking..."
 
     def build_ui(self):
@@ -1479,7 +1678,7 @@ class VaultApp:
         # Create Compute Pipeline (backend) connectivity indicator
         self.compute_pipeline_icon = ft.IconButton(
             icon=ft.Icons.SCIENCE_ROUNDED,
-            icon_color=SleekTheme.TEXT_MUTED,
+            icon_color=LightTheme.TEXT_MUTED,
             tooltip="Compute Pipeline: Checking...",
             on_click=lambda _: self.check_backend_connectivity(),
             icon_size=20
@@ -1499,34 +1698,34 @@ class VaultApp:
                     "Enclave",
                     size=22,
                     weight=ft.FontWeight.BOLD,
-                    color=ModernTheme.TEXT_PRIMARY,
+                    color=LightTheme.TEXT_PRIMARY,
                 ),
             ]),
             center_title=False,
-            bgcolor=ModernTheme.GLASS_BG,
+            bgcolor=LightTheme.GLASS_BG,
             elevation=0,
             actions=[
                 ft.Container(
                     content=ft.Row([
-                        ft.Icon(ft.Icons.PERSON_ROUNDED, size=16, color=ModernTheme.TEXT_SECONDARY),
-                        ft.Text(user_email, size=12, color=ModernTheme.TEXT_SECONDARY, weight=ft.FontWeight.W_500),
+                        ft.Icon(ft.Icons.PERSON_ROUNDED, size=16, color=LightTheme.TEXT_SECONDARY),
+                        ft.Text(user_email, size=12, color=LightTheme.TEXT_SECONDARY, weight=ft.FontWeight.W_500),
                     ], spacing=5),
                     padding=ft.padding.symmetric(horizontal=12, vertical=8),
                     border_radius=8,
-                    bgcolor=ModernTheme.BG_ELEVATED,
+                    bgcolor=LightTheme.BG_ELEVATED,
                 ),
                 ft.Container(width=8),
-                ft.VerticalDivider(width=1, color=ModernTheme.BORDER_COLOR),
+                ft.VerticalDivider(width=1, color=LightTheme.BORDER_COLOR),
                 ft.Container(width=8),
                 self.compute_pipeline_icon,
                 ft.Container(width=8),
-                ft.VerticalDivider(width=1, color=ModernTheme.BORDER_COLOR),
+                ft.VerticalDivider(width=1, color=LightTheme.BORDER_COLOR),
                 ft.Container(width=8),
                 ft.PopupMenuButton(
                     icon=ft.Icons.ADD_CIRCLE_ROUNDED,
                     tooltip="Add Entry",
                     icon_size=28,
-                    icon_color=ModernTheme.ACCENT_PRIMARY,
+                    icon_color=LightTheme.ACCENT_PRIMARY,
                     items=[
                         ft.PopupMenuItem(
                             text="Add Secret",
@@ -1545,21 +1744,21 @@ class VaultApp:
                     tooltip="New Folder",
                     on_click=lambda _: self._show_create_folder_dialog(),
                     icon_size=28,
-                    icon_color=ModernTheme.ACCENT_PRIMARY,
+                    icon_color=LightTheme.ACCENT_PRIMARY,
                 ),
                 ft.IconButton(
                     ft.Icons.REFRESH_ROUNDED,
                     tooltip="Refresh",
                     on_click=lambda _: self.load_secrets(),
                     icon_size=28,
-                    icon_color=ModernTheme.TEXT_SECONDARY,
+                    icon_color=LightTheme.TEXT_SECONDARY,
                 ),
                 ft.IconButton(
                     ft.Icons.LOGOUT_ROUNDED,
                     tooltip="Logout",
                     on_click=lambda _: self.logout(),
                     icon_size=28,
-                    icon_color=ModernTheme.ACCENT_ERROR,
+                    icon_color=LightTheme.ACCENT_ERROR,
                 ),
             ],
         )
@@ -1573,14 +1772,14 @@ class VaultApp:
             prefix_icon=ft.Icons.SEARCH_ROUNDED,
             border_radius=8,
             filled=True,
-            bgcolor=SleekTheme.BG_ELEVATED,
-            border_color=SleekTheme.BORDER_COLOR,
-            focused_border_color=SleekTheme.ACCENT_PRIMARY,
-            color=SleekTheme.TEXT_PRIMARY,
-            text_size=SleekTheme.FONT_SIZE_BASE,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
+            color=LightTheme.TEXT_PRIMARY,
+            text_size=LightTheme.FONT_SIZE_BASE,
             on_change=self.on_search_change,
             expand=True,
-            height=SleekTheme.INPUT_HEIGHT,
+            height=LightTheme.INPUT_HEIGHT,
         )
 
         # Sleek filter dropdown
@@ -1594,10 +1793,10 @@ class VaultApp:
             ],
             on_change=self.on_filter_change,
             border_radius=8,
-            bgcolor=SleekTheme.BG_ELEVATED,
-            color=SleekTheme.TEXT_PRIMARY,
-            focused_border_color=SleekTheme.ACCENT_PRIMARY,
-            text_size=SleekTheme.FONT_SIZE_BASE,
+            bgcolor=LightTheme.BG_ELEVATED,
+            color=LightTheme.TEXT_PRIMARY,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
+            text_size=LightTheme.FONT_SIZE_BASE,
         )
 
         # Search row
@@ -1606,18 +1805,18 @@ class VaultApp:
                 self.search_field,
                 self.type_filter,
             ],
-            spacing=SleekTheme.SPACING_MD,
+            spacing=LightTheme.SPACING_MD,
         )
 
         # Secrets list
         self.secrets_list = ft.Column(
-            spacing=SleekTheme.SPACING_MD,
+            spacing=LightTheme.SPACING_MD,
             scroll=ft.ScrollMode.AUTO,
             expand=True,
         )
 
         # Stats row
-        self.stats_text = ft.Text("", size=SleekTheme.FONT_SIZE_XS, color=SleekTheme.TEXT_MUTED, weight=ft.FontWeight.W_500)
+        self.stats_text = ft.Text("", size=LightTheme.FONT_SIZE_XS, color=LightTheme.TEXT_MUTED, weight=ft.FontWeight.W_500)
 
         # Modern sidebar navigation
         self.sidebar = ModernSidebar(
@@ -1631,17 +1830,17 @@ class VaultApp:
             content=ft.Column(
                 [
                     search_row,
-                    ft.Container(height=SleekTheme.SPACING_LG),
+                    ft.Container(height=LightTheme.SPACING_LG),
                     self.secrets_list,
-                    ft.Container(height=SleekTheme.SPACING_LG),
+                    ft.Container(height=LightTheme.SPACING_LG),
                     self.stats_text,
                 ],
                 spacing=0,
                 expand=True,
             ),
-            padding=ft.padding.all(SleekTheme.PADDING_XL),
+            padding=ft.padding.all(LightTheme.PADDING_XL),
             expand=True,
-            bgcolor=SleekTheme.BG_PRIMARY,
+            bgcolor=LightTheme.BG_PRIMARY,
         )
 
         # Layout with modern divider
@@ -1787,38 +1986,38 @@ class VaultApp:
                                     content=ft.Icon(
                                         ft.Icons.LOCK_OPEN_ROUNDED,
                                         size=48,
-                                        color=SleekTheme.TEXT_MUTED,
+                                        color=LightTheme.TEXT_MUTED,
                                     ),
                                     padding=16,
                                     border_radius=12,
-                                    bgcolor=SleekTheme.BG_ELEVATED,
+                                    bgcolor=LightTheme.BG_ELEVATED,
                                 ),
-                                ft.Container(height=SleekTheme.SPACING_LG),
+                                ft.Container(height=LightTheme.SPACING_LG),
                                 ft.Text(
                                     "Your vault is empty",
-                                    size=SleekTheme.FONT_SIZE_LG,
+                                    size=LightTheme.FONT_SIZE_LG,
                                     weight=ft.FontWeight.W_600,
-                                    color=SleekTheme.TEXT_PRIMARY,
+                                    color=LightTheme.TEXT_PRIMARY,
                                 ),
-                                ft.Container(height=SleekTheme.SPACING_SM),
+                                ft.Container(height=LightTheme.SPACING_SM),
                                 ft.Text(
                                     "Add your first secret to get started",
-                                    size=SleekTheme.FONT_SIZE_BASE,
-                                    color=SleekTheme.TEXT_SECONDARY,
+                                    size=LightTheme.FONT_SIZE_BASE,
+                                    color=LightTheme.TEXT_SECONDARY,
                                     text_align=ft.TextAlign.CENTER,
                                 ),
-                                ft.Container(height=SleekTheme.SPACING_XL),
+                                ft.Container(height=LightTheme.SPACING_XL),
                                 ft.ElevatedButton(
                                     "Add Secret",
                                     icon=ft.Icons.ADD_ROUNDED,
                                     on_click=lambda e: self.show_add_dialog(e, default_type="secret"),
                                     style=ft.ButtonStyle(
-                                        bgcolor=SleekTheme.ACCENT_PRIMARY,
+                                        bgcolor=LightTheme.ACCENT_PRIMARY,
                                         color="white",
                                         shape=ft.RoundedRectangleBorder(radius=8),
-                                        padding=ft.padding.symmetric(horizontal=SleekTheme.PADDING_LG, vertical=SleekTheme.PADDING_SM),
+                                        padding=ft.padding.symmetric(horizontal=LightTheme.PADDING_LG, vertical=LightTheme.PADDING_SM),
                                     ),
-                                    height=SleekTheme.BUTTON_HEIGHT_MD,
+                                    height=LightTheme.BUTTON_HEIGHT_MD,
                                 ),
                             ],
                             horizontal_alignment=ft.CrossAxisAlignment.CENTER,
@@ -1847,13 +2046,13 @@ class VaultApp:
         icon_bg = ft.Container(
             content=ft.Icon(
                 ft.Icons.KEY_ROUNDED if data_type == 'secret' else ft.Icons.LIGHTBULB_ROUNDED,
-                color=SleekTheme.TEXT_PRIMARY,
-                size=SleekTheme.ICON_SIZE_SM
+                color=LightTheme.TEXT_PRIMARY,
+                size=LightTheme.ICON_SIZE_SM
             ),
             width=36,
             height=36,
             border_radius=8,
-            bgcolor=SleekTheme.BG_ELEVATED,
+            bgcolor=LightTheme.BG_ELEVATED,
             alignment=ft.alignment.center,
         )
 
@@ -1870,10 +2069,10 @@ class VaultApp:
         status_badge = None
         if training_status:
             status_colors = {
-                "pending": SleekTheme.ACCENT_WARNING,
-                "training": SleekTheme.ACCENT_PRIMARY,
-                "completed": SleekTheme.ACCENT_SUCCESS,
-                "failed": SleekTheme.ACCENT_ERROR
+                "pending": LightTheme.ACCENT_WARNING,
+                "training": LightTheme.ACCENT_PRIMARY,
+                "completed": LightTheme.ACCENT_SUCCESS,
+                "failed": LightTheme.ACCENT_ERROR
             }
             status_icons = {
                 "pending": ft.Icons.HOURGLASS_EMPTY_ROUNDED,
@@ -1881,7 +2080,7 @@ class VaultApp:
                 "completed": ft.Icons.CHECK_CIRCLE_ROUNDED,
                 "failed": ft.Icons.ERROR_ROUNDED
             }
-            status_color = status_colors.get(training_status, SleekTheme.TEXT_MUTED)
+            status_color = status_colors.get(training_status, LightTheme.TEXT_MUTED)
             status_icon = status_icons.get(training_status, ft.Icons.INFO_ROUNDED)
             
             status_badge = ft.Container(
@@ -1890,7 +2089,7 @@ class VaultApp:
                         ft.Icon(status_icon, size=10, color=status_color),
                         ft.Text(
                             training_status.title(),
-                            size=SleekTheme.FONT_SIZE_XS,
+                            size=LightTheme.FONT_SIZE_XS,
                             weight=ft.FontWeight.W_500,
                             color=status_color
                         )
@@ -1908,11 +2107,11 @@ class VaultApp:
         regular_tags = [t for t in tags if not t.startswith("training_")]
         tag_chips = [
             ft.Container(
-                content=ft.Text(tag, size=SleekTheme.FONT_SIZE_XS, weight=ft.FontWeight.W_500, color=SleekTheme.TEXT_SECONDARY),
-                bgcolor=SleekTheme.BG_HOVER,
+                content=ft.Text(tag, size=LightTheme.FONT_SIZE_XS, weight=ft.FontWeight.W_500, color=LightTheme.TEXT_SECONDARY),
+                bgcolor=LightTheme.BG_HOVER,
                 padding=ft.padding.symmetric(horizontal=6, vertical=3),
                 border_radius=6,
-                border=ft.border.all(1, SleekTheme.BORDER_COLOR),
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
             )
             for tag in regular_tags[:3]  # Show max 3 tags
         ]
@@ -1928,8 +2127,8 @@ class VaultApp:
                 ft.Icons.VISIBILITY_ROUNDED,
                 tooltip="View",
                 on_click=lambda _, e=entry: self.view_secret(e),
-                icon_color=SleekTheme.TEXT_SECONDARY,
-                icon_size=SleekTheme.ICON_SIZE_SM,
+                icon_color=LightTheme.TEXT_SECONDARY,
+                icon_size=LightTheme.ICON_SIZE_SM,
             ),
         ]
         
@@ -1940,8 +2139,8 @@ class VaultApp:
                     ft.Icons.TRAIN_ROUNDED,
                     tooltip="Train Model",
                     on_click=lambda _, e=entry: self._offer_training_from_entry(e),
-                    icon_color=SleekTheme.ACCENT_WARNING,
-                    icon_size=SleekTheme.ICON_SIZE_SM,
+                    icon_color=LightTheme.ACCENT_WARNING,
+                    icon_size=LightTheme.ICON_SIZE_SM,
                 )
             )
         
@@ -1950,8 +2149,8 @@ class VaultApp:
                 ft.Icons.DELETE_OUTLINE_ROUNDED,
                 tooltip="Delete",
                 on_click=lambda _, e=entry: self.delete_secret(e),
-                icon_color=SleekTheme.ACCENT_ERROR,
-                icon_size=SleekTheme.ICON_SIZE_SM,
+                icon_color=LightTheme.ACCENT_ERROR,
+                icon_size=LightTheme.ICON_SIZE_SM,
             )
         )
 
@@ -1961,34 +2160,34 @@ class VaultApp:
                 content=ft.Row(
                     [
                         icon_bg,
-                        ft.Container(width=SleekTheme.SPACING_MD),
+                        ft.Container(width=LightTheme.SPACING_MD),
                         ft.Column(
                             [
                                 ft.Text(
                                     service,
                                     weight=ft.FontWeight.W_600,
-                                    size=SleekTheme.FONT_SIZE_MD,
-                                    color=SleekTheme.TEXT_PRIMARY
+                                    size=LightTheme.FONT_SIZE_MD,
+                                    color=LightTheme.TEXT_PRIMARY
                                 ),
                                 ft.Container(height=4),
-                                ft.Row(tag_row_items, spacing=SleekTheme.SPACING_XS) if tag_row_items else ft.Container(),
+                                ft.Row(tag_row_items, spacing=LightTheme.SPACING_XS) if tag_row_items else ft.Container(),
                             ],
                             spacing=0,
                             expand=True,
                         ),
                         ft.Row(
                             action_buttons,
-                            spacing=SleekTheme.SPACING_XS,
+                            spacing=LightTheme.SPACING_XS,
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                 ),
-                padding=SleekTheme.CARD_PADDING,
-                bgcolor=SleekTheme.BG_ELEVATED,
-                border_radius=SleekTheme.CARD_BORDER_RADIUS,
-                border=ft.border.all(1, SleekTheme.BORDER_COLOR),
+                padding=LightTheme.CARD_PADDING,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=LightTheme.CARD_BORDER_RADIUS,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
             ),
-            margin=ft.margin.only(bottom=SleekTheme.SPACING_MD),
+            margin=ft.margin.only(bottom=LightTheme.SPACING_MD),
             animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
 
@@ -2012,34 +2211,34 @@ class VaultApp:
             service_field = ft.TextField(
                 label="Service (e.g., stripe, github)",
                 border_radius=8,
-                bgcolor=ModernTheme.BG_ELEVATED,
-                border_color=ModernTheme.BORDER_COLOR,
-                focused_border_color=ModernTheme.ACCENT_PRIMARY,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_color=LightTheme.BORDER_COLOR,
+                focused_border_color=LightTheme.ACCENT_PRIMARY,
             )
             content_field = ft.TextField(
                 label="Secret / Knowledge",
                 password=True,
                 multiline=True,
                 border_radius=8,
-                bgcolor=ModernTheme.BG_ELEVATED,
-                border_color=ModernTheme.BORDER_COLOR,
-                focused_border_color=ModernTheme.ACCENT_PRIMARY,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_color=LightTheme.BORDER_COLOR,
+                focused_border_color=LightTheme.ACCENT_PRIMARY,
             )
             tags_field = ft.TextField(
                 label="Tags (comma-separated)",
                 hint_text="payment, production",
                 border_radius=8,
-                bgcolor=ModernTheme.BG_ELEVATED,
-                border_color=ModernTheme.BORDER_COLOR,
-                focused_border_color=ModernTheme.ACCENT_PRIMARY,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_color=LightTheme.BORDER_COLOR,
+                focused_border_color=LightTheme.ACCENT_PRIMARY,
             )
             description_field = ft.TextField(
                 label="Description (optional)",
                 multiline=True,
                 border_radius=8,
-                bgcolor=ModernTheme.BG_ELEVATED,
-                border_color=ModernTheme.BORDER_COLOR,
-                focused_border_color=ModernTheme.ACCENT_PRIMARY,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_color=LightTheme.BORDER_COLOR,
+                focused_border_color=LightTheme.ACCENT_PRIMARY,
             )
 
             type_radio = ft.RadioGroup(
@@ -2064,9 +2263,9 @@ class VaultApp:
                         options=folder_options,
                         value="",  # Default to root
                         border_radius=8,
-                        bgcolor=ModernTheme.BG_ELEVATED,
-                        border_color=ModernTheme.BORDER_COLOR,
-                        focused_border_color=ModernTheme.ACCENT_PRIMARY,
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border_color=LightTheme.BORDER_COLOR,
+                        focused_border_color=LightTheme.ACCENT_PRIMARY,
                     )
 
             def close_dialog():
@@ -2092,7 +2291,7 @@ class VaultApp:
                     if not self.folder_manager.is_folder_unlocked(folder_name):
                         self.page.snack_bar = ft.SnackBar(
                             content=ft.Text(f"⚠️ Folder '{folder_name}' is locked. Please unlock it first."),
-                            bgcolor=ModernTheme.ACCENT_WARNING,
+                            bgcolor=LightTheme.ACCENT_WARNING,
                         )
                         self.page.snack_bar.open = True
                         self.page.update()
@@ -2119,7 +2318,7 @@ class VaultApp:
                 # Show success snackbar
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"✅ Added {service_field.value}"),
-                    bgcolor=ModernTheme.ACCENT_SUCCESS,
+                    bgcolor=LightTheme.ACCENT_SUCCESS,
                 )
                 self.page.snack_bar.open = True
 
@@ -2153,28 +2352,28 @@ class VaultApp:
                     "Add Entry",
                     size=20,
                     weight=ft.FontWeight.BOLD,
-                    color=ModernTheme.TEXT_PRIMARY,
+                    color=LightTheme.TEXT_PRIMARY,
                 ),
-                bgcolor=ModernTheme.BG_ELEVATED,
+                bgcolor=LightTheme.BG_ELEVATED,
                 content=dialog_content,
                 actions=[
                     ft.TextButton(
                         "Cancel",
                         on_click=lambda _: close_dialog(),
-                        style=ft.ButtonStyle(color=ModernTheme.TEXT_SECONDARY),
+                        style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
                     ),
                     ft.Container(
                         content=ft.ElevatedButton(
                             "Add",
                             icon=ft.Icons.ADD_ROUNDED,
                             style=ft.ButtonStyle(
-                                bgcolor=ModernTheme.ACCENT_PRIMARY,
+                                bgcolor=LightTheme.ACCENT_PRIMARY,
                                 color="white",
                                 shape=ft.RoundedRectangleBorder(radius=8),
                             ),
                             on_click=add_entry
                         ),
-                        gradient=ModernTheme.get_gradient(ModernTheme.GRADIENT_PRIMARY),
+                        gradient=LightTheme.get_gradient(LightTheme.GRADIENT_PRIMARY),
                         border_radius=8,
                     ),
                 ],
@@ -2191,7 +2390,7 @@ class VaultApp:
             user_msg, _ = make_user_friendly(str(ex), context="upload")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"❌ {user_msg}"),
-                bgcolor=ModernTheme.ACCENT_ERROR,
+                bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -2208,7 +2407,7 @@ class VaultApp:
             user_msg, _ = make_user_friendly(result['error'], context="vault")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"❌ {user_msg}"),
-                bgcolor=ModernTheme.ACCENT_ERROR,
+                bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -2241,12 +2440,12 @@ class VaultApp:
                     f"📄 PDF Document",
                     size=16,
                     weight=ft.FontWeight.BOLD,
-                    color=ModernTheme.TEXT_PRIMARY,
+                    color=LightTheme.TEXT_PRIMARY,
                 ),
                 ft.Text(
                     f"File Path: {file_path}",
                     size=12,
-                    color=ModernTheme.TEXT_MUTED,
+                    color=LightTheme.TEXT_MUTED,
                     selectable=True,
                 ),
                 ft.Container(height=12),
@@ -2255,7 +2454,7 @@ class VaultApp:
                     icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
                     on_click=lambda _: self._open_pdf_file(file_path),
                     style=ft.ButtonStyle(
-                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                        bgcolor=LightTheme.ACCENT_PRIMARY,
                         color="white",
                         shape=ft.RoundedRectangleBorder(radius=8),
                     ),
@@ -2264,7 +2463,7 @@ class VaultApp:
                 ft.Text(
                     "Content (Base64 encoded)",
                     size=12,
-                    color=ModernTheme.TEXT_MUTED,
+                    color=LightTheme.TEXT_MUTED,
                     weight=ft.FontWeight.W_500,
                 ),
                 ft.TextField(
@@ -2273,9 +2472,9 @@ class VaultApp:
                     read_only=True,
                     min_lines=3,
                     max_lines=8,
-                    bgcolor=ModernTheme.BG_ELEVATED,
-                    border_color=ModernTheme.BORDER_COLOR,
-                    color=ModernTheme.TEXT_PRIMARY,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                    border_color=LightTheme.BORDER_COLOR,
+                    color=LightTheme.TEXT_PRIMARY,
                     border_radius=8,
                 ),
             ]
@@ -2288,9 +2487,9 @@ class VaultApp:
                     read_only=True,
                     min_lines=3,
                     max_lines=10,
-                    bgcolor=ModernTheme.BG_ELEVATED,
-                    border_color=ModernTheme.BORDER_COLOR,
-                    color=ModernTheme.TEXT_PRIMARY,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                    border_color=LightTheme.BORDER_COLOR,
+                    color=LightTheme.TEXT_PRIMARY,
                     border_radius=8,
                 ),
             ]
@@ -2300,7 +2499,7 @@ class VaultApp:
                 content_widgets.insert(0, ft.Text(
                     f"⚠️ File not found: {file_path}",
                     size=12,
-                    color=ModernTheme.ACCENT_WARNING,
+                    color=LightTheme.ACCENT_WARNING,
                 ))
                 content_widgets.insert(1, ft.Container(height=8))
 
@@ -2310,7 +2509,7 @@ class VaultApp:
             self.page.set_clipboard(content)
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text("📋 Copied to clipboard"),
-                bgcolor=ModernTheme.ACCENT_SUCCESS,
+                bgcolor=LightTheme.ACCENT_SUCCESS,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -2324,16 +2523,16 @@ class VaultApp:
                 f"🔐 {service}",
                 size=20,
                 weight=ft.FontWeight.BOLD,
-                color=ModernTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
-            bgcolor=ModernTheme.BG_ELEVATED,
+            bgcolor=LightTheme.BG_ELEVATED,
             content=ft.Container(
                 content=ft.Column(
                     [
-                        ft.Text(f"Type: {data_type.title()}", size=12, color=ModernTheme.TEXT_MUTED),
-                        ft.Text(f"Tags: {', '.join(tags) if tags else 'None'}", size=12, color=ModernTheme.TEXT_MUTED),
-                        ft.Text(f"Description: {description}", size=12, color=ModernTheme.TEXT_MUTED),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
+                        ft.Text(f"Type: {data_type.title()}", size=12, color=LightTheme.TEXT_MUTED),
+                        ft.Text(f"Tags: {', '.join(tags) if tags else 'None'}", size=12, color=LightTheme.TEXT_MUTED),
+                        ft.Text(f"Description: {description}", size=12, color=LightTheme.TEXT_MUTED),
+                        ft.Divider(color=LightTheme.BORDER_COLOR),
                         content_field,
                     ],
                     spacing=12,
@@ -2345,20 +2544,20 @@ class VaultApp:
                 ft.TextButton(
                     "Close",
                     on_click=lambda _: close_dialog(),
-                    style=ft.ButtonStyle(color=ModernTheme.TEXT_SECONDARY),
+                    style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
                 ),
                 ft.Container(
                     content=ft.ElevatedButton(
                         "Copy",
                         icon=ft.Icons.COPY_ROUNDED,
                         style=ft.ButtonStyle(
-                            bgcolor=ModernTheme.ACCENT_PRIMARY,
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
                             color="white",
                             shape=ft.RoundedRectangleBorder(radius=8),
                         ),
                         on_click=copy_to_clipboard
                     ),
-                    gradient=ModernTheme.get_gradient(ModernTheme.GRADIENT_PRIMARY),
+                    gradient=LightTheme.get_gradient(LightTheme.GRADIENT_PRIMARY),
                     border_radius=8,
                 ),
             ],
@@ -2378,7 +2577,7 @@ class VaultApp:
 
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"🗑️ Deleted {service}"),
-                bgcolor=ModernTheme.ACCENT_ERROR,
+                bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
 
@@ -2391,13 +2590,25 @@ class VaultApp:
             self.page.update()
 
         dialog = ft.AlertDialog(
-            title=ft.Text("Confirm Delete"),
-            content=ft.Text(f"Are you sure you want to delete '{service}'? This cannot be undone."),
+            title=ft.Text(
+                "Confirm Delete",
+                color=LightTheme.TEXT_PRIMARY,
+            ),
+            content=ft.Text(
+                f"Are you sure you want to delete '{service}'? This cannot be undone.",
+                color=LightTheme.TEXT_SECONDARY,
+            ),
+            bgcolor=LightTheme.BG_ELEVATED,
             actions=[
-                ft.TextButton("Cancel", on_click=lambda _: close_dialog()),
+                ft.TextButton(
+                    "Cancel",
+                    on_click=lambda _: close_dialog(),
+                    style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
+                ),
                 ft.ElevatedButton(
                     "Delete",
-                    bgcolor="#f44336",
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                    color="white",
                     on_click=confirm_delete
                 ),
             ],
@@ -2424,7 +2635,7 @@ class VaultApp:
             logger.error(f"Failed to open PDF: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"❌ Failed to open PDF: {str(e)}"),
-                bgcolor=ModernTheme.ACCENT_ERROR,
+                bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -2459,8 +2670,8 @@ class VaultApp:
         
         expand_icon = ft.Icon(
             ft.Icons.EXPAND_LESS_ROUNDED if is_expanded_ref["value"] else ft.Icons.EXPAND_MORE_ROUNDED,
-            size=SleekTheme.ICON_SIZE_SM,
-            color=SleekTheme.TEXT_SECONDARY,
+            size=LightTheme.ICON_SIZE_SM,
+            color=LightTheme.TEXT_SECONDARY,
         )
         
         lock_icon = None
@@ -2468,14 +2679,14 @@ class VaultApp:
             if is_unlocked:
                 lock_icon = ft.Icon(
                     ft.Icons.LOCK_OPEN_ROUNDED,
-                    size=SleekTheme.ICON_SIZE_XS,
-                    color=SleekTheme.ACCENT_SUCCESS,
+                    size=LightTheme.ICON_SIZE_XS,
+                    color=LightTheme.ACCENT_SUCCESS,
                 )
             else:
                 lock_icon = ft.Icon(
                     ft.Icons.LOCK_ROUNDED,
-                    size=SleekTheme.ICON_SIZE_XS,
-                    color=SleekTheme.ACCENT_WARNING,
+                    size=LightTheme.ICON_SIZE_XS,
+                    color=LightTheme.ACCENT_WARNING,
                 )
         
         folder_header = ft.Container(
@@ -2484,39 +2695,39 @@ class VaultApp:
                     expand_icon,
                     ft.Icon(
                         ft.Icons.FOLDER_ROUNDED,
-                        size=SleekTheme.ICON_SIZE_SM,
-                        color=SleekTheme.ACCENT_PRIMARY,
+                        size=LightTheme.ICON_SIZE_SM,
+                        color=LightTheme.ACCENT_PRIMARY,
                     ),
                     ft.Text(
                         folder_name,
                         weight=ft.FontWeight.W_600,
-                        size=SleekTheme.FONT_SIZE_MD,
-                        color=SleekTheme.TEXT_PRIMARY,
+                        size=LightTheme.FONT_SIZE_MD,
+                        color=LightTheme.TEXT_PRIMARY,
                     ),
                     lock_icon,
-                    ft.Container(width=SleekTheme.SPACING_SM),
+                    ft.Container(width=LightTheme.SPACING_SM),
                     ft.Text(
                         f"({len(entries)} items)",
-                        size=SleekTheme.FONT_SIZE_XS,
-                        color=SleekTheme.TEXT_MUTED,
+                        size=LightTheme.FONT_SIZE_XS,
+                        color=LightTheme.TEXT_MUTED,
                     ),
                 ],
-                spacing=SleekTheme.SPACING_SM,
+                spacing=LightTheme.SPACING_SM,
             ),
-            padding=SleekTheme.PADDING_SM,
-            bgcolor=SleekTheme.BG_ELEVATED,
-            border_radius=SleekTheme.CARD_BORDER_RADIUS,
+            padding=LightTheme.PADDING_SM,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=LightTheme.CARD_BORDER_RADIUS,
             on_click=toggle_folder,
-            border=ft.border.all(1, SleekTheme.BORDER_COLOR),
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
         )
         
         # Entries container (initially visible if unlocked)
         entries_container = ft.Container(
             content=ft.Column(
                 [self.create_secret_card(entry) for entry in entries],
-                spacing=SleekTheme.SPACING_XS,
+                spacing=LightTheme.SPACING_XS,
             ),
-            padding=ft.padding.only(left=SleekTheme.PADDING_LG, top=SleekTheme.PADDING_SM),
+            padding=ft.padding.only(left=LightTheme.PADDING_LG, top=LightTheme.PADDING_SM),
             visible=is_expanded_ref["value"],
         )
         
@@ -2525,7 +2736,7 @@ class VaultApp:
                 [folder_header, entries_container],
                 spacing=0,
             ),
-            margin=ft.margin.only(bottom=SleekTheme.SPACING_MD),
+            margin=ft.margin.only(bottom=LightTheme.SPACING_MD),
         )
     
     def _show_unlock_folder_dialog(self, folder_name: str):
@@ -2534,9 +2745,9 @@ class VaultApp:
             label="Folder Password",
             password=True,
             border_radius=8,
-            bgcolor=ModernTheme.BG_ELEVATED,
-            border_color=ModernTheme.BORDER_COLOR,
-            focused_border_color=ModernTheme.ACCENT_PRIMARY,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
             autofocus=True,
         )
         
@@ -2556,7 +2767,7 @@ class VaultApp:
                 
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"✅ Folder '{folder_name}' unlocked"),
-                    bgcolor=ModernTheme.ACCENT_SUCCESS,
+                    bgcolor=LightTheme.ACCENT_SUCCESS,
                 )
                 self.page.snack_bar.open = True
                 self.page.update()
@@ -2574,16 +2785,16 @@ class VaultApp:
                 f"🔒 Unlock Folder",
                 size=20,
                 weight=ft.FontWeight.BOLD,
-                color=ModernTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
-            bgcolor=ModernTheme.BG_ELEVATED,
+            bgcolor=LightTheme.BG_ELEVATED,
             content=ft.Container(
                 content=ft.Column(
                     [
                         ft.Text(
                             f"Folder '{folder_name}' is password protected.",
                             size=14,
-                            color=ModernTheme.TEXT_SECONDARY,
+                            color=LightTheme.TEXT_SECONDARY,
                         ),
                         ft.Container(height=12),
                         password_field,
@@ -2597,13 +2808,13 @@ class VaultApp:
                 ft.TextButton(
                     "Cancel",
                     on_click=lambda _: close_dialog(),
-                    style=ft.ButtonStyle(color=ModernTheme.TEXT_SECONDARY),
+                    style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
                 ),
                 ft.ElevatedButton(
                     "Unlock",
                     icon=ft.Icons.LOCK_OPEN_ROUNDED,
                     style=ft.ButtonStyle(
-                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                        bgcolor=LightTheme.ACCENT_PRIMARY,
                         color="white",
                         shape=ft.RoundedRectangleBorder(radius=8),
                     ),
@@ -2622,9 +2833,9 @@ class VaultApp:
         folder_name_field = ft.TextField(
             label="Folder Name",
             border_radius=8,
-            bgcolor=ModernTheme.BG_ELEVATED,
-            border_color=ModernTheme.BORDER_COLOR,
-            focused_border_color=ModernTheme.ACCENT_PRIMARY,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
             autofocus=True,
         )
         
@@ -2632,9 +2843,9 @@ class VaultApp:
             label="Password (optional)",
             password=True,
             border_radius=8,
-            bgcolor=ModernTheme.BG_ELEVATED,
-            border_color=ModernTheme.BORDER_COLOR,
-            focused_border_color=ModernTheme.ACCENT_PRIMARY,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
             hint_text="Leave empty for no password",
         )
         
@@ -2642,9 +2853,9 @@ class VaultApp:
             label="Description (optional)",
             multiline=True,
             border_radius=8,
-            bgcolor=ModernTheme.BG_ELEVATED,
-            border_color=ModernTheme.BORDER_COLOR,
-            focused_border_color=ModernTheme.ACCENT_PRIMARY,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
         )
         
         def create_folder(e):
@@ -2672,7 +2883,7 @@ class VaultApp:
                 
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"✅ Folder '{folder_name}' created"),
-                    bgcolor=ModernTheme.ACCENT_SUCCESS,
+                    bgcolor=LightTheme.ACCENT_SUCCESS,
                 )
                 self.page.snack_bar.open = True
                 self.page.update()
@@ -2683,7 +2894,7 @@ class VaultApp:
                 logger.error(f"Failed to create folder: {ex}")
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"❌ Failed to create folder: {str(ex)}"),
-                    bgcolor=ModernTheme.ACCENT_ERROR,
+                    bgcolor=LightTheme.ACCENT_ERROR,
                 )
                 self.page.snack_bar.open = True
                 self.page.update()
@@ -2697,9 +2908,9 @@ class VaultApp:
                 "📁 Create Folder",
                 size=20,
                 weight=ft.FontWeight.BOLD,
-                color=ModernTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
-            bgcolor=ModernTheme.BG_ELEVATED,
+            bgcolor=LightTheme.BG_ELEVATED,
             content=ft.Container(
                 content=ft.Column(
                     [
@@ -2716,13 +2927,13 @@ class VaultApp:
                 ft.TextButton(
                     "Cancel",
                     on_click=lambda _: close_dialog(),
-                    style=ft.ButtonStyle(color=ModernTheme.TEXT_SECONDARY),
+                    style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
                 ),
                 ft.ElevatedButton(
                     "Create",
                     icon=ft.Icons.ADD_ROUNDED,
                     style=ft.ButtonStyle(
-                        bgcolor=ModernTheme.ACCENT_PRIMARY,
+                        bgcolor=LightTheme.ACCENT_PRIMARY,
                         color="white",
                         shape=ft.RoundedRectangleBorder(radius=8),
                     ),
@@ -2788,6 +2999,8 @@ class VaultApp:
                 self.show_statistics()
             elif index == 5:  # Settings
                 self.show_settings()
+            elif index == 6:  # LangChain Policies
+                self.show_langchain_policies()
         
         self.page.update()
 
@@ -2808,12 +3021,12 @@ class VaultApp:
                 "📋 Access Activity",
                 size=24,
                 weight=ft.FontWeight.BOLD,
-                color=ModernTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
             ft.Text(
                 "Recent vault access from Claude Desktop and other MCP clients",
                 size=14,
-                color=ModernTheme.TEXT_SECONDARY,
+                color=LightTheme.TEXT_SECONDARY,
             ),
             ft.Container(height=16),
         ]
@@ -2828,7 +3041,7 @@ class VaultApp:
                                 content=ft.Icon(
                                     ft.Icons.HISTORY_ROUNDED,
                                     size=60,
-                                    color=ModernTheme.TEXT_MUTED,
+                                    color=LightTheme.TEXT_MUTED,
                                 ),
                                 padding=20,
                             ),
@@ -2837,12 +3050,12 @@ class VaultApp:
                                 "No activity yet",
                                 size=18,
                                 weight=ft.FontWeight.BOLD,
-                                color=ModernTheme.TEXT_PRIMARY,
+                                color=LightTheme.TEXT_PRIMARY,
                             ),
                             ft.Text(
                                 "Activity from Claude Desktop will appear here",
                                 size=14,
-                                color=ModernTheme.TEXT_SECONDARY,
+                                color=LightTheme.TEXT_SECONDARY,
                                 text_align=ft.TextAlign.CENTER,
                             ),
                         ],
@@ -2881,7 +3094,7 @@ class VaultApp:
                 tool_icon = tool_icons.get(tool_name, ft.Icons.SETTINGS_ROUNDED)
                 
                 # Status color
-                status_color = ModernTheme.ACCENT_SUCCESS if granted else ModernTheme.ACCENT_ERROR
+                status_color = LightTheme.ACCENT_SUCCESS if granted else LightTheme.ACCENT_ERROR
                 status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if granted else ft.Icons.CANCEL_ROUNDED
                 
                 activity_items.append(
@@ -2894,12 +3107,12 @@ class VaultApp:
                                             content=ft.Icon(
                                                 tool_icon,
                                                 size=20,
-                                                color=ModernTheme.ACCENT_PRIMARY,
+                                                color=LightTheme.ACCENT_PRIMARY,
                                             ),
                                             width=40,
                                             height=40,
                                             border_radius=8,
-                                            bgcolor=ModernTheme.BG_ELEVATED,
+                                            bgcolor=LightTheme.BG_ELEVATED,
                                             alignment=ft.alignment.center,
                                         ),
                                         ft.Container(width=12),
@@ -2911,7 +3124,7 @@ class VaultApp:
                                                             tool_name.replace('vault_', '').replace('_', ' ').title(),
                                                             size=14,
                                                             weight=ft.FontWeight.BOLD,
-                                                            color=ModernTheme.TEXT_PRIMARY,
+                                                            color=LightTheme.TEXT_PRIMARY,
                                                         ),
                                                         ft.Container(width=8),
                                                         ft.Container(
@@ -2939,18 +3152,18 @@ class VaultApp:
                                                 ft.Text(
                                                     f"From: {app_name} • {time_str}",
                                                     size=12,
-                                                    color=ModernTheme.TEXT_SECONDARY,
+                                                    color=LightTheme.TEXT_SECONDARY,
                                                 ),
                                                 ft.Container(height=4),
                                                 ft.Text(
                                                     query_preview if query_preview else f"Operation: {tool_name}",
                                                     size=12,
-                                                    color=ModernTheme.TEXT_MUTED,
+                                                    color=LightTheme.TEXT_MUTED,
                                                 ),
                                                 ft.Text(
                                                     result_summary if result_summary else "",
                                                     size=12,
-                                                    color=ModernTheme.ACCENT_SUCCESS,
+                                                    color=LightTheme.ACCENT_SUCCESS,
                                                     weight=ft.FontWeight.W_500,
                                                 ) if result_summary else ft.Container(),
                                             ],
@@ -2964,9 +3177,9 @@ class VaultApp:
                             spacing=0,
                         ),
                         padding=16,
-                        bgcolor=ModernTheme.BG_ELEVATED,
+                        bgcolor=LightTheme.BG_ELEVATED,
                         border_radius=12,
-                        border=ft.border.all(1, ModernTheme.BORDER_COLOR),
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
                     )
                 )
                 activity_items.append(ft.Container(height=12))
@@ -2980,7 +3193,7 @@ class VaultApp:
                         icon=ft.Icons.REFRESH_ROUNDED,
                         on_click=lambda _: self.show_activity_view(),
                         style=ft.ButtonStyle(
-                            bgcolor=ModernTheme.ACCENT_PRIMARY,
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
                             color="white",
                             shape=ft.RoundedRectangleBorder(radius=8),
                         ),
@@ -2990,7 +3203,7 @@ class VaultApp:
                         icon=ft.Icons.DELETE_ROUNDED,
                         on_click=lambda _: self._clear_activity_log(),
                         style=ft.ButtonStyle(
-                            bgcolor=ModernTheme.ACCENT_ERROR,
+                            bgcolor=LightTheme.ACCENT_ERROR,
                             color="white",
                             shape=ft.RoundedRectangleBorder(radius=8),
                         ),
@@ -3016,7 +3229,7 @@ class VaultApp:
             
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text("✅ Activity log cleared"),
-                bgcolor=ModernTheme.ACCENT_SUCCESS,
+                bgcolor=LightTheme.ACCENT_SUCCESS,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -3027,7 +3240,7 @@ class VaultApp:
             logger.error(f"Failed to clear activity log: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"❌ Failed to clear log: {str(e)}"),
-                bgcolor=ModernTheme.ACCENT_ERROR,
+                bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -3048,42 +3261,42 @@ class VaultApp:
                             "📊 Vault Statistics",
                             size=24,
                             weight=ft.FontWeight.BOLD,
-                            color=ModernTheme.TEXT_PRIMARY,
+                            color=LightTheme.TEXT_PRIMARY,
                         ),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
+                        ft.Divider(color=LightTheme.BORDER_COLOR),
                         ft.Text(
                             f"Total Entries: {layer1['total_entries']}",
                             size=16,
-                            color=ModernTheme.TEXT_PRIMARY,
+                            color=LightTheme.TEXT_PRIMARY,
                         ),
                         ft.Text(
                             f"Services: {', '.join(layer1['services']) if layer1['services'] else 'None'}",
                             size=14,
-                            color=ModernTheme.TEXT_SECONDARY,
+                            color=LightTheme.TEXT_SECONDARY,
                         ),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
+                        ft.Divider(color=LightTheme.BORDER_COLOR),
                         ft.Text(
                             "Layer 1: Encrypted KV",
                             size=16,
                             weight=ft.FontWeight.BOLD,
-                            color=ModernTheme.TEXT_PRIMARY,
+                            color=LightTheme.TEXT_PRIMARY,
                         ),
                         ft.Text(
                             f"  Entries: {layer1['total_entries']}",
                             size=14,
-                            color=ModernTheme.TEXT_SECONDARY,
+                            color=LightTheme.TEXT_SECONDARY,
                         ),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
+                        ft.Divider(color=LightTheme.BORDER_COLOR),
                         ft.Text(
                             "Layer 2: DoRA",
                             size=16,
                             weight=ft.FontWeight.BOLD,
-                            color=ModernTheme.TEXT_PRIMARY,
+                            color=LightTheme.TEXT_PRIMARY,
                         ),
                         ft.Text(
                             f"  Status: {'Active' if layer2['initialized'] else 'Not configured'}",
                             size=14,
-                            color=ModernTheme.TEXT_SECONDARY,
+                            color=LightTheme.TEXT_SECONDARY,
                         ),
                     ],
                     spacing=12,
@@ -3091,6 +3304,717 @@ class VaultApp:
                 padding=24,
             )
         )
+        self.page.update()
+
+    def show_langchain_policies(self):
+        """Show LangChain policies management view."""
+        self.current_view = "langchain_policies"
+        self.secrets_list.controls.clear()
+        
+        # Check authentication
+        if not self.session_data:
+            self.secrets_list.controls.append(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Text(
+                                "🔒 Authentication Required",
+                                size=24,
+                                weight=ft.FontWeight.BOLD,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                            ft.Text(
+                                "Please log in to manage LangChain policies",
+                                size=14,
+                                color=LightTheme.TEXT_SECONDARY,
+                            ),
+                        ],
+                        spacing=12,
+                    ),
+                    padding=24,
+                )
+            )
+            self.page.update()
+            return
+        
+        # Get access token
+        access_token = self.session_data.get("access_token")
+        if not access_token:
+            # Try to refresh token
+            try:
+                from cloud_sync import CloudSyncService
+                if self.cloud_sync:
+                    # CloudSyncService handles token refresh
+                    access_token = self.cloud_sync._get_access_token()
+            except Exception as e:
+                logger.error(f"Failed to get access token: {e}")
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        
+        # Fetch policies from backend
+        policies = []
+        try:
+            response = requests.get(
+                f"{self.backend_url}/api/langchain/policies",
+                headers=headers,
+                timeout=10
+            )
+            
+            if response.status_code == 401:
+                # Token expired, try to refresh
+                if self.cloud_sync:
+                    self.cloud_sync._refresh_token_if_needed()
+                    access_token = self.cloud_sync._get_access_token()
+                    headers["Authorization"] = f"Bearer {access_token}"
+                    response = requests.get(
+                        f"{self.backend_url}/api/langchain/policies",
+                        headers=headers,
+                        timeout=10
+                    )
+            
+            if response.status_code == 200:
+                policies = response.json().get("policies", [])
+        except Exception as e:
+            logger.error(f"Failed to fetch policies: {e}")
+        
+        # Build UI
+        policy_items = [
+            ft.Row(
+                [
+                    ft.Text(
+                        "🔐 LangChain Policies",
+                        size=24,
+                        weight=ft.FontWeight.BOLD,
+                        color=LightTheme.TEXT_PRIMARY,
+                    ),
+                    ft.Container(expand=True),
+                    ft.ElevatedButton(
+                        "➕ Create Policy",
+                        icon=ft.Icons.ADD_ROUNDED,
+                        on_click=lambda _: self._show_create_policy_dialog(headers),
+                        style=ft.ButtonStyle(
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
+                            color="white",
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                    ),
+                ],
+                spacing=12,
+            ),
+            ft.Text(
+                "Manage access policies for LangChain agents and other automated systems",
+                size=14,
+                color=LightTheme.TEXT_SECONDARY,
+            ),
+            ft.Container(height=16),
+        ]
+        
+        if not policies:
+            # Empty state
+            policy_items.append(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Container(
+                                content=ft.Icon(
+                                    ft.Icons.SECURITY_ROUNDED,
+                                    size=60,
+                                    color=LightTheme.TEXT_MUTED,
+                                ),
+                                padding=20,
+                            ),
+                            ft.Container(height=16),
+                            ft.Text(
+                                "No policies yet",
+                                size=18,
+                                weight=ft.FontWeight.BOLD,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                            ft.Text(
+                                "Create your first policy to control LangChain agent access",
+                                size=14,
+                                color=LightTheme.TEXT_SECONDARY,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=0,
+                    ),
+                    padding=40,
+                    alignment=ft.alignment.center,
+                )
+            )
+        else:
+            # Show policies
+            for policy in policies:
+                policy_id = policy.get("id")
+                policy_name = policy.get("policy_name", "Unnamed")
+                agent_identifier = policy.get("agent_identifier", "")
+                enabled = policy.get("enabled", True)
+                secret_rules = policy.get("secret_rules", [])
+                knowledge_rules = policy.get("knowledge_rules", [])
+                rate_limits = policy.get("rate_limits", {})
+                
+                # Count rules
+                secret_rules_count = len(secret_rules)
+                knowledge_rules_count = len(knowledge_rules)
+                
+                # Rate limit info
+                max_hour = rate_limits.get("max_requests_per_hour", 100) if rate_limits else 100
+                max_day = rate_limits.get("max_requests_per_day", 1000) if rate_limits else 1000
+                
+                policy_items.append(
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Container(
+                                            content=ft.Icon(
+                                                ft.Icons.SECURITY_ROUNDED if enabled else ft.Icons.SECURITY_OUTLINED,
+                                                size=24,
+                                                color=LightTheme.ACCENT_PRIMARY if enabled else LightTheme.TEXT_MUTED,
+                                            ),
+                                            width=40,
+                                            height=40,
+                                            border_radius=8,
+                                            bgcolor=LightTheme.ACCENT_BLUE_LIGHT if enabled else LightTheme.BG_ELEVATED,
+                                            alignment=ft.alignment.center,
+                                        ),
+                                        ft.Container(width=12),
+                                        ft.Column(
+                                            [
+                                                ft.Text(
+                                                    policy_name,
+                                                    size=16,
+                                                    weight=ft.FontWeight.BOLD,
+                                                    color=LightTheme.TEXT_PRIMARY,
+                                                ),
+                                                ft.Text(
+                                                    f"Agent: {agent_identifier}",
+                                                    size=12,
+                                                    color=LightTheme.TEXT_SECONDARY,
+                                                ),
+                                            ],
+                                            spacing=4,
+                                            expand=True,
+                                        ),
+                                        ft.Container(
+                                            content=ft.Row(
+                                                [
+                                                    ft.Text(
+                                                        "Enabled" if enabled else "Disabled",
+                                                        size=12,
+                                                        color=LightTheme.ACCENT_SUCCESS if enabled else LightTheme.TEXT_MUTED,
+                                                        weight=ft.FontWeight.W_500,
+                                                    ),
+                                                ],
+                                                spacing=8,
+                                            ),
+                                            padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                            bgcolor=(LightTheme.ACCENT_SUCCESS + "20") if enabled else LightTheme.BG_ELEVATED,
+                                            border_radius=8,
+                                        ),
+                                        ft.IconButton(
+                                            icon=ft.Icons.EDIT_ROUNDED,
+                                            icon_size=20,
+                                            tooltip="Edit",
+                                            on_click=lambda e, pid=policy_id: self._show_edit_policy_dialog(pid, headers),
+                                        ),
+                                        ft.IconButton(
+                                            icon=ft.Icons.DELETE_ROUNDED,
+                                            icon_size=20,
+                                            tooltip="Delete",
+                                            icon_color=LightTheme.ACCENT_ERROR,
+                                            on_click=lambda e, pid=policy_id: self._delete_policy(pid, headers),
+                                        ),
+                                    ],
+                                    spacing=0,
+                                ),
+                                ft.Container(height=12),
+                                ft.Row(
+                                    [
+                                        ft.Container(
+                                            content=ft.Column(
+                                                [
+                                                    ft.Text(
+                                                        "Secrets",
+                                                        size=12,
+                                                        color=LightTheme.TEXT_SECONDARY,
+                                                    ),
+                                                    ft.Text(
+                                                        f"{secret_rules_count} rule(s)",
+                                                        size=14,
+                                                        weight=ft.FontWeight.BOLD,
+                                                        color=LightTheme.TEXT_PRIMARY,
+                                                    ),
+                                                ],
+                                                spacing=2,
+                                            ),
+                                            padding=12,
+                                            bgcolor=LightTheme.BG_ELEVATED,
+                                            border_radius=8,
+                                        ),
+                                        ft.Container(
+                                            content=ft.Column(
+                                                [
+                                                    ft.Text(
+                                                        "Knowledge",
+                                                        size=12,
+                                                        color=LightTheme.TEXT_SECONDARY,
+                                                    ),
+                                                    ft.Text(
+                                                        f"{knowledge_rules_count} rule(s)",
+                                                        size=14,
+                                                        weight=ft.FontWeight.BOLD,
+                                                        color=LightTheme.TEXT_PRIMARY,
+                                                    ),
+                                                ],
+                                                spacing=2,
+                                            ),
+                                            padding=12,
+                                            bgcolor=LightTheme.BG_ELEVATED,
+                                            border_radius=8,
+                                        ),
+                                        ft.Container(
+                                            content=ft.Column(
+                                                [
+                                                    ft.Text(
+                                                        "Rate Limits",
+                                                        size=12,
+                                                        color=LightTheme.TEXT_SECONDARY,
+                                                    ),
+                                                    ft.Text(
+                                                        f"{max_hour}/hr, {max_day}/day",
+                                                        size=14,
+                                                        weight=ft.FontWeight.BOLD,
+                                                        color=LightTheme.TEXT_PRIMARY,
+                                                    ),
+                                                ],
+                                                spacing=2,
+                                            ),
+                                            padding=12,
+                                            bgcolor=LightTheme.BG_ELEVATED,
+                                            border_radius=8,
+                                        ),
+                                    ],
+                                    spacing=12,
+                                ),
+                            ],
+                            spacing=0,
+                        ),
+                        padding=16,
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border_radius=12,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    )
+                )
+                policy_items.append(ft.Container(height=12))
+        
+        # Add refresh button
+        policy_items.append(
+            ft.Row(
+                [
+                    ft.ElevatedButton(
+                        "🔄 Refresh",
+                        icon=ft.Icons.REFRESH_ROUNDED,
+                        on_click=lambda _: self.show_langchain_policies(),
+                        style=ft.ButtonStyle(
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
+                            color="white",
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                    ),
+                ],
+                spacing=12,
+            )
+        )
+        
+        self.secrets_list.controls.append(
+            ft.Container(
+                content=ft.Column(policy_items, spacing=0),
+                padding=24,
+            )
+        )
+        self.page.update()
+
+    def _show_create_policy_dialog(self, headers: dict):
+        """Show dialog to create a new policy."""
+        policy_name_field = ft.TextField(
+            label="Policy Name",
+            hint_text="e.g., langchain-general",
+            autofocus=True,
+        )
+        agent_identifier_field = ft.TextField(
+            label="Agent Identifier Pattern",
+            hint_text="e.g., langchain-* or my-bot-v1",
+            helper_text="Use * for wildcards (e.g., langchain-* matches all agents starting with 'langchain-')",
+        )
+        
+        # Secret rules (simplified - allow all or specific services)
+        secret_rule_type = ft.Dropdown(
+            label="Secret Access",
+            options=[
+                ft.dropdown.Option("allow_all", "Allow All Secrets"),
+                ft.dropdown.Option("allow_services", "Allow Specific Services"),
+            ],
+            value="allow_services",
+        )
+        secret_services_field = ft.TextField(
+            label="Services (comma-separated)",
+            hint_text="e.g., openai, anthropic, github",
+            visible=True,
+        )
+        
+        def on_secret_rule_change(e):
+            secret_services_field.visible = (secret_rule_type.value == "allow_services")
+            dialog.content.update()
+        
+        secret_rule_type.on_change = on_secret_rule_change
+        
+        # Knowledge rules (simplified - allow all)
+        knowledge_rule_type = ft.Dropdown(
+            label="Knowledge Access",
+            options=[
+                ft.dropdown.Option("allow_all", "Allow All Adapters"),
+            ],
+            value="allow_all",
+        )
+        
+        # Rate limits
+        rate_limit_hour = ft.TextField(
+            label="Max Requests/Hour",
+            value="100",
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        rate_limit_day = ft.TextField(
+            label="Max Requests/Day",
+            value="1000",
+            keyboard_type=ft.KeyboardType.NUMBER,
+        )
+        
+        def create_policy(e):
+            try:
+                policy_name = policy_name_field.value.strip()
+                agent_identifier = agent_identifier_field.value.strip()
+                
+                if not policy_name or not agent_identifier:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("Policy name and agent identifier are required"),
+                        bgcolor=LightTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                    return
+                
+                # Build secret rules
+                secret_rules = []
+                if secret_rule_type.value == "allow_all":
+                    secret_rules.append({
+                        "rule_type": "allow_all",
+                        "rule_value": {},
+                        "priority": 0
+                    })
+                elif secret_rule_type.value == "allow_services":
+                    services = [s.strip() for s in secret_services_field.value.split(",") if s.strip()]
+                    if services:
+                        secret_rules.append({
+                            "rule_type": "allow_services",
+                            "rule_value": {"services": services},
+                            "priority": 0
+                        })
+                
+                # Build knowledge rules
+                knowledge_rules = []
+                if knowledge_rule_type.value == "allow_all":
+                    knowledge_rules.append({
+                        "rule_type": "allow_all",
+                        "rule_value": {},
+                        "priority": 0
+                    })
+                
+                # Build rate limits
+                rate_limits = {
+                    "max_requests_per_hour": int(rate_limit_hour.value or "100"),
+                    "max_requests_per_day": int(rate_limit_day.value or "1000"),
+                }
+                
+                # Create policy
+                policy_data = {
+                    "policy_name": policy_name,
+                    "agent_identifier": agent_identifier,
+                    "enabled": True,
+                    "secret_rules": secret_rules,
+                    "knowledge_rules": knowledge_rules,
+                    "rate_limits": rate_limits,
+                }
+                
+                response = requests.post(
+                    f"{self.backend_url}/api/langchain/policies",
+                    json=policy_data,
+                    headers=headers,
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("✅ Policy created successfully"),
+                        bgcolor=LightTheme.ACCENT_SUCCESS,
+                    )
+                    self.page.snack_bar.open = True
+                    dialog.open = False
+                    self.page.update()
+                    self.show_langchain_policies()
+                else:
+                    error_msg = response.json().get("detail", "Failed to create policy")
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ {error_msg}"),
+                        bgcolor=LightTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+            except Exception as ex:
+                logger.error(f"Failed to create policy: {ex}")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Error: {str(ex)}"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+        
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Create LangChain Policy"),
+            content=ft.Container(
+                content=ft.Column(
+                    [
+                        policy_name_field,
+                        agent_identifier_field,
+                        ft.Container(height=12),
+                        secret_rule_type,
+                        secret_services_field,
+                        ft.Container(height=12),
+                        knowledge_rule_type,
+                        ft.Container(height=12),
+                        ft.Text("Rate Limits", size=14, weight=ft.FontWeight.BOLD),
+                        rate_limit_hour,
+                        rate_limit_day,
+                    ],
+                    spacing=8,
+                    scroll=ft.ScrollMode.AUTO,
+                    height=500,
+                ),
+                width=500,
+            ),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda _: setattr(dialog, "open", False) or self.page.update()),
+                ft.ElevatedButton(
+                    "Create",
+                    on_click=create_policy,
+                    style=ft.ButtonStyle(
+                        bgcolor=LightTheme.ACCENT_PRIMARY,
+                        color="white",
+                    ),
+                ),
+            ],
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
+        self.page.update()
+
+    def _show_edit_policy_dialog(self, policy_id: str, headers: dict):
+        """Show dialog to edit a policy."""
+        # Fetch policy details
+        try:
+            response = requests.get(
+                f"{self.backend_url}/api/langchain/policies",
+                headers=headers,
+                timeout=10
+            )
+            
+            if response.status_code != 200:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Failed to load policy"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            policies = response.json().get("policies", [])
+            policy = next((p for p in policies if p.get("id") == policy_id), None)
+            
+            if not policy:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Policy not found"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # For now, show a simple edit dialog (enable/disable, rate limits)
+            enabled_switch = ft.Switch(
+                label="Enabled",
+                value=policy.get("enabled", True),
+            )
+            
+            rate_limits = policy.get("rate_limits", {})
+            rate_limit_hour = ft.TextField(
+                label="Max Requests/Hour",
+                value=str(rate_limits.get("max_requests_per_hour", 100)),
+                keyboard_type=ft.KeyboardType.NUMBER,
+            )
+            rate_limit_day = ft.TextField(
+                label="Max Requests/Day",
+                value=str(rate_limits.get("max_requests_per_day", 1000)),
+                keyboard_type=ft.KeyboardType.NUMBER,
+            )
+            
+            def update_policy(e):
+                try:
+                    update_data = {
+                        "enabled": enabled_switch.value,
+                        "rate_limits": {
+                            "max_requests_per_hour": int(rate_limit_hour.value or "100"),
+                            "max_requests_per_day": int(rate_limit_day.value or "1000"),
+                        }
+                    }
+                    
+                    response = requests.patch(
+                        f"{self.backend_url}/api/langchain/policies/{policy_id}",
+                        json=update_data,
+                        headers=headers,
+                        timeout=10
+                    )
+                    
+                    if response.status_code == 200:
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text("✅ Policy updated successfully"),
+                            bgcolor=LightTheme.ACCENT_SUCCESS,
+                        )
+                        self.page.snack_bar.open = True
+                        dialog.open = False
+                        self.page.update()
+                        self.show_langchain_policies()
+                    else:
+                        error_msg = response.json().get("detail", "Failed to update policy")
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text(f"❌ {error_msg}"),
+                            bgcolor=LightTheme.ACCENT_ERROR,
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                except Exception as ex:
+                    logger.error(f"Failed to update policy: {ex}")
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ Error: {str(ex)}"),
+                        bgcolor=LightTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+            
+            dialog = ft.AlertDialog(
+                modal=True,
+                title=ft.Text(f"Edit Policy: {policy.get('policy_name', 'Unknown')}"),
+                content=ft.Container(
+                    content=ft.Column(
+                        [
+                            enabled_switch,
+                            ft.Container(height=12),
+                            ft.Text("Rate Limits", size=14, weight=ft.FontWeight.BOLD),
+                            rate_limit_hour,
+                            rate_limit_day,
+                        ],
+                        spacing=8,
+                    ),
+                    width=400,
+                ),
+                actions=[
+                    ft.TextButton("Cancel", on_click=lambda _: setattr(dialog, "open", False) or self.page.update()),
+                    ft.ElevatedButton(
+                        "Save",
+                        on_click=update_policy,
+                        style=ft.ButtonStyle(
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
+                            color="white",
+                        ),
+                    ),
+                ],
+            )
+            
+            self.page.dialog = dialog
+            dialog.open = True
+            self.page.update()
+            
+        except Exception as ex:
+            logger.error(f"Failed to show edit dialog: {ex}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Error: {str(ex)}"),
+                bgcolor=LightTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+
+    def _delete_policy(self, policy_id: str, headers: dict):
+        """Delete a policy."""
+        def confirm_delete(e):
+            try:
+                response = requests.delete(
+                    f"{self.backend_url}/api/langchain/policies/{policy_id}",
+                    headers=headers,
+                    timeout=10
+                )
+                
+                if response.status_code == 200:
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text("✅ Policy deleted successfully"),
+                        bgcolor=LightTheme.ACCENT_SUCCESS,
+                    )
+                    self.page.snack_bar.open = True
+                    dialog.open = False
+                    self.page.update()
+                    self.show_langchain_policies()
+                else:
+                    error_msg = response.json().get("detail", "Failed to delete policy")
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ {error_msg}"),
+                        bgcolor=LightTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+            except Exception as ex:
+                logger.error(f"Failed to delete policy: {ex}")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Error: {str(ex)}"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+        
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Delete Policy"),
+            content=ft.Text("Are you sure you want to delete this policy? This action cannot be undone."),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda _: setattr(dialog, "open", False) or self.page.update()),
+                ft.ElevatedButton(
+                    "Delete",
+                    on_click=confirm_delete,
+                    style=ft.ButtonStyle(
+                        bgcolor=LightTheme.ACCENT_ERROR,
+                        color="white",
+                    ),
+                ),
+            ],
+        )
+        
+        self.page.dialog = dialog
+        dialog.open = True
         self.page.update()
 
     def show_knowledge_view(self):
@@ -3113,13 +4037,13 @@ class VaultApp:
                 icon=ft.Icons.UPLOAD_FILE_ROUNDED,
                 on_click=self._on_upload_click,
                 style=ft.ButtonStyle(
-                    bgcolor=ModernTheme.ACCENT_PRIMARY,
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
                     color="white",
                     shape=ft.RoundedRectangleBorder(radius=12),
                     padding=ft.padding.symmetric(horizontal=24, vertical=12),
                 ),
             ),
-            gradient=ModernTheme.get_gradient(ModernTheme.GRADIENT_PRIMARY),
+            gradient=LightTheme.get_gradient(LightTheme.GRADIENT_PRIMARY),
             border_radius=12,
         )
         
@@ -3130,7 +4054,7 @@ class VaultApp:
                 icon=ft.Icons.ADD_ROUNDED,
                 on_click=lambda e: self.show_add_dialog(e, default_type="knowledge"),
                 style=ft.ButtonStyle(
-                    bgcolor=ModernTheme.ACCENT_SUCCESS,
+                    bgcolor=LightTheme.ACCENT_SUCCESS,
                     color="white",
                     shape=ft.RoundedRectangleBorder(radius=12),
                     padding=ft.padding.symmetric(horizontal=24, vertical=12),
@@ -3153,7 +4077,7 @@ class VaultApp:
                                     "📚 Knowledge Base",
                                     size=24,
                                     weight=ft.FontWeight.BOLD,
-                                    color=ModernTheme.TEXT_PRIMARY,
+                                    color=LightTheme.TEXT_PRIMARY,
                                 ),
                                 ft.Row(
                                     [
@@ -3165,13 +4089,13 @@ class VaultApp:
                             ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         ),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
+                        ft.Divider(color=LightTheme.BORDER_COLOR),
                         ft.Text(
                             "Upload PDF documents to extract knowledge and generate training data.",
                             size=14,
-                            color=ModernTheme.TEXT_MUTED
+                            color=LightTheme.TEXT_MUTED
                         ),
-                        ft.Divider(color=ModernTheme.BORDER_COLOR),
+                        ft.Divider(color=LightTheme.BORDER_COLOR),
                     ],
                     spacing=10,
                 ),
@@ -3191,7 +4115,7 @@ class VaultApp:
                 logger.error("PDF file picker not initialized")
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text("❌ File picker not initialized. Please restart the app."),
-                    bgcolor=ModernTheme.ACCENT_ERROR,
+                    bgcolor=LightTheme.ACCENT_ERROR,
                 )
                 self.page.snack_bar.open = True
                 self.page.update()
@@ -3274,7 +4198,7 @@ class VaultApp:
             user_msg, _ = make_user_friendly(str(ex), context="upload")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"❌ {user_msg}"),
-                bgcolor=ModernTheme.ACCENT_ERROR,
+                bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -3294,7 +4218,7 @@ class VaultApp:
         # Show processing indicator
         self.page.snack_bar = ft.SnackBar(
             content=ft.Text(f"📄 Processing {filename}..."),
-            bgcolor=ModernTheme.ACCENT_PRIMARY,
+            bgcolor=LightTheme.ACCENT_PRIMARY,
         )
         self.page.snack_bar.open = True
         self.page.update()
@@ -3306,11 +4230,24 @@ class VaultApp:
                 if self.pdf_processor is None:
                     self._initialize_pdf_processor()
                 
-                # Process PDF
-                result = self.pdf_processor.process_pdf(file_path)
+                # Copy PDF to a safe location before processing (file picker temp files may be deleted)
+                # Store in vault directory for persistence during training workflow
+                vault_data_dir = Path(self.vault_path) / "temp_pdfs"
+                vault_data_dir.mkdir(parents=True, exist_ok=True)
+                
+                # Create persistent copy with timestamp
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                safe_pdf_path = vault_data_dir / f"{timestamp}_{filename}"
+                
+                # Copy file to safe location
+                shutil.copy2(file_path, safe_pdf_path)
+                logger.info(f"Copied PDF to safe location: {safe_pdf_path}")
+                
+                # Process PDF from safe location
+                result = self.pdf_processor.process_pdf(str(safe_pdf_path))
                 
                 # Store PDF binary encrypted
-                with open(file_path, 'rb') as f:
+                with open(safe_pdf_path, 'rb') as f:
                     pdf_data = f.read()
                 
                 # Store as knowledge entry in Layer 1 (for now, until Layer 2 is fully implemented)
@@ -3318,7 +4255,7 @@ class VaultApp:
                 # Store file path in description for later retrieval
                 description_parts = [
                     f"PDF: {result['metadata']['page_count']} pages, {len(result['text_chunks'])} chunks",
-                    f"Path: {file_path}"  # Store original file path
+                    f"Path: {safe_pdf_path}"  # Store safe file path
                 ]
                 
                 entry_id = self.vault.kv_store.put(
@@ -3343,15 +4280,16 @@ class VaultApp:
                 def update_ui():
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Text(f"✅ Processed {filename}: {len(result['text_chunks'])} chunks"),
-                        bgcolor=ModernTheme.ACCENT_SUCCESS,
+                        bgcolor=LightTheme.ACCENT_SUCCESS,
                     )
                     self.page.snack_bar.open = True
                     self.page.update()
                     self.load_secrets()
                     
                     # Offer to generate Q&A and train model
+                    # Use safe_pdf_path instead of original file_path (which may be deleted)
                     if self.qa_generator and self.training_manager and len(result['text_chunks']) > 0:
-                        self._offer_training(filename, result['text_chunks'], pdf_path=file_path)
+                        self._offer_training(filename, result['text_chunks'], pdf_path=str(safe_pdf_path))
                 
                 # Schedule UI update on main thread
                 # Note: Flet's page.update() is thread-safe when called from background threads
@@ -3375,7 +4313,7 @@ class VaultApp:
                 def show_error():
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Text(f"❌ {user_msg}"),
-                        bgcolor=ModernTheme.ACCENT_ERROR,
+                        bgcolor=LightTheme.ACCENT_ERROR,
                     )
                     self.page.snack_bar.open = True
                     self.page.update()
@@ -3398,16 +4336,25 @@ class VaultApp:
         if not self.training_manager:
             dialog = ft.AlertDialog(
                 modal=True,
-                title=ft.Text("Training Service Not Available"),
+                title=ft.Text(
+                    "Training Service Not Available",
+                    color=LightTheme.TEXT_PRIMARY,
+                ),
                 content=ft.Text(
                     f"Training service failed to initialize.\n\n"
                     f"Please check:\n"
                     f"• Backend API availability\n"
                     f"• Network connection\n"
-                    f"• Your account status"
+                    f"• Your account status",
+                    color=LightTheme.TEXT_SECONDARY,
                 ),
+                bgcolor=LightTheme.BG_ELEVATED,
                 actions=[
-                    ft.TextButton("OK", on_click=lambda e: setattr(dialog, 'open', False) or self.page.update()),
+                    ft.TextButton(
+                        "OK",
+                        on_click=lambda e: setattr(dialog, 'open', False) or self.page.update(),
+                        style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
+                    ),
                 ],
             )
             self.page.overlay.append(dialog)
@@ -3434,9 +4381,9 @@ class VaultApp:
                 "Generate Training Model?",
                 size=20,
                 weight=ft.FontWeight.BOLD,
-                color=ModernTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
-            bgcolor=ModernTheme.BG_ELEVATED,
+            bgcolor=LightTheme.BG_ELEVATED,
             content=ft.Text(
                 f"Would you like to generate Q&A pairs from this PDF and train a personalized model?\n\n"
                 f"This will:\n"
@@ -3444,26 +4391,26 @@ class VaultApp:
                 f"• Train a DoRA adapter on your data\n"
                 f"• Store encrypted adapter in your vault\n\n"
                 f"Note: This may take several minutes.",
-                color=ModernTheme.TEXT_SECONDARY,
+                color=LightTheme.TEXT_SECONDARY,
             ),
             actions=[
                 ft.TextButton(
                     "No",
                     on_click=on_no,
-                    style=ft.ButtonStyle(color=ModernTheme.TEXT_SECONDARY),
+                    style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
                 ),
                 ft.Container(
                     content=ft.ElevatedButton(
                         "Yes, Generate Model",
                         icon=ft.Icons.AUTO_AWESOME_ROUNDED,
                         style=ft.ButtonStyle(
-                            bgcolor=ModernTheme.ACCENT_PRIMARY,
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
                             color="white",
                             shape=ft.RoundedRectangleBorder(radius=8),
                         ),
                         on_click=on_yes
                     ),
-                    gradient=ModernTheme.get_gradient(ModernTheme.GRADIENT_PRIMARY),
+                    gradient=LightTheme.get_gradient(LightTheme.GRADIENT_PRIMARY),
                     border_radius=8,
                 ),
             ],
@@ -3491,7 +4438,7 @@ class VaultApp:
             if not secret_value:
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"❌ Could not retrieve PDF data"),
-                    bgcolor=ModernTheme.ACCENT_ERROR,
+                    bgcolor=LightTheme.ACCENT_ERROR,
                 )
                 self.page.snack_bar.open = True
                 self.page.update()
@@ -3500,15 +4447,24 @@ class VaultApp:
             # Decode base64 PDF data
             pdf_data = base64.b64decode(secret_value)
             
-            # Write to temporary file for processing
-            with tempfile.NamedTemporaryFile(suffix='.pdf', delete=False) as tmp_file:
-                tmp_path = tmp_file.name
-                tmp_file.write(pdf_data)
+            # Write to persistent location (not tempfile) so it exists during training workflow
+            vault_data_dir = Path(self.vault_path) / "temp_pdfs"
+            vault_data_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Create persistent copy with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            safe_pdf_path = vault_data_dir / f"{timestamp}_{service}"
+            
+            # Write PDF data to persistent location
+            with open(safe_pdf_path, 'wb') as f:
+                f.write(pdf_data)
+            
+            logger.info(f"Saved PDF to persistent location: {safe_pdf_path}")
             
             # Process PDF to get text chunks
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"📄 Processing {service}..."),
-                bgcolor=ModernTheme.ACCENT_PRIMARY,
+                bgcolor=LightTheme.ACCENT_PRIMARY,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -3517,17 +4473,18 @@ class VaultApp:
             if self.pdf_processor is None:
                 self._initialize_pdf_processor()
             
-            result = self.pdf_processor.process_pdf(tmp_path)
+            result = self.pdf_processor.process_pdf(str(safe_pdf_path))
             
-            # Offer training with the extracted chunks
-            self._offer_training(service, result['text_chunks'])
+            # Offer training with the extracted chunks and PDF path
+            # Pass safe_pdf_path so synthetic generation can use it (persists during training)
+            self._offer_training(service, result['text_chunks'], pdf_path=str(safe_pdf_path))
             
         except Exception as ex:
             logger.error(f"Error extracting PDF for training: {ex}")
             user_msg, _ = make_user_friendly(str(ex), context="training")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"❌ {user_msg}"),
-                bgcolor=ModernTheme.ACCENT_ERROR,
+                bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -3557,15 +4514,15 @@ class VaultApp:
             "Preparing your document...",
             size=16,
             weight=ft.FontWeight.BOLD,
-            color=SleekTheme.TEXT_PRIMARY,
+            color=LightTheme.TEXT_PRIMARY,
         )
         
         # Progress bar
         progress_bar = ft.ProgressBar(
             width=dialog_width - 80,
             value=0.0,
-            color=SleekTheme.ACCENT_PRIMARY,
-            bgcolor=SleekTheme.BG_ELEVATED,
+            color=LightTheme.ACCENT_PRIMARY,
+            bgcolor=LightTheme.BG_ELEVATED,
             bar_height=10,
         )
         
@@ -3573,7 +4530,7 @@ class VaultApp:
         phase_status = ft.Text(
             "",
             size=13,
-            color=SleekTheme.TEXT_SECONDARY,
+            color=LightTheme.TEXT_SECONDARY,
         )
         
         # Encryption indicator (always visible, reassuring)
@@ -3582,12 +4539,12 @@ class VaultApp:
                 ft.Icon(
                     ft.Icons.LOCK_ROUNDED,
                     size=16,
-                    color=SleekTheme.ACCENT_SUCCESS,
+                    color=LightTheme.ACCENT_SUCCESS,
                 ),
                 ft.Text(
                     "All data is encrypted end-to-end",
                     size=12,
-                    color=SleekTheme.ACCENT_SUCCESS,
+                    color=LightTheme.ACCENT_SUCCESS,
                     weight=ft.FontWeight.W_500,
                 ),
             ],
@@ -3617,13 +4574,13 @@ class VaultApp:
                                     f"🔐 Training Your AI Model",
                                     size=20,
                                     weight=ft.FontWeight.BOLD,
-                                    color=SleekTheme.TEXT_PRIMARY,
+                                    color=LightTheme.TEXT_PRIMARY,
                                 ),
                                 ft.Container(height=4),
                                 ft.Text(
                                     f"Document: {filename}",
                                     size=13,
-                                    color=SleekTheme.TEXT_SECONDARY,
+                                    color=LightTheme.TEXT_SECONDARY,
                                 ),
                             ],
                             spacing=0,
@@ -3659,9 +4616,9 @@ class VaultApp:
                     ft.Container(
                         content=encryption_indicator,
                         padding=ft.padding.symmetric(horizontal=12, vertical=8),
-                        bgcolor=SleekTheme.ACCENT_SUCCESS + "15",
+                        bgcolor=LightTheme.ACCENT_SUCCESS + "15",
                         border_radius=8,
-                        border=ft.border.all(1, SleekTheme.ACCENT_SUCCESS + "40"),
+                        border=ft.border.all(1, LightTheme.ACCENT_SUCCESS + "40"),
                     ),
                 ],
                 scroll=None,
@@ -3683,6 +4640,7 @@ class VaultApp:
             ),
             actions=[],
             actions_alignment=ft.MainAxisAlignment.END,
+            bgcolor=LightTheme.BG_ELEVATED,
             shape=ft.RoundedRectangleBorder(radius=16),
         )
         
@@ -3693,7 +4651,7 @@ class VaultApp:
         icon = ft.Icons.CHECK_CIRCLE_ROUNDED if completed else (
             ft.Icons.RADIO_BUTTON_UNCHECKED if step_index == 0 else ft.Icons.CIRCLE_OUTLINED
         )
-        icon_color = SleekTheme.ACCENT_SUCCESS if completed else SleekTheme.TEXT_MUTED
+        icon_color = LightTheme.ACCENT_SUCCESS if completed else LightTheme.TEXT_MUTED
         
         return ft.Container(
             content=ft.Row(
@@ -3706,7 +4664,7 @@ class VaultApp:
                     ft.Text(
                         label,
                         size=13,
-                        color=SleekTheme.TEXT_PRIMARY if completed else SleekTheme.TEXT_SECONDARY,
+                        color=LightTheme.TEXT_PRIMARY if completed else LightTheme.TEXT_SECONDARY,
                         weight=ft.FontWeight.W_500 if completed else ft.FontWeight.NORMAL,
                     ),
                 ],
@@ -3812,41 +4770,96 @@ class VaultApp:
                 
                 # Phase 2: Knowledge extraction (Q&A generation)
                 # Try synthetic generation first (automatic, 1000 samples)
-                use_synthetic = pdf_path and Path(pdf_path).exists() if pdf_path else False
+                use_synthetic = False
+                if pdf_path:
+                    pdf_file = Path(pdf_path)
+                    use_synthetic = pdf_file.exists() and pdf_file.is_file()
+                    logger.info(f"PDF path provided: {pdf_path}, exists: {use_synthetic}")
+                else:
+                    logger.warning("No PDF path provided - will use local Q&A generation")
+                
                 qa_pairs = []
                 dataset_encryption_key_hex = None
                 
                 if use_synthetic:
-                    # Use synthetic generation with Qwen3-235B (1000 samples)
+                    # Use synthetic generation with cloud endpoint (1000 samples)
                     try:
-                        def update_phase2_synthetic():
-                            self._update_training_phase(
-                                phase_text, progress_bar, phase_status, phase_steps,
-                                phase=1,
-                                message="💡 Generating knowledge with Qwen3-235B...",
-                                submessage="Creating 1,000+ high-quality Q&A pairs (All data encrypted)",
-                                progress=0.35
-                            )
-                        
-                        try:
-                            if hasattr(self.page, 'run_task'):
-                                self.page.run_task(update_phase2_synthetic)
+                        # Check if qa_generator is available
+                        if not self.qa_generator:
+                            logger.warning("QA generator not initialized - falling back to local generation")
+                            use_synthetic = False
+                        # Check if endpoint is configured
+                        elif not os.getenv("RUNPOD_QA_ENDPOINT_ID"):
+                            logger.warning("RUNPOD_QA_ENDPOINT_ID not configured - falling back to local generation")
+                            logger.info("To use cloud QA generation, set RUNPOD_QA_ENDPOINT_ID environment variable")
+                            use_synthetic = False
+                        else:
+                            # Check if API key is available for QA generation endpoint
+                            # Default behavior: RUNPOD_QA_API_KEY defaults to RUNPOD_API_KEY if not set
+                            # This ensures QA endpoint works by default when RUNPOD_API_KEY is set
+                            runpod_api_key = os.getenv("RUNPOD_API_KEY")
+                            qa_api_key = os.getenv("RUNPOD_QA_API_KEY")
+                            
+                            # Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default if not explicitly set
+                            # This ensures the QA endpoint is used by default
+                            if not qa_api_key and runpod_api_key:
+                                os.environ["RUNPOD_QA_API_KEY"] = runpod_api_key
+                                qa_api_key = runpod_api_key
+                                logger.debug("Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default")
+                            
+                            # Priority: RUNPOD_QA_API_KEY (now set by default) > constructor api_key > RUNPOD_API_KEY
+                            api_key = qa_api_key or (self.qa_generator.api_key if self.qa_generator else None) or runpod_api_key
+                            
+                            if not api_key:
+                                logger.warning("RunPod API key not configured - falling back to local generation")
+                                logger.info("To use cloud QA generation, set RUNPOD_QA_API_KEY or RUNPOD_API_KEY environment variable")
+                                use_synthetic = False
                             else:
-                                update_phase2_synthetic()
-                        except Exception:
-                            update_phase2_synthetic()
-                        
-                        logger.info("Using synthetic Q&A generation (Qwen3-235B-A22B-Instruct-2507)")
-                        qa_pairs, dataset_encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
-                            pdf_path=pdf_path,
-                            target_samples=1000,
-                            encryption_key_hex=None  # Generate new key
-                        )
-                        
-                        logger.info(f"✓ Generated {len(qa_pairs)} synthetic Q&A pairs")
-                        
+                                # Log which API key source is being used
+                                if qa_api_key == runpod_api_key and runpod_api_key:
+                                    logger.debug("Using RUNPOD_API_KEY (default) for QA generation via RUNPOD_QA_API_KEY")
+                                elif qa_api_key:
+                                    logger.debug("Using RUNPOD_QA_API_KEY for QA generation")
+                                elif runpod_api_key:
+                                    logger.debug("Using RUNPOD_API_KEY for QA generation")
+                                
+                                def update_phase2_synthetic():
+                                    self._update_training_phase(
+                                        phase_text, progress_bar, phase_status, phase_steps,
+                                        phase=1,
+                                        message="💡 Generating knowledge with cloud endpoint...",
+                                        submessage="Creating 1,000+ high-quality Q&A pairs (All data encrypted)",
+                                        progress=0.35
+                                    )
+                                
+                                try:
+                                    if hasattr(self.page, 'run_task'):
+                                        self.page.run_task(update_phase2_synthetic)
+                                    else:
+                                        update_phase2_synthetic()
+                                except Exception:
+                                    update_phase2_synthetic()
+                                
+                                logger.info("Using synthetic Q&A generation (cloud endpoint)")
+                                logger.info(f"PDF path: {pdf_path}, exists: {Path(pdf_path).exists()}")
+                                logger.info(f"QA Generation Endpoint: {os.getenv('RUNPOD_QA_ENDPOINT_ID', 'not configured')} (separate from inference endpoint)")
+                                logger.info(f"API key configured: {bool(api_key)}")
+                                
+                                qa_pairs, dataset_encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
+                                    pdf_path=pdf_path,
+                                    target_samples=1000,
+                                    encryption_key_hex=None  # Generate new key
+                                )
+                                
+                                logger.info(f"✓ Generated {len(qa_pairs)} synthetic Q&A pairs from cloud endpoint")
+                    
+                    except RuntimeError as e:
+                        logger.error(f"Synthetic generation failed: {e}")
+                        logger.warning("Falling back to local Q&A generation...")
+                        use_synthetic = False
                     except Exception as e:
-                        logger.warning(f"Synthetic generation failed: {e}. Falling back to local generation...")
+                        logger.error(f"Synthetic generation failed with unexpected error: {e}", exc_info=True)
+                        logger.warning("Falling back to local Q&A generation...")
                         use_synthetic = False
                 
                 if not use_synthetic:
@@ -3899,7 +4912,7 @@ class VaultApp:
                     def show_error():
                         self.page.snack_bar = ft.SnackBar(
                             content=ft.Text(f"❌ {user_msg}"),
-                            bgcolor=ModernTheme.ACCENT_ERROR,
+                            bgcolor=LightTheme.ACCENT_ERROR,
                         )
                         self.page.snack_bar.open = True
                         self.page.update()
@@ -4065,12 +5078,12 @@ class VaultApp:
                         ft.TextButton(
                             "Demo Query",
                             on_click=lambda e: self._show_demo_query_dialog(knowledge_id, encryption_key_hex, filename, progress_dialog),
-                            style=ft.ButtonStyle(color=SleekTheme.ACCENT_PRIMARY),
+                            style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
                         ),
                         ft.TextButton(
                             "Done",
                             on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update() or self.load_secrets(),
-                            style=ft.ButtonStyle(color=SleekTheme.TEXT_SECONDARY),
+                            style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
                         ),
                     ]
                     
@@ -4079,7 +5092,7 @@ class VaultApp:
                     # Show snackbar
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Text(f"✅ Training job submitted! Try Demo Query to test your knowledge."),
-                        bgcolor=SleekTheme.ACCENT_SUCCESS,
+                        bgcolor=LightTheme.ACCENT_SUCCESS,
                     )
                     self.page.snack_bar.open = True
                     self.page.update()
@@ -4107,7 +5120,7 @@ class VaultApp:
                         ft.TextButton(
                             "Close",
                             on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update(),
-                            style=ft.ButtonStyle(color=SleekTheme.ACCENT_ERROR),
+                            style=ft.ButtonStyle(color=LightTheme.ACCENT_ERROR),
                         ),
                     ]
                     self.page.update()
@@ -4115,7 +5128,7 @@ class VaultApp:
                     # Also show snackbar
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Text(f"❌ {user_msg}"),
-                        bgcolor=ModernTheme.ACCENT_ERROR,
+                        bgcolor=LightTheme.ACCENT_ERROR,
                     )
                     self.page.snack_bar.open = True
                     self.page.update()
@@ -4146,9 +5159,9 @@ class VaultApp:
             min_lines=2,
             max_lines=4,
             border_radius=8,
-            bgcolor=SleekTheme.BG_ELEVATED,
-            border_color=SleekTheme.BORDER_COLOR,
-            focused_border_color=SleekTheme.ACCENT_PRIMARY,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
             expand=True,
         )
         
@@ -4156,7 +5169,7 @@ class VaultApp:
         response_text = ft.Text(
             "",
             size=14,
-            color=SleekTheme.TEXT_PRIMARY,
+            color=LightTheme.TEXT_PRIMARY,
             selectable=True,
         )
         
@@ -4167,7 +5180,7 @@ class VaultApp:
                         "Response:",
                         size=12,
                         weight=ft.FontWeight.W_500,
-                        color=SleekTheme.TEXT_SECONDARY,
+                        color=LightTheme.TEXT_SECONDARY,
                     ),
                     ft.Container(height=8),
                     response_text,
@@ -4175,9 +5188,9 @@ class VaultApp:
                 spacing=0,
             ),
             padding=16,
-            bgcolor=SleekTheme.BG_ELEVATED,
+            bgcolor=LightTheme.BG_ELEVATED,
             border_radius=8,
-            border=ft.border.all(1, SleekTheme.BORDER_COLOR),
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
             visible=False,
         )
         
@@ -4186,7 +5199,7 @@ class VaultApp:
             content=ft.Row(
                 [
                     ft.ProgressRing(width=20, height=20, stroke_width=2),
-                    ft.Text("Asking your knowledge base...", size=12, color=SleekTheme.TEXT_SECONDARY),
+                    ft.Text("Asking your knowledge base...", size=12, color=LightTheme.TEXT_SECONDARY),
                 ],
                 spacing=12,
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -4201,7 +5214,7 @@ class VaultApp:
             if not query:
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text("Please enter a question"),
-                    bgcolor=SleekTheme.ACCENT_WARNING,
+                    bgcolor=LightTheme.ACCENT_WARNING,
                 )
                 self.page.snack_bar.open = True
                 self.page.update()
@@ -4309,7 +5322,7 @@ class VaultApp:
             icon=ft.Icons.SEND_ROUNDED,
             on_click=ask_query,
             style=ft.ButtonStyle(
-                bgcolor=SleekTheme.ACCENT_PRIMARY,
+                bgcolor=LightTheme.ACCENT_PRIMARY,
                 color="white",
             ),
         )
@@ -4321,7 +5334,7 @@ class VaultApp:
                 f"Demo Query - {filename}",
                 size=18,
                 weight=ft.FontWeight.BOLD,
-                color=SleekTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
             content=ft.Container(
                 content=ft.Column(
@@ -4329,7 +5342,7 @@ class VaultApp:
                         ft.Text(
                             "Ask your trained knowledge base a question about the document:",
                             size=13,
-                            color=SleekTheme.TEXT_SECONDARY,
+                            color=LightTheme.TEXT_SECONDARY,
                         ),
                         ft.Container(height=16),
                         query_field,
@@ -4400,18 +5413,18 @@ class VaultApp:
                         "🤖 Training Jobs",
                         size=24,
                         weight=ft.FontWeight.BOLD,
-                        color=ModernTheme.TEXT_PRIMARY,
+                        color=LightTheme.TEXT_PRIMARY,
                     ),
                     ft.IconButton(
                         ft.Icons.REFRESH_ROUNDED,
                         tooltip="Refresh",
                         on_click=lambda _: self.show_training_view(),
-                        icon_color=ModernTheme.TEXT_SECONDARY,
+                        icon_color=LightTheme.TEXT_SECONDARY,
                     ),
                 ],
                 alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             ),
-            ft.Divider(color=ModernTheme.BORDER_COLOR),
+            ft.Divider(color=LightTheme.BORDER_COLOR),
         ]
         
         if not jobs:
@@ -4419,7 +5432,7 @@ class VaultApp:
                 ft.Text(
                     "No training jobs yet. Upload a PDF and train a model to get started!",
                     size=14,
-                    color=ModernTheme.TEXT_MUTED
+                    color=LightTheme.TEXT_MUTED
                 )
             )
         else:
@@ -4431,12 +5444,12 @@ class VaultApp:
                 created_at = job.get("created_at", "")
                 
                 status_colors = {
-                    "pending": ModernTheme.ACCENT_WARNING,
-                    "training": ModernTheme.ACCENT_PRIMARY,
-                    "completed": ModernTheme.ACCENT_SUCCESS,
-                    "failed": ModernTheme.ACCENT_ERROR
+                    "pending": LightTheme.ACCENT_WARNING,
+                    "training": LightTheme.ACCENT_PRIMARY,
+                    "completed": LightTheme.ACCENT_SUCCESS,
+                    "failed": LightTheme.ACCENT_ERROR
                 }
-                status_color = status_colors.get(status, ModernTheme.TEXT_MUTED)
+                status_color = status_colors.get(status, LightTheme.TEXT_MUTED)
                 
                 job_card = ft.Container(
                     content=ft.Card(
@@ -4449,7 +5462,7 @@ class VaultApp:
                                                 f"Adapter: {adapter_id[:8]}...",
                                                 weight=ft.FontWeight.BOLD,
                                                 size=16,
-                                                color=ModernTheme.TEXT_PRIMARY
+                                                color=LightTheme.TEXT_PRIMARY
                                             ),
                                             ft.Container(
                                                 content=ft.Row(
@@ -4481,12 +5494,12 @@ class VaultApp:
                                     ft.Text(
                                         f"Job ID: {job_id}",
                                         size=12,
-                                        color=ModernTheme.TEXT_MUTED
+                                        color=LightTheme.TEXT_MUTED
                                     ),
                                     ft.Text(
                                         f"Created: {created_at[:10] if created_at else 'N/A'}",
                                         size=12,
-                                        color=ModernTheme.TEXT_MUTED
+                                        color=LightTheme.TEXT_MUTED
                                     ),
                                 ],
                                 spacing=4,
@@ -4494,7 +5507,7 @@ class VaultApp:
                             padding=16,
                         ),
                         elevation=2,
-                        color=ModernTheme.BG_ELEVATED,
+                        color=LightTheme.BG_ELEVATED,
                     ),
                     margin=ft.margin.only(bottom=12),
                 )
@@ -4688,58 +5701,58 @@ class VaultApp:
                 "⚙️ Settings",
                 size=24,
                 weight=ft.FontWeight.BOLD,
-                color=ModernTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
-            ft.Divider(color=ModernTheme.BORDER_COLOR),
+            ft.Divider(color=LightTheme.BORDER_COLOR),
             
             # Vault Info Section
             ft.Text(
                 "Vault Information",
                 size=18,
                 weight=ft.FontWeight.BOLD,
-                color=ModernTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
             ft.Text(
                 f"Vault Path: {self.vault_path}",
                 size=14,
-                color=ModernTheme.TEXT_SECONDARY,
+                color=LightTheme.TEXT_SECONDARY,
             ),
             ft.Text(
                 f"Master Key: {self.key_path}",
                 size=14,
-                color=ModernTheme.TEXT_SECONDARY,
+                color=LightTheme.TEXT_SECONDARY,
             ),
             ft.Text(
                 f"Database: {self.db_path}",
                 size=14,
-                color=ModernTheme.TEXT_SECONDARY,
+                color=LightTheme.TEXT_SECONDARY,
             ),
-            ft.Divider(color=ModernTheme.BORDER_COLOR),
+            ft.Divider(color=LightTheme.BORDER_COLOR),
             
             # Encryption Info
             ft.Text(
                 "Encryption: XChaCha20-Poly1305",
                 size=14,
-                color=ModernTheme.TEXT_SECONDARY,
+                color=LightTheme.TEXT_SECONDARY,
             ),
             ft.Text(
                 "Key Size: 32 bytes (256-bit)",
                 size=14,
-                color=ModernTheme.TEXT_SECONDARY,
+                color=LightTheme.TEXT_SECONDARY,
             ),
-            ft.Divider(color=ModernTheme.BORDER_COLOR),
+            ft.Divider(color=LightTheme.BORDER_COLOR),
             
             # Component Status Section
             ft.Text(
                 "🔧 Component Status",
                 size=18,
                 weight=ft.FontWeight.BOLD,
-                color=ModernTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
             ft.Text(
                 "Status of Enclave components and services",
                 size=12,
-                color=ModernTheme.TEXT_MUTED,
+                color=LightTheme.TEXT_MUTED,
             ),
             ft.Container(height=8),
         ]
@@ -4801,23 +5814,23 @@ class VaultApp:
             
             # Determine status color and icon
             if status_info["status"] == "ready":
-                status_color = SleekTheme.ACCENT_SUCCESS
+                status_color = LightTheme.ACCENT_SUCCESS
                 status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED
                 status_text = "Ready"
             elif status_info["status"] == "installing":
-                status_color = SleekTheme.ACCENT_PRIMARY
+                status_color = LightTheme.ACCENT_PRIMARY
                 status_icon = ft.Icons.DOWNLOADING_ROUNDED
                 status_text = status_info["message"]
             elif status_info["status"] == "checking":
-                status_color = SleekTheme.ACCENT_WARNING if "Setup required" in status_info.get("message", "") else SleekTheme.TEXT_MUTED
+                status_color = LightTheme.ACCENT_WARNING if "Setup required" in status_info.get("message", "") else LightTheme.TEXT_MUTED
                 status_icon = ft.Icons.DOWNLOAD_ROUNDED if "Setup required" in status_info.get("message", "") else ft.Icons.HOURGLASS_EMPTY_ROUNDED
                 status_text = status_info["message"]
             elif status_info["status"] == "error":
-                status_color = SleekTheme.ACCENT_ERROR
+                status_color = LightTheme.ACCENT_ERROR
                 status_icon = ft.Icons.ERROR_ROUNDED
                 status_text = "Error"
             else:
-                status_color = SleekTheme.TEXT_MUTED
+                status_color = LightTheme.TEXT_MUTED
                 status_icon = ft.Icons.HELP_OUTLINE_ROUNDED
                 status_text = "Unknown"
             
@@ -4828,7 +5841,7 @@ class VaultApp:
                         [
                             ft.Icon(
                                 component["icon"],
-                                color=SleekTheme.ACCENT_PRIMARY,
+                                color=LightTheme.ACCENT_PRIMARY,
                                 size=24,
                             ),
                             ft.Column(
@@ -4837,12 +5850,12 @@ class VaultApp:
                                         component["name"],
                                         size=14,
                                         weight=ft.FontWeight.W_600,
-                                        color=SleekTheme.TEXT_PRIMARY,
+                                        color=LightTheme.TEXT_PRIMARY,
                                     ),
                                     ft.Text(
                                         component["description"],
                                         size=11,
-                                        color=SleekTheme.TEXT_MUTED,
+                                        color=LightTheme.TEXT_MUTED,
                                     ),
                                 ],
                                 spacing=2,
@@ -4868,7 +5881,7 @@ class VaultApp:
                                         tooltip=self._get_qa_setup_tooltip(),
                                         visible=(component["status_key"] == "qa" and status_info["status"] != "ready" and status_info["status"] != "installing"),
                                         on_click=lambda e, key=component["status_key"]: self._setup_qa_model_with_progress() if key == "qa" else None,
-                                        icon_color=SleekTheme.ACCENT_PRIMARY,
+                                        icon_color=LightTheme.ACCENT_PRIMARY,
                                     ) if component["status_key"] == "qa" else ft.Container(width=0),
                                 ],
                                 spacing=6,
@@ -4879,12 +5892,12 @@ class VaultApp:
                     padding=12,
                 ),
                 elevation=1,
-                color=SleekTheme.BG_ELEVATED,
+                color=LightTheme.BG_ELEVATED,
             )
             
             settings_items.append(component_card)
         
-        settings_items.append(ft.Divider(color=ModernTheme.BORDER_COLOR))
+        settings_items.append(ft.Divider(color=LightTheme.BORDER_COLOR))
         
         # MCP Server Section
         settings_items.extend([
@@ -4892,19 +5905,19 @@ class VaultApp:
                 "🔌 MCP Server Integration",
                 size=18,
                 weight=ft.FontWeight.BOLD,
-                color=ModernTheme.TEXT_PRIMARY,
+                color=LightTheme.TEXT_PRIMARY,
             ),
             ft.Text(
                 "Connect your vault to Claude Desktop or ChatGPT",
                 size=12,
-                color=ModernTheme.TEXT_MUTED,
+                color=LightTheme.TEXT_MUTED,
             ),
             ft.Container(height=8),
         ])
         
         # MCP Status
         if mcp_status["claude_installed"]:
-            status_color = ModernTheme.ACCENT_SUCCESS if mcp_status["mcp_configured"] else ModernTheme.ACCENT_WARNING
+            status_color = LightTheme.ACCENT_SUCCESS if mcp_status["mcp_configured"] else LightTheme.ACCENT_WARNING
             status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if mcp_status["mcp_configured"] else ft.Icons.WARNING_ROUNDED
             status_text = "Configured" if mcp_status["mcp_configured"] else "Not Configured"
             
@@ -4926,11 +5939,11 @@ class VaultApp:
             settings_items.append(
                 ft.Row(
                     [
-                        ft.Icon(ft.Icons.INFO_ROUNDED, color=ModernTheme.TEXT_MUTED, size=20),
+                        ft.Icon(ft.Icons.INFO_ROUNDED, color=LightTheme.TEXT_MUTED, size=20),
                         ft.Text(
                             "Claude Desktop: Not Detected",
                             size=14,
-                            color=ModernTheme.TEXT_MUTED,
+                            color=LightTheme.TEXT_MUTED,
                         ),
                     ],
                     spacing=8,
@@ -4942,11 +5955,11 @@ class VaultApp:
             settings_items.append(
                 ft.Row(
                     [
-                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=ModernTheme.ACCENT_SUCCESS, size=16),
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=LightTheme.ACCENT_SUCCESS, size=16),
                         ft.Text(
                             f"MCP Server: {mcp_status['test_message']}",
                             size=12,
-                            color=ModernTheme.ACCENT_SUCCESS,
+                            color=LightTheme.ACCENT_SUCCESS,
                         ),
                     ],
                     spacing=8,
@@ -4956,11 +5969,11 @@ class VaultApp:
             settings_items.append(
                 ft.Row(
                     [
-                        ft.Icon(ft.Icons.ERROR_ROUNDED, color=ModernTheme.ACCENT_ERROR, size=16),
+                        ft.Icon(ft.Icons.ERROR_ROUNDED, color=LightTheme.ACCENT_ERROR, size=16),
                         ft.Text(
                             f"MCP Server: {mcp_status['test_message']}",
                             size=12,
-                            color=ModernTheme.ACCENT_ERROR,
+                            color=LightTheme.ACCENT_ERROR,
                         ),
                     ],
                     spacing=8,
@@ -4978,7 +5991,7 @@ class VaultApp:
             self.page.set_clipboard(config_json)
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text("📋 Config copied to clipboard! Paste into Claude Desktop config file."),
-                bgcolor=ModernTheme.ACCENT_SUCCESS,
+                bgcolor=LightTheme.ACCENT_SUCCESS,
             )
             self.page.snack_bar.open = True
             self.page.update()
@@ -4989,7 +6002,7 @@ class VaultApp:
                 icon=ft.Icons.COPY_ROUNDED,
                 on_click=copy_config,
                 style=ft.ButtonStyle(
-                    bgcolor=ModernTheme.ACCENT_PRIMARY,
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
                     color="white",
                     shape=ft.RoundedRectangleBorder(radius=8),
                 ),
@@ -5006,12 +6019,12 @@ class VaultApp:
                     if self.mcp_setup.write_config(merged):
                         self.page.snack_bar = ft.SnackBar(
                             content=ft.Text("✅ MCP server configured! Restart Claude Desktop to activate."),
-                            bgcolor=ModernTheme.ACCENT_SUCCESS,
+                            bgcolor=LightTheme.ACCENT_SUCCESS,
                         )
                     else:
                         self.page.snack_bar = ft.SnackBar(
                             content=ft.Text("❌ Failed to write config. Check permissions."),
-                            bgcolor=ModernTheme.ACCENT_ERROR,
+                            bgcolor=LightTheme.ACCENT_ERROR,
                         )
                     
                     self.page.snack_bar.open = True
@@ -5027,7 +6040,7 @@ class VaultApp:
                     logger.error(f"Auto-configure failed: {ex}")
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Text(f"❌ Error: {str(ex)}"),
-                        bgcolor=ModernTheme.ACCENT_ERROR,
+                        bgcolor=LightTheme.ACCENT_ERROR,
                     )
                     self.page.snack_bar.open = True
                     self.page.update()
@@ -5038,7 +6051,7 @@ class VaultApp:
                     icon=ft.Icons.AUTO_AWESOME_ROUNDED,
                     on_click=auto_configure,
                     style=ft.ButtonStyle(
-                        bgcolor=ModernTheme.ACCENT_SUCCESS,
+                        bgcolor=LightTheme.ACCENT_SUCCESS,
                         color="white",
                         shape=ft.RoundedRectangleBorder(radius=8),
                     ),
@@ -5048,7 +6061,7 @@ class VaultApp:
         # Test Connection Button
         def test_connection(e):
             success, message = self.mcp_setup.test_mcp_server()
-            color = ModernTheme.ACCENT_SUCCESS if success else ModernTheme.ACCENT_ERROR
+            color = LightTheme.ACCENT_SUCCESS if success else LightTheme.ACCENT_ERROR
             icon = ft.Icons.CHECK_CIRCLE_ROUNDED if success else ft.Icons.ERROR_ROUNDED
             
             self.page.snack_bar = ft.SnackBar(
@@ -5071,7 +6084,7 @@ class VaultApp:
                 icon=ft.Icons.PLAY_ARROW_ROUNDED,
                 on_click=test_connection,
                 style=ft.ButtonStyle(
-                    bgcolor=ModernTheme.ACCENT_PRIMARY,
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
                     color="white",
                     shape=ft.RoundedRectangleBorder(radius=8),
                 ),
@@ -5090,38 +6103,38 @@ class VaultApp:
         if mcp_status["config_path"]:
             settings_items.extend([
                 ft.Container(height=12),
-                ft.Divider(color=ModernTheme.BORDER_COLOR),
+                ft.Divider(color=LightTheme.BORDER_COLOR),
                 ft.Text(
                     "Setup Instructions",
                     size=16,
                     weight=ft.FontWeight.BOLD,
-                    color=ModernTheme.TEXT_PRIMARY,
+                    color=LightTheme.TEXT_PRIMARY,
                 ),
                 ft.Text(
                     f"1. Config file location:\n   {mcp_status['config_path']}",
                     size=12,
-                    color=ModernTheme.TEXT_SECONDARY,
+                    color=LightTheme.TEXT_SECONDARY,
                 ),
                 ft.Text(
                     "2. Click 'Auto-Configure' to set it up (or 'Copy Config' to paste manually)",
                     size=12,
-                    color=ModernTheme.TEXT_SECONDARY,
+                    color=LightTheme.TEXT_SECONDARY,
                 ),
                 ft.Text(
                     "3. ⚠️ IMPORTANT: Completely quit and restart Claude Desktop",
                     size=12,
-                    color=ModernTheme.ACCENT_WARNING,
+                    color=LightTheme.ACCENT_WARNING,
                     weight=ft.FontWeight.BOLD,
                 ),
                 ft.Text(
                     "4. After restart, look for 'Enclave' in your Connectors/Extensions list",
                     size=12,
-                    color=ModernTheme.TEXT_SECONDARY,
+                    color=LightTheme.TEXT_SECONDARY,
                 ),
                 ft.Text(
                     "5. Test by asking Claude: 'What tools do you have access to?'",
                     size=12,
-                    color=ModernTheme.TEXT_SECONDARY,
+                    color=LightTheme.TEXT_SECONDARY,
                 ),
             ])
         

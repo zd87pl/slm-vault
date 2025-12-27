@@ -24,7 +24,8 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir \
     sentencepiece>=0.1.99 \
     protobuf>=4.25.0 \
-    tokenizers>=0.15.0
+    tokenizers>=0.15.0 \
+    hf_transfer>=0.1.0
 
 # Copy application code (only src/ is required for synthetic QA handler)
 COPY src/ /workspace/src/
