@@ -19,7 +19,35 @@ from pathlib import Path
 from typing import Dict, Optional, Any, Callable
 from base64 import b64decode
 
+# Enable fast HuggingFace downloads (10-100x faster) BEFORE importing HF libraries
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+
 logger = logging.getLogger(__name__)
+
+def _ensure_fast_downloads():
+    """Ensure hf_transfer is installed for fast downloads."""
+    try:
+        import hf_transfer
+        logger.info("✓ hf_transfer available for fast downloads")
+        return True
+    except ImportError:
+        logger.info("Installing hf_transfer for faster downloads...")
+        try:
+            import subprocess
+            import sys
+            subprocess.check_call(
+                [sys.executable, "-m", "pip", "install", "hf_transfer", "-q"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            logger.info("✓ hf_transfer installed")
+            return True
+        except Exception as e:
+            logger.warning(f"Could not install hf_transfer (downloads will be slower): {e}")
+            return False
+
+# Try to enable fast downloads
+_ensure_fast_downloads()
 
 # Check for MLX (Apple Silicon) or PyTorch
 MLX_AVAILABLE = False
