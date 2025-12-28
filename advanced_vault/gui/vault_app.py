@@ -4167,7 +4167,6 @@ class VaultApp:
                             size=14,
                             color=LightTheme.TEXT_MUTED
                         ),
-                        ft.Divider(color=LightTheme.BORDER_COLOR),
                     ],
                     spacing=10,
                 ),
@@ -4175,9 +4174,164 @@ class VaultApp:
             )
         )
         
+        # Add "Trained Models" section - show adapters ready for inference
+        trained_models_section = self._build_trained_models_section()
+        if trained_models_section:
+            self.secrets_list.controls.append(trained_models_section)
+        
+        # Divider before knowledge entries
+        self.secrets_list.controls.append(
+            ft.Container(
+                content=ft.Column([
+                    ft.Divider(color=LightTheme.BORDER_COLOR),
+                    ft.Text(
+                        "📄 Uploaded Documents",
+                        size=16,
+                        weight=ft.FontWeight.W_600,
+                        color=LightTheme.TEXT_SECONDARY,
+                    ),
+                ], spacing=8),
+                padding=ft.padding.only(left=20, right=20, top=10, bottom=10),
+            )
+        )
+        
         # Load existing knowledge entries (these will be added after the header)
         self.load_secrets()
         self.page.update()
+    
+    def _build_trained_models_section(self) -> Optional[ft.Container]:
+        """Build a section showing trained models ready for inference."""
+        # Find all entries with completed training
+        from advanced_vault.encrypted_kv import QueryFilter
+        
+        trained_adapters = []
+        
+        try:
+            # Search all entries and filter for completed training
+            result = self.vault.kv_store.search(QueryFilter())
+            
+            for entry in result:
+                tags = entry.tags or []
+                training_status = None
+                training_job_id = None
+                training_key = None
+                
+                for tag in tags:
+                    if tag.startswith("training_status:"):
+                        training_status = tag.split(":", 1)[1]
+                    elif tag.startswith("training_job:"):
+                        training_job_id = tag.split(":", 1)[1]
+                    elif tag.startswith("training_key:"):
+                        training_key = tag.split(":", 1)[1]
+                
+                if training_status == "completed" and training_job_id and training_key:
+                    trained_adapters.append({
+                        "name": entry.service,
+                        "adapter_id": training_job_id,
+                        "encryption_key": training_key,
+                        "created": entry.created_at.strftime("%Y-%m-%d") if entry.created_at else "Unknown",
+                    })
+        except Exception as e:
+            logger.warning(f"Error loading trained adapters: {e}")
+        
+        if not trained_adapters:
+            return None
+        
+        # Build adapter cards
+        adapter_cards = []
+        for adapter in trained_adapters:
+            card = ft.Container(
+                content=ft.Row(
+                    [
+                        # Icon
+                        ft.Container(
+                            content=ft.Icon(
+                                ft.Icons.SMART_TOY_ROUNDED,
+                                color="#FFFFFF",
+                                size=20,
+                            ),
+                            width=40,
+                            height=40,
+                            border_radius=10,
+                            bgcolor=LightTheme.ACCENT_SUCCESS,
+                            alignment=ft.alignment.center,
+                        ),
+                        ft.Container(width=12),
+                        # Info
+                        ft.Column(
+                            [
+                                ft.Text(
+                                    adapter["name"],
+                                    size=14,
+                                    weight=ft.FontWeight.W_600,
+                                    color=LightTheme.TEXT_PRIMARY,
+                                ),
+                                ft.Text(
+                                    f"Trained {adapter['created']}",
+                                    size=11,
+                                    color=LightTheme.TEXT_MUTED,
+                                ),
+                            ],
+                            spacing=2,
+                            expand=True,
+                        ),
+                        # Ask button
+                        ft.ElevatedButton(
+                            "💬 Ask",
+                            on_click=lambda e, a=adapter: self._open_ask_dialog(
+                                a["adapter_id"], a["encryption_key"], a["name"]
+                            ),
+                            style=ft.ButtonStyle(
+                                bgcolor=LightTheme.ACCENT_PRIMARY,
+                                color="white",
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                                padding=ft.padding.symmetric(horizontal=16, vertical=8),
+                            ),
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.START,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                padding=12,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=12,
+                border=ft.border.all(1, LightTheme.ACCENT_SUCCESS + "40"),
+            )
+            adapter_cards.append(card)
+        
+        # Build section
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.SMART_TOY_ROUNDED, color=LightTheme.ACCENT_SUCCESS, size=20),
+                            ft.Container(width=8),
+                            ft.Text(
+                                f"🧠 Trained Models ({len(trained_adapters)})",
+                                size=16,
+                                weight=ft.FontWeight.W_600,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                        ],
+                    ),
+                    ft.Container(height=8),
+                    ft.Text(
+                        "Click 'Ask' to query your trained knowledge base",
+                        size=12,
+                        color=LightTheme.TEXT_MUTED,
+                    ),
+                    ft.Container(height=12),
+                    ft.Column(adapter_cards, spacing=8),
+                ],
+                spacing=0,
+            ),
+            padding=20,
+            bgcolor=LightTheme.ACCENT_SUCCESS + "08",
+            border_radius=12,
+            border=ft.border.all(1, LightTheme.ACCENT_SUCCESS + "20"),
+            margin=ft.margin.only(left=20, right=20, bottom=10),
+        )
 
     def _on_upload_click(self, e):
         """Handle upload button click."""
