@@ -1389,9 +1389,9 @@ class VaultApp:
         )
         
         # Full layout
-            self.page.add(
-                ft.Row(
-                    [
+        self.page.add(
+            ft.Row(
+                [
                     left_sidebar,
                     main_chat,
                 ],
