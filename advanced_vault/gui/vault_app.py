@@ -4853,10 +4853,9 @@ class VaultApp:
                     f"training_key:{encryption_key_hex}",
                 ]
                 
-                self.vault.kv_store.store(
+                self.vault.kv_store.put(
                     service=filename,
-                    username=f"Trained from: {filename}",
-                    password="[ENCRYPTED ADAPTER]",
+                    secret_value=f"Adapter: {adapter_id}",
                     tags=entry_tags,
                     description=f"Knowledge adapter trained from {filename}. Adapter ID: {adapter_id}",
                 )
@@ -6954,10 +6953,9 @@ class VaultApp:
             f"training_key:{encryption_key_hex}",
         ]
         
-        self.vault.kv_store.store(
+        self.vault.kv_store.put(
             service=entry_name,
-            username=f"Trained from: {filename}",
-            password="[ENCRYPTED ADAPTER]",
+            secret_value=f"Adapter: {adapter_id}",
             tags=entry_tags,
             description=f"Knowledge adapter trained from {filename}. Adapter ID: {adapter_id}",
         )
