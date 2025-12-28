@@ -144,6 +144,9 @@ class VaultApp:
         self.key_path = self.vault_path / "master.key"
         self.db_path = self.vault_path / "vault.db"
         
+        # Question history file
+        self.question_history_path = self.vault_path / "question_history.json"
+        
         # Initialize MCP setup helper (after vault_path is set)
         self.mcp_setup = MCPSetupHelper(vault_path=str(self.vault_path))
 
@@ -904,7 +907,7 @@ class VaultApp:
             self.page.update()
     
     def show_landing_page(self):
-        """Show landing page with large action buttons - always shown after login."""
+        """Show value-focused landing page with chat interface and trust signals."""
         self.current_view = "landing"
         
         # Update sidebar selection to Home
@@ -912,7 +915,6 @@ class VaultApp:
             self.sidebar.selected_index = -1
             sidebar_container = self.sidebar.build()
         else:
-            # Initialize sidebar if not exists
             self.sidebar = ModernSidebar(
                 on_nav_change=self.on_nav_change,
                 selected_index=-1
@@ -926,33 +928,53 @@ class VaultApp:
             query_filter = QueryFilter()
             all_entries = self.vault.kv_store.search(query_filter)
             
-            # Count by type
-            # SECRET includes all secret types (SECRET, API_KEY, PASSWORD, TOKEN, CREDENTIAL)
             secrets_count = len([e for e in all_entries if e.entry_type in [EntryType.SECRET, EntryType.API_KEY, EntryType.PASSWORD, EntryType.TOKEN, EntryType.CREDENTIAL]])
-            # Knowledge entries use EntryType.OTHER
             knowledge_count = len([e for e in all_entries if e.entry_type == EntryType.OTHER])
-            # Count trained adapters (entries with training_status:completed tag)
-            adapter_count = 0
+            
+            # Get trained adapters with their info
+            trained_adapters = []
+            training_in_progress = 0
             for entry in all_entries:
                 if entry.tags:
+                    adapter_id = None
+                    encryption_key = None
+                    status = None
                     for tag in entry.tags:
-                        if tag == "training_status:completed":
-                            adapter_count += 1
-                            break
+                        if tag.startswith("training_status:"):
+                            status = tag.split(":", 1)[1]
+                        elif tag.startswith("training_job:"):
+                            adapter_id = tag.split(":", 1)[1]
+                        elif tag.startswith("training_key:"):
+                            encryption_key = tag.split(":", 1)[1]
+                    
+                    if status == "completed" and adapter_id:
+                        trained_adapters.append({
+                            "name": entry.service,
+                            "adapter_id": adapter_id,
+                            "encryption_key": encryption_key
+                        })
+                    elif status in ["pending", "training"]:
+                        training_in_progress += 1
+            
+            adapter_count = len(trained_adapters)
         except Exception as e:
             logger.warning(f"Error getting vault stats: {e}")
             secrets_count = 0
             knowledge_count = 0
             adapter_count = 0
+            trained_adapters = []
+            training_in_progress = 0
         
-        # User info - get email from session
+        # User info
         user_email = "User"
         if self.session_data:
-            # Email is stored in session_data["user"]["email"]
             user_info = self.session_data.get("user", {})
             user_email = user_info.get("email") or self.session_data.get("user_email") or self.session_data.get("email") or "User"
         
-        # Get component status
+        # Get first name for friendlier greeting
+        user_first_name = user_email.split("@")[0].split(".")[0].capitalize() if "@" in user_email else user_email
+        
+        # Component status
         ocr_ready = False
         qa_ready = False
         if hasattr(self, 'pdf_processor') and self.pdf_processor:
@@ -961,231 +983,534 @@ class VaultApp:
             qa_status = self.qa_generator.get_qa_status()
             qa_ready = qa_status.get("status") == "ready"
         
-        # Create landing page content - centered, clean design
-        content = ft.Container(
+        # Backend connected
+        backend_connected = self.backend_status == "connected"
+        
+        # ===== HERO: ASK YOUR DOCUMENTS =====
+        ask_input = ft.TextField(
+            hint_text="Ask anything about your documents...",
+            border_radius=12,
+            bgcolor=LightTheme.BG_PRIMARY,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
+            prefix_icon=ft.Icons.SEARCH_ROUNDED,
+            suffix=ft.IconButton(
+                ft.Icons.MIC_ROUNDED,
+                icon_color=LightTheme.TEXT_MUTED,
+                tooltip="Voice input (coming soon)",
+            ),
+            expand=True,
+            on_submit=lambda e: self._handle_home_ask(e, ask_input, trained_adapters),
+        )
+        
+        # Document chips for trained adapters
+        doc_chips = []
+        for adapter in trained_adapters[:4]:  # Show max 4
+            doc_chips.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
+                            ft.Text(
+                                adapter["name"][:20] + "..." if len(adapter["name"]) > 20 else adapter["name"],
+                                size=12,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                        ],
+                        spacing=6,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                    bgcolor=LightTheme.ACCENT_SUCCESS + "15",
+                    border_radius=16,
+                )
+            )
+        
+        if adapter_count > 4:
+            doc_chips.append(
+                ft.Text(f"+{adapter_count - 4} more", size=12, color=LightTheme.TEXT_MUTED)
+            )
+        
+        # Empty state or ready state
+        if adapter_count == 0:
+            hero_subtitle = ft.Column([
+                ft.Text(
+                    "Upload a PDF to get started",
+                    size=14,
+                    color=LightTheme.TEXT_SECONDARY,
+                ),
+                ft.Container(height=12),
+                ft.ElevatedButton(
+                    "📄 Upload Your First PDF",
+                    icon=ft.Icons.UPLOAD_FILE_ROUNDED,
+                    on_click=lambda e: self._on_upload_click(e),
+                    style=ft.ButtonStyle(
+                        bgcolor=LightTheme.ACCENT_PRIMARY,
+                        color="white",
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                ),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+            ask_input.disabled = True
+            ask_input.hint_text = "Upload a document first to ask questions..."
+        else:
+            hero_subtitle = ft.Column([
+                ft.Row(
+                    [
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=16, color=LightTheme.ACCENT_SUCCESS),
+                        ft.Text(
+                            f"{adapter_count} document{'s' if adapter_count != 1 else ''} ready to answer",
+                            size=14,
+                            color=LightTheme.ACCENT_SUCCESS,
+                            weight=ft.FontWeight.W_500,
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.CENTER,
+                    spacing=8,
+                ),
+                ft.Container(height=8),
+                ft.Row(doc_chips, wrap=True, spacing=8, alignment=ft.MainAxisAlignment.CENTER),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
+        
+        hero_section = ft.Container(
             content=ft.Column(
                 [
-                    # Welcome header (simplified - logo is in sidebar)
-                    ft.Container(
-                        content=ft.Column(
-                            [
-                                ft.Text(
-                                    f"Welcome back, {user_email}",
-                                    size=20,
-                                    weight=ft.FontWeight.W_600,
-                                    color=LightTheme.TEXT_PRIMARY,
-                                    text_align=ft.TextAlign.CENTER,
-                                ),
-                                ft.Container(height=8),
-                                ft.Text(
-                                    "Quick actions and recent activity",
-                                    size=14,
-                                    color=LightTheme.TEXT_SECONDARY,
-                                    text_align=ft.TextAlign.CENTER,
-                                ),
-                            ],
-                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                            spacing=0,
-                        ),
-                        padding=ft.padding.only(bottom=32),
-                        alignment=ft.alignment.center,
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, size=28, color=LightTheme.ACCENT_PRIMARY),
+                            ft.Text(
+                                "Ask Your Documents",
+                                size=24,
+                                weight=ft.FontWeight.BOLD,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.CENTER,
+                        spacing=12,
                     ),
-                    
-                    # Compact Action Buttons - 2x2 grid (smaller)
+                    ft.Container(height=16),
                     ft.Container(
-                        content=ft.Column(
-                            [
-                                # First row
-                                ft.Row(
-                                    [
-                                        self._create_large_action_button(
-                                            "📚 Add Knowledge",
-                                            "Upload PDF documents\nand train AI models",
-                                            ft.Icons.UPLOAD_FILE_ROUNDED,
-                                            LightTheme.ACCENT_PRIMARY,
-                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'knowledge') or self.load_secrets()),
-                                        ),
-                                        self._create_large_action_button(
-                                            "🔑 View Secrets",
-                                            f"{secrets_count} encrypted secrets\nstored securely",
-                                            ft.Icons.LOCK_ROUNDED,
-                                            LightTheme.ACCENT_SUCCESS,
-                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update()),
-                                        ),
-                                    ],
-                                    spacing=24,
-                                    alignment=ft.MainAxisAlignment.CENTER,
-                                ),
-                                ft.Container(height=16),
-                                # Second row
-                                ft.Row(
-                                    [
-                                        self._create_large_action_button(
-                                            "🧠 Ask Documents",
-                                            f"{adapter_count} trained adapters\nready to query" if adapter_count > 0 else "Train PDFs to unlock",
-                                            ft.Icons.SMART_TOY_ROUNDED,
-                                            LightTheme.ACCENT_SUCCESS if adapter_count > 0 else LightTheme.TEXT_MUTED,
-                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update(), self.show_knowledge_view()),
-                                        ),
-                                        self._create_large_action_button(
-                                            "⚙️ Settings",
-                                            "Configure components",
-                                            ft.Icons.SETTINGS_ROUNDED,
-                                            LightTheme.TEXT_SECONDARY,
-                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update(), self.show_settings()),
-                                        ),
-                                    ],
-                                    spacing=24,
-                                    alignment=ft.MainAxisAlignment.CENTER,
-                                ),
-                            ],
-                            spacing=0,
-                        ),
-                        padding=ft.padding.symmetric(horizontal=32),
+                        content=ask_input,
+                        width=500,
                     ),
-                    
-                    ft.Container(height=32),
-                    
-                    # Recent Activity Section
-                    self._create_recent_activity_section(),
-                    
-                    ft.Container(height=32),
-                    
-                    # Quick stats footer - clickable links
+                    ft.Container(height=12),
+                    hero_subtitle,
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=0,
+            ),
+            padding=32,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=16,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            margin=ft.margin.only(bottom=24),
+        )
+        
+        # ===== EXAMPLE QUESTIONS =====
+        example_questions = [
+            "Summarize the main points",
+            "What are the key dates?",
+            "Explain in simple terms",
+        ]
+        
+        example_chips = ft.Row(
+            [
+                ft.Container(
+                    content=ft.TextButton(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.LIGHTBULB_OUTLINE_ROUNDED, size=14, color=LightTheme.ACCENT_PRIMARY),
+                            ft.Text(q, size=12, color=LightTheme.ACCENT_PRIMARY),
+                        ], spacing=6),
+                        on_click=lambda e, query=q: self._set_example_question(ask_input, query),
+                    ),
+                    bgcolor=LightTheme.ACCENT_PRIMARY + "10",
+                    border_radius=16,
+                ) for q in example_questions
+            ],
+            alignment=ft.MainAxisAlignment.CENTER,
+            spacing=8,
+            wrap=True,
+        ) if adapter_count > 0 else ft.Container()
+        
+        # ===== SECURITY STATUS =====
+        def security_item(icon, label, status, color):
+            return ft.Row(
+                [
+                    ft.Icon(icon, size=18, color=color),
+                    ft.Text(label, size=13, color=LightTheme.TEXT_PRIMARY, expand=True),
+                    ft.Text(status, size=12, color=color, weight=ft.FontWeight.W_500),
+                ],
+                spacing=12,
+            )
+        
+        security_panel = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row([
+                        ft.Icon(ft.Icons.SHIELD_ROUNDED, size=20, color=LightTheme.ACCENT_SUCCESS),
+                        ft.Text("Security Status", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                    ], spacing=8),
+                    ft.Container(height=12),
+                    security_item(
+                        ft.Icons.LOCK_ROUNDED, 
+                        "End-to-end encryption", 
+                        "Active", 
+                        LightTheme.ACCENT_SUCCESS
+                    ),
+                    ft.Container(height=8),
+                    security_item(
+                        ft.Icons.KEY_ROUNDED, 
+                        "Local key storage", 
+                        "Secure", 
+                        LightTheme.ACCENT_SUCCESS
+                    ),
+                    ft.Container(height=8),
+                    security_item(
+                        ft.Icons.CLOUD_DONE_ROUNDED if backend_connected else ft.Icons.CLOUD_OFF_ROUNDED, 
+                        "Cloud training", 
+                        "Connected" if backend_connected else "Offline", 
+                        LightTheme.ACCENT_SUCCESS if backend_connected else LightTheme.ACCENT_WARNING
+                    ),
+                ],
+            ),
+            padding=20,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=12,
+            border=ft.border.all(1, LightTheme.ACCENT_SUCCESS + "30"),
+            expand=True,
+        )
+        
+        # ===== KNOWLEDGE BASE STATS =====
+        stats_panel = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row([
+                        ft.Icon(ft.Icons.INSIGHTS_ROUNDED, size=20, color=LightTheme.ACCENT_PRIMARY),
+                        ft.Text("Your Knowledge Base", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                    ], spacing=8),
+                    ft.Container(height=12),
+                    ft.Row([
+                        ft.Icon(ft.Icons.SMART_TOY_ROUNDED, size=18, color=LightTheme.ACCENT_SUCCESS),
+                        ft.Text(f"{adapter_count} document{'s' if adapter_count != 1 else ''} ready to query", size=13, color=LightTheme.TEXT_PRIMARY),
+                    ], spacing=12),
+                    ft.Container(height=8),
+                    ft.Row([
+                        ft.Icon(ft.Icons.HOURGLASS_TOP_ROUNDED if training_in_progress > 0 else ft.Icons.CHECK_CIRCLE_OUTLINED, size=18, color=LightTheme.ACCENT_WARNING if training_in_progress > 0 else LightTheme.TEXT_MUTED),
+                        ft.Text(f"{training_in_progress} training in progress" if training_in_progress > 0 else "No training in progress", size=13, color=LightTheme.TEXT_PRIMARY if training_in_progress > 0 else LightTheme.TEXT_MUTED),
+                    ], spacing=12),
+                    ft.Container(height=8),
+                    ft.Row([
+                        ft.Icon(ft.Icons.LOCK_ROUNDED, size=18, color=LightTheme.ACCENT_SUCCESS),
+                        ft.Text(f"{secrets_count} secret{'s' if secrets_count != 1 else ''} stored securely", size=13, color=LightTheme.TEXT_PRIMARY),
+                    ], spacing=12),
+                    ft.Container(height=12),
+                    ft.Row([
+                        ft.TextButton(
+                            "📄 Add PDF",
+                            on_click=lambda e: self._on_upload_click(e),
+                            style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
+                        ),
+                        ft.TextButton(
+                            "🔑 Add Secret",
+                            on_click=lambda e: self.show_add_dialog(e, default_type="secret"),
+                            style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
+                        ),
+                    ], spacing=8),
+                ],
+            ),
+            padding=20,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=12,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            expand=True,
+        )
+        
+        # ===== QUICK ACTIONS ROW =====
+        quick_actions = ft.Row(
+            [
+                security_panel,
+                stats_panel,
+            ],
+            spacing=16,
+        )
+        
+        # ===== RECENT QUESTIONS =====
+        recent_questions = self._get_recent_questions(5)
+        recent_questions_section = ft.Container()  # Empty by default
+        
+        if recent_questions:
+            question_items = []
+            for q in recent_questions:
+                # Format timestamp
+                try:
+                    ts = datetime.fromisoformat(q.get("timestamp", ""))
+                    time_str = ts.strftime("%b %d, %H:%M")
+                except:
+                    time_str = ""
+                
+                question_items.append(
                     ft.Container(
                         content=ft.Row(
                             [
-                                ft.Container(
-                                    content=ft.ElevatedButton(
-                                        content=ft.Column(
-                                            [
-                                                ft.Text(
-                                                    str(knowledge_count),
-                                                    size=24,
-                                                    weight=ft.FontWeight.BOLD,
-                                                    color=LightTheme.ACCENT_PRIMARY,
-                                                    text_align=ft.TextAlign.CENTER,
-                                                ),
-                                                ft.Text(
-                                                    "Documents",
-                                                    size=12,
-                                                    color=LightTheme.TEXT_SECONDARY,
-                                                    text_align=ft.TextAlign.CENTER,
-                                                ),
-                                            ],
-                                            spacing=4,
-                                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                                        ),
-                                        on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'current_view', 'knowledge') or self.load_secrets()),
-                                        style=ft.ButtonStyle(
-                                            bgcolor="transparent",
-                                            color=LightTheme.TEXT_PRIMARY,
-                                            elevation=0,
-                                            overlay_color=LightTheme.ACCENT_PRIMARY + "10",
-                                        ),
-                                    ),
-                                    padding=16,
-                                    width=120,
+                                ft.Icon(
+                                    ft.Icons.CHAT_BUBBLE_OUTLINE_ROUNDED,
+                                    size=16,
+                                    color=LightTheme.ACCENT_PRIMARY,
                                 ),
-                                ft.VerticalDivider(width=1, color=LightTheme.BORDER_COLOR),
-                                ft.Container(
-                                    content=ft.ElevatedButton(
-                                        content=ft.Column(
-                                            [
-                                                ft.Text(
-                                                    str(secrets_count),
-                                                    size=24,
-                                                    weight=ft.FontWeight.BOLD,
-                                                    color=LightTheme.ACCENT_SUCCESS,
-                                                    text_align=ft.TextAlign.CENTER,
-                                                ),
-                                                ft.Text(
-                                                    "Secrets",
-                                                    size=12,
-                                                    color=LightTheme.TEXT_SECONDARY,
-                                                    text_align=ft.TextAlign.CENTER,
-                                                ),
-                                            ],
-                                            spacing=4,
-                                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                                        ),
-                                        on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), setattr(self, 'selected_type', 'secret') or setattr(self.type_filter, 'value', 'secret') or self.load_secrets()),
-                                        style=ft.ButtonStyle(
-                                            bgcolor="transparent",
+                                ft.Column(
+                                    [
+                                        ft.Text(
+                                            q.get("question", "")[:60] + ("..." if len(q.get("question", "")) > 60 else ""),
+                                            size=13,
                                             color=LightTheme.TEXT_PRIMARY,
-                                            elevation=0,
-                                            overlay_color=LightTheme.ACCENT_SUCCESS + "10",
+                                            weight=ft.FontWeight.W_500,
                                         ),
-                                    ),
-                                    padding=16,
-                                    width=120,
+                                        ft.Text(
+                                            f"📄 {q.get('document', 'Unknown')} • {time_str}",
+                                            size=11,
+                                            color=LightTheme.TEXT_MUTED,
+                                        ),
+                                    ],
+                                    spacing=2,
+                                    expand=True,
                                 ),
-                                ft.VerticalDivider(width=1, color=LightTheme.BORDER_COLOR),
                                 ft.Container(
-                                    content=ft.ElevatedButton(
-                                        content=ft.Column(
-                                            [
-                                                ft.Icon(
-                                                    ft.Icons.CHECK_CIRCLE_ROUNDED if (ocr_ready and qa_ready) else ft.Icons.WARNING_ROUNDED,
-                                                    size=24,
-                                                    color=LightTheme.ACCENT_SUCCESS if (ocr_ready and qa_ready) else LightTheme.ACCENT_WARNING,
-                                                ),
-                                                ft.Text(
-                                                    "Ready" if (ocr_ready and qa_ready) else "Setup",
-                                                    size=12,
-                                                    color=LightTheme.ACCENT_SUCCESS if (ocr_ready and qa_ready) else LightTheme.ACCENT_WARNING,
-                                                    text_align=ft.TextAlign.CENTER,
-                                                ),
-                                            ],
-                                            spacing=4,
-                                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                                        ),
-                                        on_click=lambda e: (self.page.clean(), self.build_ui(), self.page.update(), self.show_settings()),
-                                        style=ft.ButtonStyle(
-                                            bgcolor="transparent",
-                                            color=LightTheme.TEXT_PRIMARY,
-                                            elevation=0,
-                                            overlay_color=LightTheme.ACCENT_WARNING + "10",
-                                        ),
+                                    content=ft.Icon(
+                                        ft.Icons.CLOUD_DONE_ROUNDED if q.get("mode") == "cloud" else ft.Icons.COMPUTER_ROUNDED,
+                                        size=14,
+                                        color=LightTheme.TEXT_MUTED,
                                     ),
-                                    padding=16,
-                                    width=120,
+                                    tooltip="Cloud" if q.get("mode") == "cloud" else "Local",
                                 ),
                             ],
-                            alignment=ft.MainAxisAlignment.CENTER,
-                            spacing=0,
+                            spacing=12,
                         ),
-                        padding=ft.padding.symmetric(vertical=24, horizontal=32),
-                        bgcolor=LightTheme.BG_ELEVATED,
-                        border_radius=12,
-                        margin=ft.margin.symmetric(horizontal=48),
-                    ),
-                ],
+                        padding=12,
+                        bgcolor=LightTheme.BG_PRIMARY,
+                        border_radius=8,
+                        on_click=lambda e, question=q.get("question", ""): self._set_example_question(ask_input, question),
+                        ink=True,
+                    )
+                )
+            
+            recent_questions_section = ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Row([
+                            ft.Icon(ft.Icons.HISTORY_ROUNDED, size=18, color=LightTheme.TEXT_SECONDARY),
+                            ft.Text("Recent Questions", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                        ], spacing=8),
+                        ft.Container(height=12),
+                        ft.Column(question_items, spacing=8),
+                    ],
+                ),
+                padding=20,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=12,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            )
+        
+        # ===== TRAINING IN PROGRESS =====
+        training_cards = []
+        if training_in_progress > 0:
+            for entry in all_entries:
+                if entry.tags:
+                    status = None
+                    for tag in entry.tags:
+                        if tag.startswith("training_status:"):
+                            status = tag.split(":", 1)[1]
+                            break
+                    
+                    if status in ["pending", "training"]:
+                        # Create progress card
+                        progress_value = 0.3 if status == "pending" else 0.65  # Simulated progress
+                        progress_text = "Queued" if status == "pending" else "Training..."
+                        
+                        training_cards.append(
+                            ft.Container(
+                                content=ft.Row(
+                                    [
+                                        ft.Container(
+                                            content=ft.ProgressRing(
+                                                width=32,
+                                                height=32,
+                                                stroke_width=3,
+                                                color=LightTheme.ACCENT_WARNING,
+                                            ),
+                                        ),
+                                        ft.Column(
+                                            [
+                                                ft.Text(
+                                                    entry.service[:25] + ("..." if len(entry.service) > 25 else ""),
+                                                    size=13,
+                                                    weight=ft.FontWeight.W_500,
+                                                    color=LightTheme.TEXT_PRIMARY,
+                                                ),
+                                                ft.Row([
+                                                    ft.Container(
+                                                        content=ft.ProgressBar(
+                                                            value=progress_value,
+                                                            bgcolor=LightTheme.BORDER_COLOR,
+                                                            color=LightTheme.ACCENT_WARNING,
+                                                        ),
+                                                        width=120,
+                                                        height=4,
+                                                        border_radius=2,
+                                                    ),
+                                                    ft.Text(
+                                                        progress_text,
+                                                        size=11,
+                                                        color=LightTheme.ACCENT_WARNING,
+                                                    ),
+                                                ], spacing=8),
+                                            ],
+                                            spacing=4,
+                                            expand=True,
+                                        ),
+                                    ],
+                                    spacing=12,
+                                ),
+                                padding=12,
+                                bgcolor=LightTheme.ACCENT_WARNING + "10",
+                                border_radius=8,
+                                border=ft.border.all(1, LightTheme.ACCENT_WARNING + "30"),
+                            )
+                        )
+        
+        training_section = ft.Container()
+        if training_cards:
+            training_section = ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Row([
+                            ft.Icon(ft.Icons.MODEL_TRAINING_ROUNDED, size=18, color=LightTheme.ACCENT_WARNING),
+                            ft.Text("Training in Progress", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                        ], spacing=8),
+                        ft.Container(height=12),
+                        ft.Column(training_cards, spacing=8),
+                    ],
+                ),
+                padding=20,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=12,
+                border=ft.border.all(1, LightTheme.ACCENT_WARNING + "30"),
+            )
+        
+        # ===== MAIN CONTENT =====
+        main_column_items = [
+            # Welcome header
+            ft.Container(
+                content=ft.Text(
+                    f"Welcome back, {user_first_name}",
+                    size=18,
+                    weight=ft.FontWeight.W_500,
+                    color=LightTheme.TEXT_SECONDARY,
+                ),
+                padding=ft.padding.only(bottom=24),
+            ),
+            
+            # Hero: Ask Your Documents
+            hero_section,
+            
+            # Example questions
+            example_chips,
+            
+            ft.Container(height=24),
+            
+            # Security + Stats panels
+            quick_actions,
+        ]
+        
+        # Add training section if exists
+        if training_cards:
+            main_column_items.append(ft.Container(height=16))
+            main_column_items.append(training_section)
+        
+        # Add recent questions if exists  
+        if recent_questions:
+            main_column_items.append(ft.Container(height=16))
+            main_column_items.append(recent_questions_section)
+        
+        main_column_items.append(ft.Container(height=24))
+        
+        content = ft.Container(
+            content=ft.Column(
+                main_column_items,
                 scroll=ft.ScrollMode.AUTO,
                 spacing=0,
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
-            padding=48,
+            padding=40,
             expand=True,
-            alignment=ft.alignment.center,
         )
         
-        # Add sidebar and content in layout (if sidebar exists)
+        # Add sidebar and content
         if hasattr(self, 'sidebar'):
             self.page.add(
                 ft.Row(
-                    [
-                        sidebar_container,
-                        content,
-                    ],
+                    [sidebar_container, content],
                     spacing=0,
                     expand=True,
                 )
             )
         else:
-            # Fallback: just add content if sidebar not initialized yet
             self.page.add(content)
         self.page.update()
+    
+    def _handle_home_ask(self, e, input_field: ft.TextField, trained_adapters: list):
+        """Handle ask query from home page."""
+        query = input_field.value.strip()
+        if not query or not trained_adapters:
+            return
+        
+        # Use first available adapter (could add adapter selector later)
+        adapter = trained_adapters[0]
+        self._open_ask_dialog(adapter["adapter_id"], adapter["encryption_key"], adapter["name"])
+        
+        # Pre-fill the query in the dialog (if possible)
+        # For now, just open the dialog
+    
+    def _set_example_question(self, input_field: ft.TextField, question: str):
+        """Set example question in the input field."""
+        input_field.value = question
+        self.page.update()
+    
+    def _save_question_history(self, question: str, document: str, response: str, mode: str = "cloud"):
+        """Save a question to history."""
+        import json
+        try:
+            history = []
+            if self.question_history_path.exists():
+                with open(self.question_history_path, 'r') as f:
+                    history = json.load(f)
+            
+            # Add new entry
+            history.insert(0, {
+                "question": question,
+                "document": document,
+                "response": response[:200] + "..." if len(response) > 200 else response,
+                "mode": mode,
+                "timestamp": datetime.now().isoformat(),
+            })
+            
+            # Keep only last 20 questions
+            history = history[:20]
+            
+            with open(self.question_history_path, 'w') as f:
+                json.dump(history, f, indent=2)
+        except Exception as e:
+            logger.debug(f"Failed to save question history: {e}")
+    
+    def _get_recent_questions(self, limit: int = 5) -> List[Dict]:
+        """Get recent questions from history."""
+        import json
+        try:
+            if self.question_history_path.exists():
+                with open(self.question_history_path, 'r') as f:
+                    history = json.load(f)
+                    return history[:limit]
+        except Exception as e:
+            logger.debug(f"Failed to load question history: {e}")
+        return []
     
     def _create_large_action_button(self, title: str, subtitle: str, icon: str, color: str, on_click) -> ft.Container:
         """Create a compact action button (smaller for better fit)."""
@@ -5907,21 +6232,76 @@ class VaultApp:
             visible=False,
         )
         
-        # Loading indicator
+        # Enhanced "AI is thinking" loading indicator
+        thinking_phrases = [
+            "🧠 AI is thinking...",
+            "📚 Reading your document...",
+            "💭 Formulating response...",
+            "✨ Almost there...",
+        ]
+        
         loading_indicator = ft.Container(
-            content=ft.Row(
+            content=ft.Column(
                 [
-                    ft.ProgressRing(width=20, height=20, stroke_width=2),
-                    ft.Text("Asking your knowledge base...", size=12, color=LightTheme.TEXT_SECONDARY),
+                    ft.Row(
+                        [
+                            ft.Container(
+                                content=ft.Lottie(
+                                    src="https://assets10.lottiefiles.com/packages/lf20_usmfx6bp.json",
+                                    width=40,
+                                    height=40,
+                                    animate=True,
+                                ) if False else ft.ProgressRing(  # Fallback to ProgressRing
+                                    width=24, 
+                                    height=24, 
+                                    stroke_width=3,
+                                    color=LightTheme.ACCENT_PRIMARY,
+                                ),
+                            ),
+                            ft.Column(
+                                [
+                                    ft.Text(
+                                        "🧠 AI is thinking...", 
+                                        size=14, 
+                                        weight=ft.FontWeight.W_500,
+                                        color=LightTheme.ACCENT_PRIMARY,
+                                    ),
+                                    ft.Text(
+                                        "Analyzing your document with the trained knowledge base",
+                                        size=11,
+                                        color=LightTheme.TEXT_MUTED,
+                                        italic=True,
+                                    ),
+                                ],
+                                spacing=4,
+                            ),
+                        ],
+                        spacing=16,
+                        alignment=ft.MainAxisAlignment.CENTER,
+                    ),
+                    ft.Container(height=8),
+                    ft.Container(
+                        content=ft.ProgressBar(
+                            value=None,  # Indeterminate
+                            bgcolor=LightTheme.BORDER_COLOR,
+                            color=LightTheme.ACCENT_PRIMARY,
+                        ),
+                        width=280,
+                        height=4,
+                        border_radius=2,
+                    ),
                 ],
-                spacing=12,
-                alignment=ft.MainAxisAlignment.CENTER,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=0,
             ),
-            padding=16,
+            padding=20,
+            bgcolor=LightTheme.ACCENT_PRIMARY + "08",
+            border_radius=12,
+            border=ft.border.all(1, LightTheme.ACCENT_PRIMARY + "20"),
             visible=False,
         )
         
-        loading_text = loading_indicator.content.controls[1]  # Reference for updating text
+        loading_text = loading_indicator.content.controls[0].controls[1].controls[0]  # Reference for updating text
         
         def ask_query(e):
             """Send query to inference endpoint (cloud or local)."""
@@ -5957,7 +6337,7 @@ class VaultApp:
                     else:
                         # CLOUD INFERENCE - uses RunPod endpoint
                         self._run_cloud_inference(
-                            query, knowledge_id, encryption_key_hex,
+                            query, knowledge_id, encryption_key_hex, filename,
                             loading_indicator, response_text, response_container,
                             query_field, submit_button, mode_dropdown
                         )
@@ -6038,7 +6418,7 @@ class VaultApp:
         self.page.update()
     
     def _run_cloud_inference(
-        self, query: str, knowledge_id: str, encryption_key_hex: str,
+        self, query: str, knowledge_id: str, encryption_key_hex: str, filename: str,
         loading_indicator, response_text, response_container,
         query_field, submit_button, mode_dropdown
     ):
@@ -6103,6 +6483,8 @@ class VaultApp:
                 if response and "response" in response:
                     response_text.value = response["response"]
                     response_container.visible = True
+                    # Save to question history
+                    self._save_question_history(query, filename, response["response"], mode="cloud")
                 else:
                     response_text.value = "No response received"
                     response_container.visible = True
@@ -6162,7 +6544,7 @@ class VaultApp:
             engine.apply_adapter_weights(adapter_weights)
             
             # Step 4: Generate response
-            update_loading("Generating response...")
+            update_loading("🤖 Generating response...")
             response = engine.generate(query, max_tokens=256, temperature=0.7)
             
             # Show response
@@ -6173,6 +6555,8 @@ class VaultApp:
                 mode_dropdown.disabled = False
                 response_text.value = response
                 response_container.visible = True
+                # Save to question history
+                self._save_question_history(query, filename, response, mode="local")
                 self.page.update()
             
             update_ui()
