@@ -1288,14 +1288,37 @@ class VaultApp:
                 
             except Exception as ex:
                 logger.error(f"Error loading adapter locally: {ex}")
-                def show_error():
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text(f"❌ Error: {str(ex)}", color="white"),
-                        bgcolor=LightTheme.ACCENT_ERROR,
-                    )
-                    self.page.snack_bar.open = True
-                    self.page.update()
-                show_error()
+                error_str = str(ex)
+                
+                # Check if it's a "training in progress" error
+                if "not ready" in error_str.lower() or "still in progress" in error_str.lower():
+                    def show_training_in_progress():
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Row([
+                                ft.Icon(ft.Icons.HOURGLASS_EMPTY_ROUNDED, color="white", size=20),
+                                ft.Column([
+                                    ft.Text("Training still in progress", color="white", weight=ft.FontWeight.W_600),
+                                    ft.Text("Check back in 2-5 minutes", color="white", size=12),
+                                ], spacing=2, tight=True),
+                            ], spacing=12),
+                            bgcolor=LightTheme.ACCENT_WARNING,
+                            duration=5000,
+                            action="Check Status",
+                            action_color="white",
+                            on_action=lambda e: self._check_training_status(doc_name),
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                    show_training_in_progress()
+                else:
+                    def show_error():
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Text(f"❌ Error: {error_str}", color="white"),
+                            bgcolor=LightTheme.ACCENT_ERROR,
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                    show_error()
         
         # Run in background
         import threading
@@ -8233,7 +8256,7 @@ class VaultApp:
             adapter_path = self._download_adapter_for_local(knowledge_id)
             
             if not adapter_path:
-                raise RuntimeError("Could not download adapter. Training may not be complete.")
+                raise RuntimeError("⏳ Adapter not ready yet - training is still in progress on the cloud. Check back in 2-5 minutes.")
             
             update_loading("Decrypting adapter...")
             adapter_weights = engine.decrypt_adapter(adapter_path, encryption_key_hex)
@@ -8355,7 +8378,10 @@ class VaultApp:
                 timeout=30
             )
             
-            if response.status_code != 200:
+            if response.status_code == 404:
+                logger.warning(f"Adapter not found (404) - training may still be in progress")
+                return None
+            elif response.status_code != 200:
                 logger.error(f"Failed to get adapter download URL: {response.status_code}")
                 return None
             
