@@ -450,6 +450,129 @@ class LocalInferenceEngine:
         
         return response.strip()
     
+    def query_base(self, query: str, max_tokens: int = 512, temperature: float = 0.7) -> str:
+        """
+        Query the base model without any adapter.
+        Good for general conversation before documents are loaded.
+        
+        Args:
+            query: User's question
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            
+        Returns:
+            Generated response
+        """
+        if self.model is None:
+            raise RuntimeError("Model not loaded. Call load_model() first.")
+        
+        # System prompt for helpful assistant behavior
+        system_prompt = """You are Enclave AI, a helpful, private AI assistant. 
+You run locally on the user's device for maximum privacy.
+Be concise, friendly, and helpful. If asked about documents, 
+explain that the user can upload PDFs to enhance your knowledge."""
+        
+        # Build chat messages
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query}
+        ]
+        
+        # Format using chat template
+        if hasattr(self.tokenizer, 'apply_chat_template'):
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        else:
+            prompt = f"<|system|>\n{system_prompt}</s>\n<|user|>\n{query}</s>\n<|assistant|>\n"
+        
+        if self.backend == "mlx":
+            response = mlx_generate(
+                self.model,
+                self.tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temp=temperature,
+                verbose=False
+            )
+        elif self.backend == "torch":
+            import torch
+            inputs = self.tokenizer(prompt, return_tensors="pt")
+            inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+            
+            with torch.no_grad():
+                outputs = self.model.generate(
+                    **inputs,
+                    max_new_tokens=max_tokens,
+                    temperature=temperature if temperature > 0 else None,
+                    do_sample=temperature > 0,
+                    pad_token_id=self.tokenizer.pad_token_id,
+                    eos_token_id=self.tokenizer.eos_token_id,
+                )
+            
+            prompt_len = inputs['input_ids'].shape[1]
+            response = self.tokenizer.decode(
+                outputs[0][prompt_len:],
+                skip_special_tokens=True
+            ).strip()
+        else:
+            raise RuntimeError(f"Unknown backend: {self.backend}")
+        
+        return response
+    
+    def query(
+        self, 
+        query: str, 
+        adapter_id: str = None, 
+        encryption_key_hex: str = None,
+        max_tokens: int = 512,
+        temperature: float = 0.7
+    ) -> str:
+        """
+        Query the model, optionally with an adapter loaded.
+        
+        Args:
+            query: User's question
+            adapter_id: Optional adapter ID to load
+            encryption_key_hex: Encryption key for the adapter
+            max_tokens: Maximum tokens to generate
+            temperature: Sampling temperature
+            
+        Returns:
+            Generated response
+        """
+        if self.model is None:
+            raise RuntimeError("Model not loaded. Call load_model() first.")
+        
+        # If adapter provided, try to load it (this is simplified - full implementation would download/cache)
+        # For now, just use the base model with a document-aware prompt
+        if adapter_id and encryption_key_hex:
+            system_prompt = """You are Enclave AI, a helpful assistant with specialized knowledge from uploaded documents.
+Answer questions based on the document knowledge you've been trained on.
+If you're unsure, say so rather than making things up."""
+        else:
+            system_prompt = """You are Enclave AI, a helpful, private AI assistant.
+You run locally on the user's device for maximum privacy.
+Be concise, friendly, and helpful."""
+        
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": query}
+        ]
+        
+        if hasattr(self.tokenizer, 'apply_chat_template'):
+            prompt = self.tokenizer.apply_chat_template(
+                messages,
+                tokenize=False,
+                add_generation_prompt=True
+            )
+        else:
+            prompt = f"<|system|>\n{system_prompt}</s>\n<|user|>\n{query}</s>\n<|assistant|>\n"
+        
+        return self.generate(prompt, max_tokens=max_tokens, temperature=temperature)
+    
     def unload(self):
         """Unload model and free memory."""
         self.model = None

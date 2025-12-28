@@ -1817,16 +1817,16 @@ class VaultApp:
         self.chat_messages_list = chat_messages_list
         self.trained_adapters = trained_adapters
         
-        # Input area
+        # Input area - always enabled! Users can chat with base model even without documents
         chat_input = ft.TextField(
-            hint_text="Ask your documents anything..." if adapter_count > 0 else "Upload a document first to start chatting...",
+            hint_text="Ask me anything..." if adapter_count == 0 else f"Ask about your {adapter_count} document{'s' if adapter_count != 1 else ''}...",
             border_radius=24,
             bgcolor=LightTheme.BG_ELEVATED,
             border_color=LightTheme.BORDER_COLOR,
             focused_border_color=LightTheme.ACCENT_PRIMARY,
             content_padding=ft.padding.symmetric(horizontal=20, vertical=14),
             expand=True,
-            disabled=adapter_count == 0,
+            disabled=False,  # Always enabled - can chat with base model
             on_submit=lambda e: self._send_chat_message(e, chat_input, trained_adapters),
         )
         self.chat_input = chat_input  # Store reference
@@ -1869,31 +1869,35 @@ class VaultApp:
         input_area = ft.Container(
             content=ft.Column(
                 [
-                    # Controls row: Document selector + Inference mode
+                    # Controls row: ALWAYS visible - Inference mode + Document selector
                     ft.Row(
                         [
-                            # Document/Adapter selector
+                            # Document/Adapter selector or "Chat with AI"
                             ft.Container(
                                 content=ft.Row(
                                     [
-                                        ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=12, color=LightTheme.ACCENT_PRIMARY),
+                                        ft.Icon(
+                                            ft.Icons.SMART_TOY_ROUNDED if adapter_count == 0 else ft.Icons.DESCRIPTION_ROUNDED, 
+                                            size=12, 
+                                            color=LightTheme.ACCENT_PRIMARY
+                                        ),
                                         ft.Text(
-                                            f"Asking {adapter_count} document{'s' if adapter_count != 1 else ''}" if adapter_count > 0 else "No documents",
+                                            f"Asking {adapter_count} document{'s' if adapter_count != 1 else ''}" if adapter_count > 0 else "Chat with AI",
                                             size=11,
-                                            color=LightTheme.ACCENT_PRIMARY if adapter_count > 0 else LightTheme.TEXT_MUTED,
+                                            color=LightTheme.ACCENT_PRIMARY,
                                         ),
                                         ft.Icon(ft.Icons.ARROW_DROP_DOWN_ROUNDED, size=16, color=LightTheme.TEXT_MUTED) if adapter_count > 1 else ft.Container(),
                                     ],
                                     spacing=4,
                                 ),
                                 padding=ft.padding.symmetric(horizontal=10, vertical=4),
-                                bgcolor=LightTheme.ACCENT_PRIMARY + "10" if adapter_count > 0 else LightTheme.BG_HOVER,
+                                bgcolor=LightTheme.ACCENT_PRIMARY + "10",
                                 border_radius=12,
                                 on_click=lambda e: self._show_adapter_selector(trained_adapters) if adapter_count > 1 else None,
-                                tooltip="Click to select specific document" if adapter_count > 1 else None,
+                                tooltip="Click to select specific document" if adapter_count > 1 else "Using base AI model",
                             ),
                             ft.Container(expand=True),
-                            # Inference mode toggle
+                            # Inference mode toggle - ALWAYS visible
                             inference_toggle,
                             ft.Container(width=8),
                             # Privacy indicator
@@ -1909,15 +1913,15 @@ class VaultApp:
                             ),
                         ],
                         alignment=ft.MainAxisAlignment.START,
-                    ) if adapter_count > 0 else ft.Container(),
-                    ft.Container(height=8) if adapter_count > 0 else ft.Container(),
+                    ),
+                    ft.Container(height=8),
                     # Input row
                     ft.Row(
                         [
                             ft.IconButton(
                                 ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED,
                                 icon_color=LightTheme.TEXT_MUTED,
-                                tooltip="Upload PDF",
+                                tooltip="Upload PDF to enhance AI knowledge",
                                 on_click=lambda e: self._on_upload_click(e),
                             ),
                             chat_input,
@@ -1925,19 +1929,19 @@ class VaultApp:
                                 content=ft.IconButton(
                                     ft.Icons.SEND_ROUNDED,
                                     icon_color="white",
-                                    bgcolor=LightTheme.ACCENT_PRIMARY if adapter_count > 0 else LightTheme.TEXT_MUTED,
+                                    bgcolor=LightTheme.ACCENT_PRIMARY,
                                     on_click=lambda e: self._send_chat_message(e, chat_input, trained_adapters),
-                                    disabled=adapter_count == 0,
+                                    disabled=False,  # Always enabled
                                 ),
                                 border_radius=24,
                             ),
                         ],
                         spacing=8,
-                            alignment=ft.MainAxisAlignment.CENTER,
+                        alignment=ft.MainAxisAlignment.CENTER,
                     ),
                 ],
-                            spacing=0,
-                        ),
+                spacing=0,
+            ),
             padding=ft.padding.symmetric(horizontal=40, vertical=16),
             bgcolor=LightTheme.BG_PRIMARY,
             border=ft.border.only(top=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
@@ -2348,7 +2352,7 @@ class VaultApp:
     def _send_chat_message(self, e, input_field: ft.TextField, adapters: list):
         """Send a chat message and get AI response."""
         query = input_field.value.strip() if input_field.value else ""
-        if not query or not adapters:
+        if not query:
             return
         
         # Clear input
@@ -2404,20 +2408,26 @@ class VaultApp:
             self.chat_messages_list.controls.append(loading_bubble)
             self.page.update()
         
-        # Use selected adapter or first one
-        if self.selected_adapter_id:
-            adapter = next((a for a in adapters if a.get("adapter_id") == self.selected_adapter_id), adapters[0])
-        else:
-            adapter = adapters[0]
+        # Determine if we have adapters to use
+        has_adapters = adapters and len(adapters) > 0
+        
+        # Use selected adapter or first one (if available)
+        adapter = None
+        if has_adapters:
+            if self.selected_adapter_id:
+                adapter = next((a for a in adapters if a.get("adapter_id") == self.selected_adapter_id), adapters[0])
+            else:
+                adapter = adapters[0]
         
         inference_mode = self.inference_mode  # Capture current mode
         
         def run_inference():
             try:
                 response_text = None
+                doc_name = adapter["name"] if adapter else "Base AI"
                 
+                # LOCAL INFERENCE - always available with or without adapters
                 if inference_mode == "local":
-                    # LOCAL INFERENCE - runs on device
                     try:
                         from local_inference import get_local_engine
                         engine = get_local_engine()
@@ -2426,12 +2436,16 @@ class VaultApp:
                         if not engine.model:
                             engine.load_model()
                         
-                        # Run inference
-                        response_text = engine.query(
-                            query=query,
-                            adapter_id=adapter["adapter_id"],
-                            encryption_key_hex=adapter.get("encryption_key")
-                        )
+                        # Run inference (with or without adapter)
+                        if adapter:
+                            response_text = engine.query(
+                                query=query,
+                                adapter_id=adapter["adapter_id"],
+                                encryption_key_hex=adapter.get("encryption_key")
+                            )
+                        else:
+                            # Base model query without adapter
+                            response_text = engine.query_base(query=query)
                         
                     except ImportError:
                         logger.warning("Local inference not available, falling back to cloud")
@@ -2440,22 +2454,32 @@ class VaultApp:
                         logger.error(f"Local inference error: {local_err}")
                         response_text = None
                 
-                # Cloud inference (default or fallback)
+                # Cloud inference (default or fallback) - requires adapter
                 if response_text is None:
-                    response = self.training_manager.inference_with_adapter(
-                        adapter_id=adapter["adapter_id"],
-                        query=query,
-                        encryption_key_hex=adapter["encryption_key"]
-                    )
-                    response_text = response.get("response", "I couldn't generate a response.") if response else "No response received."
+                    if adapter:
+                        response = self.training_manager.inference_with_adapter(
+                            adapter_id=adapter["adapter_id"],
+                            query=query,
+                            encryption_key_hex=adapter["encryption_key"]
+                        )
+                        response_text = response.get("response", "I couldn't generate a response.") if response else "No response received."
+                    else:
+                        # No adapter and cloud mode - prompt to upload or switch to local
+                        response_text = (
+                            "I'm your private AI assistant! 🤖\n\n"
+                            "To get the most out of me:\n"
+                            "• **Upload a PDF** using the + button to add knowledge\n"
+                            "• **Switch to Local mode** to chat with the base AI model offline\n\n"
+                            "Once you upload documents, I'll be able to answer questions about them with enhanced accuracy!"
+                        )
                 
                 # Add AI response
-                ai_msg = {"role": "assistant", "content": response_text, "document": adapter["name"]}
+                ai_msg = {"role": "assistant", "content": response_text, "document": doc_name}
                 self.chat_messages.append(ai_msg)
                 self._save_chat_history_to_file()
                 
                 # Save to question history too
-                self._save_question_history(query, adapter["name"], response_text, mode=inference_mode)
+                self._save_question_history(query, doc_name, response_text, mode=inference_mode)
                 
                 def update_ui():
                     # Remove loading bubble
@@ -2464,7 +2488,7 @@ class VaultApp:
                     
                     # Add response bubble
                     self.chat_messages_list.controls.append(
-                        self._create_chat_bubble("assistant", response_text, adapter["name"])
+                        self._create_chat_bubble("assistant", response_text, doc_name)
                     )
                     self.page.update()
                 
