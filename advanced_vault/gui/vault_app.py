@@ -913,6 +913,24 @@ class VaultApp:
             self.page.snack_bar.open = True
             self.page.update()
     
+    def _on_queued_doc_click(self, doc_name: str):
+        """Handle click on a queued/training document."""
+        logger.info(f"Queued document clicked: {doc_name}")
+        
+        # Show toast with status info
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Row([
+                ft.ProgressRing(width=16, height=16, stroke_width=2, color="white"),
+                ft.Text(f"'{doc_name}' is being trained on secure cloud. Check Training Jobs for status.", color="white"),
+            ], spacing=12),
+            bgcolor=LightTheme.ACCENT_WARNING,
+            duration=4000,
+            action="View Jobs",
+            on_action=lambda e: self.show_training_view(),
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+    
     def _configure_claude_mcp(self):
         """Configure Claude Desktop MCP integration with one click."""
         try:
@@ -1147,7 +1165,14 @@ class VaultApp:
             )
         
         # Third: Cloud training in progress (submitted to RunPod)
+        # Track already-shown documents to avoid duplicates
+        shown_documents = set(adapter["name"] for adapter in trained_adapters)
+        
         for entry in all_entries:
+            # Skip if already shown as a trained adapter
+            if entry.service in shown_documents:
+                continue
+                
             if entry.tags:
                 status = None
                 for tag in entry.tags:
@@ -1155,9 +1180,11 @@ class VaultApp:
                         status = tag.split(":", 1)[1]
                         break
                 if status in ["pending", "training"]:
+                    shown_documents.add(entry.service)  # Track to avoid duplicates
                     status_text = "⏳ Queued" if status == "pending" else "☁️ Training..."
+                    entry_name = entry.service  # Capture for lambda
                     doc_items.append(
-                    ft.Container(
+                        ft.Container(
                             content=ft.Row(
                                 [
                                     ft.ProgressRing(width=14, height=14, stroke_width=2, color=LightTheme.ACCENT_WARNING) if status == "training" else ft.Icon(ft.Icons.HOURGLASS_EMPTY_ROUNDED, size=14, color=LightTheme.ACCENT_WARNING),
@@ -1174,8 +1201,9 @@ class VaultApp:
                             ),
                             padding=ft.padding.symmetric(horizontal=12, vertical=8),
                             border_radius=8,
-                            tooltip=f"Training on secure cloud... (status: {status})",
-                            on_click=lambda e: self.show_training_view(),
+                            tooltip=f"Click to view training status for {entry.service}",
+                            on_click=lambda e, name=entry_name: self._on_queued_doc_click(name),
+                            on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
                             ink=True,
                         )
                     )
