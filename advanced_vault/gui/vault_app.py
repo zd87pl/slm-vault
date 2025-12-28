@@ -168,6 +168,11 @@ class VaultApp:
         # Training view auto-refresh timer (for pending/training jobs)
         self._training_refresh_timer = None
         self._training_refresh_active = False
+        
+        # Non-blocking document processing state
+        # Tracks documents being processed in background
+        # Key: filename, Value: {status, step, progress, message, error}
+        self.processing_documents: Dict[str, Dict[str, Any]] = {}
 
         # Check for existing session
         self.check_authentication()
@@ -1029,9 +1034,16 @@ class VaultApp:
         
         # Document list
         doc_items = []
+        
+        # First: Show documents currently being processed (non-blocking progress)
+        for filename, status_info in self.processing_documents.items():
+            if status_info.get("status") == "processing":
+                doc_items.append(self._create_processing_card(filename, status_info))
+        
+        # Second: Ready documents (trained adapters)
         for adapter in trained_adapters:
             doc_items.append(
-                    ft.Container(
+                ft.Container(
                     content=ft.Row(
                         [
                             ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
@@ -1053,7 +1065,7 @@ class VaultApp:
                 )
             )
         
-        # Training in progress items
+        # Third: Cloud training in progress (submitted to RunPod)
         for entry in all_entries:
             if entry.tags:
                 status = None
@@ -1066,19 +1078,21 @@ class VaultApp:
                         ft.Container(
                             content=ft.Row(
                                 [
-                                    ft.ProgressRing(width=14, height=14, stroke_width=2, color=LightTheme.ACCENT_WARNING),
+                                    ft.Icon(ft.Icons.CLOUD_SYNC_ROUNDED, size=14, color=LightTheme.ACCENT_WARNING),
                                     ft.Text(
-                                        entry.service[:25] + ("..." if len(entry.service) > 25 else ""),
+                                        entry.service[:22] + ("..." if len(entry.service) > 25 else ""),
                                         size=12,
                                         color=LightTheme.TEXT_MUTED,
                                         overflow=ft.TextOverflow.ELLIPSIS,
                                         expand=True,
                                     ),
+                                    ft.Text("☁️", size=10),
                                 ],
                                 spacing=8,
                             ),
                             padding=ft.padding.symmetric(horizontal=12, vertical=8),
                             border_radius=8,
+                            tooltip="Training on secure cloud...",
                         )
                     )
         
@@ -1536,6 +1550,225 @@ class VaultApp:
                 json.dump(self.chat_messages if hasattr(self, 'chat_messages') else [], f, indent=2)
         except Exception as e:
             logger.debug(f"Failed to save chat history: {e}")
+    
+    def _create_processing_card(self, filename: str, status_info: Dict[str, Any]) -> ft.Container:
+        """
+        Create a document processing card for the sidebar.
+        
+        Shows step-by-step progress with visual indicators.
+        
+        Status info structure:
+        {
+            "status": "processing" | "completed" | "failed",
+            "step": 0-4 (current step),
+            "progress": 0.0-1.0,
+            "message": "Current action...",
+            "steps_completed": [True, False, False, False],
+            "error": Optional[str]
+        }
+        """
+        step = status_info.get("step", 0)
+        progress = status_info.get("progress", 0.0)
+        message = status_info.get("message", "Processing...")
+        status = status_info.get("status", "processing")
+        steps_completed = status_info.get("steps_completed", [False, False, False, False])
+        error = status_info.get("error")
+        
+        # Step labels (updated terminology - no "training")
+        step_labels = [
+            "Extracting text",
+            "Analyzing content",
+            "Encrypting data",
+            "Syncing to cloud",
+        ]
+        
+        # Truncate filename for display
+        display_name = filename[:22] + "..." if len(filename) > 25 else filename
+        
+        # Icon based on status
+        if status == "completed":
+            status_icon = ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=16, color=LightTheme.ACCENT_SUCCESS)
+            header_color = LightTheme.ACCENT_SUCCESS
+        elif status == "failed":
+            status_icon = ft.Icon(ft.Icons.ERROR_ROUNDED, size=16, color=LightTheme.ACCENT_ERROR)
+            header_color = LightTheme.ACCENT_ERROR
+        else:
+            status_icon = ft.ProgressRing(width=16, height=16, stroke_width=2, color=LightTheme.ACCENT_PRIMARY)
+            header_color = LightTheme.ACCENT_PRIMARY
+        
+        # Build step indicators
+        step_items = []
+        for i, label in enumerate(step_labels):
+            if steps_completed[i]:
+                icon = ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=12, color=LightTheme.ACCENT_SUCCESS)
+                text_color = LightTheme.ACCENT_SUCCESS
+            elif i == step and status == "processing":
+                icon = ft.Container(
+                    content=ft.ProgressRing(width=10, height=10, stroke_width=2, color=LightTheme.ACCENT_PRIMARY),
+                    padding=1,
+                )
+                text_color = LightTheme.TEXT_PRIMARY
+            else:
+                icon = ft.Icon(ft.Icons.CIRCLE_OUTLINED, size=12, color=LightTheme.TEXT_MUTED)
+                text_color = LightTheme.TEXT_MUTED
+            
+            step_items.append(
+                ft.Row(
+                    [icon, ft.Text(label, size=10, color=text_color)],
+                    spacing=6,
+                )
+            )
+        
+        # Main content
+        content_children = [
+            # Header with filename and status
+            ft.Row(
+                [
+                    ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=14, color=header_color),
+                    ft.Text(
+                        display_name,
+                        size=12,
+                        weight=ft.FontWeight.W_500,
+                        color=LightTheme.TEXT_PRIMARY,
+                        expand=True,
+                        overflow=ft.TextOverflow.ELLIPSIS,
+                    ),
+                    status_icon,
+                ],
+                spacing=8,
+            ),
+        ]
+        
+        # Show step details only while processing
+        if status == "processing":
+            content_children.extend([
+                ft.Container(height=8),
+                # Step indicators
+                ft.Column(step_items, spacing=4),
+                ft.Container(height=8),
+                # Progress bar
+                ft.ProgressBar(
+                    value=progress,
+                    color=LightTheme.ACCENT_PRIMARY,
+                    bgcolor=LightTheme.BG_HOVER,
+                    bar_height=4,
+                ),
+                ft.Container(height=4),
+                # Current message
+                ft.Text(
+                    f"Step {step + 1}/4 • {message}",
+                    size=10,
+                    color=LightTheme.TEXT_MUTED,
+                ),
+            ])
+        elif status == "completed":
+            content_children.append(
+                ft.Container(
+                    content=ft.Text("✓ Ready to query", size=10, color=LightTheme.ACCENT_SUCCESS),
+                    padding=ft.padding.only(top=4),
+                )
+            )
+        elif status == "failed" and error:
+            content_children.append(
+                ft.Container(
+                    content=ft.Text(f"❌ {error[:30]}...", size=10, color=LightTheme.ACCENT_ERROR),
+                    padding=ft.padding.only(top=4),
+                )
+            )
+        
+        return ft.Container(
+            content=ft.Column(
+                content_children,
+                spacing=0,
+            ),
+            padding=ft.padding.all(12),
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=8,
+            border=ft.border.all(1, header_color + "30"),
+            margin=ft.margin.only(left=12, right=12, bottom=8),
+        )
+    
+    def _update_processing_status(self, filename: str, step: int, message: str, 
+                                   progress: float = None, status: str = "processing",
+                                   error: str = None):
+        """
+        Update the processing status for a document and refresh the UI.
+        
+        Args:
+            filename: Document filename
+            step: Current step (0-3)
+            message: Status message
+            progress: Overall progress (0.0-1.0), calculated from step if not provided
+            status: "processing", "completed", or "failed"
+            error: Error message if failed
+        """
+        if progress is None:
+            # Calculate progress from step (each step is 25%)
+            progress = min((step + 0.5) / 4, 1.0)
+        
+        # Update steps_completed based on current step
+        steps_completed = [i < step for i in range(4)]
+        
+        self.processing_documents[filename] = {
+            "status": status,
+            "step": step,
+            "progress": progress,
+            "message": message,
+            "steps_completed": steps_completed,
+            "error": error,
+        }
+        
+        # Refresh sidebar if on landing page
+        if self.current_view == "landing":
+            try:
+                self._refresh_sidebar_documents()
+            except Exception as e:
+                logger.debug(f"Could not refresh sidebar: {e}")
+    
+    def _refresh_sidebar_documents(self):
+        """Refresh just the document list in sidebar without full page reload."""
+        # This is called from background thread, so we need to be careful
+        # For now, we'll trigger a full refresh - can optimize later
+        if hasattr(self, 'page') and self.current_view == "landing":
+            try:
+                self.page.update()
+            except Exception as e:
+                logger.debug(f"Sidebar refresh failed: {e}")
+    
+    def _show_completion_toast(self, filename: str, success: bool = True, error_msg: str = None):
+        """Show a toast notification when document processing completes."""
+        if success:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
+                        ft.Text(f'"{filename}" is ready to query!', color="white", weight=ft.FontWeight.W_500),
+                    ],
+                    spacing=12,
+                ),
+                bgcolor=LightTheme.ACCENT_SUCCESS,
+                duration=5000,  # 5 seconds
+                action="Ask Now",
+                action_color="white",
+                on_action=lambda e: self.show_landing_page(),
+            )
+        else:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.ERROR_ROUNDED, color="white", size=20),
+                        ft.Text(f'Failed to process "{filename}"', color="white"),
+                    ],
+                    spacing=12,
+                ),
+                bgcolor=LightTheme.ACCENT_ERROR,
+                duration=6000,
+                action="Retry",
+                action_color="white",
+            )
+        
+        self.page.snack_bar.open = True
+        self.page.update()
     
     def _send_chat_message(self, e, input_field: ft.TextField, adapters: list):
         """Send a chat message and get AI response."""
@@ -5061,7 +5294,12 @@ class VaultApp:
             self.page.update()
 
     def on_pdf_selected(self, e: ft.FilePickerResultEvent):
-        """Handle PDF file selection."""
+        """
+        Handle PDF file selection - NON-BLOCKING with sidebar progress.
+        
+        User immediately returns to chat while document processes in background.
+        Progress shown in sidebar, toast notification on completion.
+        """
         logger.info(f"File picker result: {e}")
         logger.info(f"Files: {e.files if e.files else 'None'}")
         if not e.files or len(e.files) == 0:
@@ -5072,119 +5310,196 @@ class VaultApp:
         filename = e.files[0].name
         logger.info(f"Selected file: {filename} at {file_path}")
         
-        # Show processing indicator
+        # Initialize processing status in sidebar
+        self._update_processing_status(filename, 0, "Starting...", 0.0)
+        
+        # Show brief toast and return to chat immediately (non-blocking!)
         self.page.snack_bar = ft.SnackBar(
-            content=ft.Text(f"📄 Processing {filename}..."),
+            content=ft.Row(
+                [
+                    ft.ProgressRing(width=16, height=16, stroke_width=2, color="white"),
+                    ft.Text(f"Processing {filename}... See progress in sidebar", color="white"),
+                ],
+                spacing=12,
+            ),
             bgcolor=LightTheme.ACCENT_PRIMARY,
+            duration=3000,
         )
         self.page.snack_bar.open = True
-        self.page.update()
+        
+        # Return to chat - user can continue working!
+        self.show_landing_page()
         
         # Process PDF in background thread
-        def process_pdf():
+        def process_pdf_background():
+            safe_pdf_path = None
+            result = None
+            
             try:
+                # === STEP 0: Extracting text ===
+                self._update_processing_status(filename, 0, "Extracting text...", 0.1)
+                
                 # Ensure PDF processor is initialized
                 if self.pdf_processor is None:
                     self._initialize_pdf_processor()
                 
-                # Copy PDF to a safe location before processing (file picker temp files may be deleted)
-                # Store in vault directory for persistence during training workflow
+                # Copy PDF to safe location
                 vault_data_dir = Path(self.vault_path) / "temp_pdfs"
                 vault_data_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Create persistent copy with timestamp
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 safe_pdf_path = vault_data_dir / f"{timestamp}_{filename}"
-                
-                # Copy file to safe location
                 shutil.copy2(file_path, safe_pdf_path)
                 logger.info(f"Copied PDF to safe location: {safe_pdf_path}")
                 
-                # Process PDF from safe location
+                # Process PDF
                 result = self.pdf_processor.process_pdf(str(safe_pdf_path))
+                page_count = result['metadata']['page_count']
+                chunk_count = len(result['text_chunks'])
+                logger.info(f"Extracted {chunk_count} chunks from {page_count} pages")
+                
+                # === STEP 1: Analyzing content (Q&A generation) ===
+                self._update_processing_status(filename, 1, f"Analyzing {page_count} pages...", 0.3)
+                
+                # Generate Q&A pairs automatically (no dialog)
+                qa_pairs = []
+                encryption_key_hex = None
+                
+                if self.qa_generator and len(result['text_chunks']) > 0:
+                    try:
+                        # Try synthetic generation via RunPod first (better quality)
+                        if hasattr(self.qa_generator, 'generate_synthetic_qa_via_runpod') and os.path.exists(str(safe_pdf_path)):
+                            logger.info("Using cloud Q&A generation for better quality...")
+                            self._update_processing_status(filename, 1, "Generating Q&A (cloud)...", 0.35)
+                            
+                            qa_pairs, encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
+                                pdf_path=str(safe_pdf_path),
+                                target_samples=500,  # Target 500 Q&A pairs
+                                encryption_key_hex=None
+                            )
+                        else:
+                            # Fallback to local generation
+                            logger.info("Using local Q&A generation...")
+                            self._update_processing_status(filename, 1, "Generating Q&A (local)...", 0.35)
+                            qa_pairs = self.qa_generator.generate_qa_from_chunks(result['text_chunks'])
+                            
+                        logger.info(f"Generated {len(qa_pairs)} Q&A pairs")
+                    except Exception as qa_err:
+                        logger.warning(f"Q&A generation failed: {qa_err}, continuing without Q&A")
+                        # Continue without Q&A - we can still store the document
+                
+                # === STEP 2: Encrypting data ===
+                self._update_processing_status(filename, 2, "Encrypting data...", 0.6)
                 
                 # Store PDF binary encrypted
                 with open(safe_pdf_path, 'rb') as f:
                     pdf_data = f.read()
                 
-                # Store as knowledge entry in Layer 1 (for now, until Layer 2 is fully implemented)
-                # Use service name as filename, tag it as knowledge/pdf
-                # Store file path in description for later retrieval
                 description_parts = [
-                    f"PDF: {result['metadata']['page_count']} pages, {len(result['text_chunks'])} chunks",
-                    f"Path: {safe_pdf_path}"  # Store safe file path
+                    f"PDF: {page_count} pages, {chunk_count} chunks",
+                    f"Path: {safe_pdf_path}"
                 ]
+                if qa_pairs:
+                    description_parts.append(f"Q&A: {len(qa_pairs)} pairs")
                 
                 entry_id = self.vault.kv_store.put(
                     service=filename,
                     secret_value=base64.b64encode(pdf_data).decode('utf-8'),
-                    entry_type=EntryType.OTHER,  # Use OTHER type for knowledge entries
+                    entry_type=EntryType.OTHER,
                     tags=["pdf", "document", "knowledge"],
                     description=" | ".join(description_parts)
                 )
-                
                 logger.info(f"Stored PDF as knowledge entry: {filename} (ID: {entry_id})")
                 
-                # Sync to cloud (non-critical - don't fail if auth expires)
+                # === STEP 3: Syncing to cloud ===
+                self._update_processing_status(filename, 3, "Syncing to cloud...", 0.8)
+                
+                # Cloud sync
                 if self.cloud_sync:
                     try:
                         self.cloud_sync.sync_entry_background(entry_id)
                     except Exception as sync_err:
                         logger.warning(f"Cloud sync failed (non-critical): {sync_err}")
-                        # Don't show error to user - local storage succeeded
                 
-                # Update UI from main thread (thread-safe)
-                def update_ui():
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text(f"✅ Processed {filename}: {len(result['text_chunks'])} chunks"),
-                        bgcolor=LightTheme.ACCENT_SUCCESS,
-                    )
-                    self.page.snack_bar.open = True
-                    self.page.update()
-                    self.load_secrets()
+                # Submit training job if we have Q&A pairs
+                if qa_pairs and len(qa_pairs) > 0 and self.training_manager:
+                    try:
+                        self._update_processing_status(filename, 3, "Submitting to training...", 0.9)
+                        
+                        # Encrypt and save dataset
+                        if encryption_key_hex is None:
+                            encryption_key_hex = os.urandom(32).hex()
+                        
+                        dataset_result = self.training_manager.encrypt_and_save_dataset(
+                            qa_pairs=qa_pairs,
+                            filename=filename,
+                            encryption_key_hex=encryption_key_hex
+                        )
+                        
+                        if dataset_result:
+                            # Upload and submit training
+                            upload_result = self.training_manager.upload_dataset(
+                                dataset_path=dataset_result['path'],
+                                filename=Path(dataset_result['path']).name
+                            )
+                            
+                            if upload_result:
+                                # Submit training job
+                                training_result = self.training_manager.submit_training_job(
+                                    dataset_url=upload_result['url'],
+                                    encryption_key_hex=encryption_key_hex,
+                                    filename=filename
+                                )
+                                
+                                if training_result:
+                                    # Update vault entry with training info
+                                    self.vault.kv_store.update_tags(
+                                        filename,
+                                        ["pdf", "document", "knowledge", 
+                                         f"training_job:{training_result['adapter_id']}",
+                                         f"encryption_key:{encryption_key_hex}",
+                                         "training_status:pending"]
+                                    )
+                                    logger.info(f"Training job submitted: {training_result['adapter_id']}")
+                    except Exception as train_err:
+                        logger.warning(f"Training submission failed: {train_err}")
+                        # Continue - document is still saved locally
+                
+                # === COMPLETE ===
+                self._update_processing_status(filename, 4, "Ready!", 1.0, status="completed")
+                
+                # Remove from processing after short delay (let user see completion)
+                def cleanup_and_notify():
+                    time.sleep(2)  # Show "completed" state briefly
+                    if filename in self.processing_documents:
+                        del self.processing_documents[filename]
                     
-                    # Offer to generate Q&A and train model
-                    # Use safe_pdf_path instead of original file_path (which may be deleted)
-                    if self.qa_generator and self.training_manager and len(result['text_chunks']) > 0:
-                        self._offer_training(filename, result['text_chunks'], pdf_path=str(safe_pdf_path))
+                    # Show completion toast
+                    self._show_completion_toast(filename, success=True)
+                    
+                    # Refresh landing page to show new document
+                    if self.current_view == "landing":
+                        self.show_landing_page()
                 
-                # Schedule UI update on main thread
-                # Note: Flet's page.update() is thread-safe when called from background threads
-                # But we wrap it in a function to ensure proper execution
-                try:
-                    # Try run_task if available (some Flet versions)
-                    if hasattr(self.page, 'run_task'):
-                        self.page.run_task(update_ui)
-                    else:
-                        # Fallback: direct update (Flet handles thread safety)
-                        update_ui()
-                except Exception as ui_err:
-                    logger.warning(f"UI update error: {ui_err}, trying direct update")
-                    update_ui()
+                threading.Thread(target=cleanup_and_notify, daemon=True).start()
                 
             except Exception as ex:
                 logger.error(f"Error processing PDF: {ex}")
                 user_msg, _ = make_user_friendly(str(ex), context="upload")
                 
-                # Thread-safe error update
-                def show_error():
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text(f"❌ {user_msg}"),
-                        bgcolor=LightTheme.ACCENT_ERROR,
-                    )
-                    self.page.snack_bar.open = True
-                    self.page.update()
+                # Update status to failed
+                self._update_processing_status(
+                    filename, 
+                    self.processing_documents.get(filename, {}).get("step", 0),
+                    "Failed",
+                    status="failed",
+                    error=user_msg
+                )
                 
-                try:
-                    if hasattr(self.page, 'run_task'):
-                        self.page.run_task(show_error)
-                    else:
-                        show_error()
-                except Exception as ui_err:
-                    logger.warning(f"UI update error: {ui_err}, trying direct update")
-                    show_error()
+                # Show error toast
+                self._show_completion_toast(filename, success=False, error_msg=user_msg)
         
-        thread = threading.Thread(target=process_pdf, daemon=True)
+        # Start background processing
+        thread = threading.Thread(target=process_pdf_background, daemon=True)
         thread.start()
 
     def _find_saved_dataset(self, filename: str) -> Optional[tuple]:
@@ -5711,10 +6026,10 @@ class VaultApp:
         # Phase steps indicator
         phase_steps = ft.Column(
             [
-                self._create_phase_step("Preparing the document", 0, False),
-                self._create_phase_step("Knowledge extraction", 1, False),
-                self._create_phase_step("Uploading encrypted data", 2, False),
-                self._create_phase_step("Generating Vault Data", 3, False),
+                self._create_phase_step("Extracting text", 0, False),
+                self._create_phase_step("Analyzing content", 1, False),
+                self._create_phase_step("Encrypting data", 2, False),
+                self._create_phase_step("Cloud sync", 3, False),
             ],
             spacing=8,
         )
@@ -5727,7 +6042,7 @@ class VaultApp:
                         content=ft.Column(
                             [
                                 ft.Text(
-                                    f"🔐 Training Your AI Model",
+                                    f"🔐 Preparing Your Document",
                                     size=20,
                                     weight=ft.FontWeight.BOLD,
                                     color=LightTheme.TEXT_PRIMARY,
@@ -6223,8 +6538,8 @@ class VaultApp:
                         step = self._create_phase_step(phases[i], i, True)
                         phase_steps.controls[i] = step
                     
-                    phase_text.value = "✅ Vault Data Generated Successfully!"
-                    phase_status.value = f"Your encrypted vault data is ready. Knowledge ID: {result['adapter_id'][:8]}...\n\n💡 Try 'Demo Query' to test your knowledge base!"
+                    phase_text.value = "✅ Document Ready!"
+                    phase_status.value = f"Your document is processed and encrypted. ID: {result['adapter_id'][:8]}...\n\n💡 Return to chat to ask questions!"
                     progress_bar.value = 1.0
                     
                     # Store encryption_key_hex for demo query (in closure)
