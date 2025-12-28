@@ -930,10 +930,19 @@ class VaultApp:
             secrets_count = len([e for e in all_entries if e.entry_type in [EntryType.SECRET, EntryType.API_KEY, EntryType.PASSWORD, EntryType.TOKEN, EntryType.CREDENTIAL]])
             # Knowledge entries use EntryType.OTHER
             knowledge_count = len([e for e in all_entries if e.entry_type == EntryType.OTHER])
+            # Count trained adapters (entries with training_status:completed tag)
+            adapter_count = 0
+            for entry in all_entries:
+                if entry.tags:
+                    for tag in entry.tags:
+                        if tag == "training_status:completed":
+                            adapter_count += 1
+                            break
         except Exception as e:
             logger.warning(f"Error getting vault stats: {e}")
             secrets_count = 0
             knowledge_count = 0
+            adapter_count = 0
         
         # User info - get email from session
         user_email = "User"
@@ -1010,6 +1019,13 @@ class VaultApp:
                                 # Second row
                                 ft.Row(
                                     [
+                                        self._create_large_action_button(
+                                            "🧠 Ask Documents",
+                                            f"{adapter_count} trained adapters\nready to query" if adapter_count > 0 else "Train PDFs to unlock",
+                                            ft.Icons.SMART_TOY_ROUNDED,
+                                            LightTheme.ACCENT_SUCCESS if adapter_count > 0 else LightTheme.TEXT_MUTED,
+                                            lambda e: (self.page.clean(), self.build_ui(), self.page.update(), self.show_knowledge_view()),
+                                        ),
                                         self._create_large_action_button(
                                             "⚙️ Settings",
                                             "Configure components",
@@ -4161,37 +4177,51 @@ class VaultApp:
                             ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         ),
-                        ft.Divider(color=LightTheme.BORDER_COLOR),
-                        ft.Text(
-                            "Upload PDF documents to extract knowledge and generate training data.",
-                            size=14,
-                            color=LightTheme.TEXT_MUTED
+                        ft.Container(height=8),
+                        # Workflow steps
+                        ft.Container(
+                            content=ft.Row(
+                                [
+                                    self._create_workflow_step("1", "📄 Upload PDF", "Add your document"),
+                                    ft.Icon(ft.Icons.ARROW_FORWARD_ROUNDED, color=LightTheme.TEXT_MUTED, size=16),
+                                    self._create_workflow_step("2", "🧠 Train", "Generate knowledge adapter"),
+                                    ft.Icon(ft.Icons.ARROW_FORWARD_ROUNDED, color=LightTheme.TEXT_MUTED, size=16),
+                                    self._create_workflow_step("3", "💬 Ask", "Query your documents"),
+                                ],
+                                alignment=ft.MainAxisAlignment.CENTER,
+                                spacing=12,
+                            ),
+                            padding=ft.padding.symmetric(vertical=16),
+                            bgcolor=LightTheme.BG_HOVER,
+                            border_radius=12,
                         ),
                     ],
-                    spacing=10,
+                    spacing=0,
                 ),
                 padding=20,
             )
         )
         
-        # Add "Trained Models" section - show adapters ready for inference
+        # Always show Knowledge Adapters section (with empty state if none)
         trained_models_section = self._build_trained_models_section()
-        if trained_models_section:
-            self.secrets_list.controls.append(trained_models_section)
+        self.secrets_list.controls.append(trained_models_section)
         
         # Divider before knowledge entries
         self.secrets_list.controls.append(
             ft.Container(
-                content=ft.Column([
-                    ft.Divider(color=LightTheme.BORDER_COLOR),
-                    ft.Text(
-                        "📄 Uploaded Documents",
-                        size=16,
-                        weight=ft.FontWeight.W_600,
-                        color=LightTheme.TEXT_SECONDARY,
-                    ),
-                ], spacing=8),
-                padding=ft.padding.only(left=20, right=20, top=10, bottom=10),
+                content=ft.Row(
+                    [
+                        ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, color=LightTheme.TEXT_SECONDARY, size=18),
+                        ft.Container(width=8),
+                        ft.Text(
+                            "Uploaded Documents",
+                            size=16,
+                            weight=ft.FontWeight.W_600,
+                            color=LightTheme.TEXT_SECONDARY,
+                        ),
+                    ],
+                ),
+                padding=ft.padding.only(left=20, right=20, top=16, bottom=8),
             )
         )
         
@@ -4199,7 +4229,20 @@ class VaultApp:
         self.load_secrets()
         self.page.update()
     
-    def _build_trained_models_section(self) -> Optional[ft.Container]:
+    def _create_workflow_step(self, number: str, title: str, subtitle: str) -> ft.Container:
+        """Create a workflow step indicator."""
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(title, size=13, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                    ft.Text(subtitle, size=11, color=LightTheme.TEXT_MUTED),
+                ],
+                spacing=2,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+        )
+    
+    def _build_trained_models_section(self) -> ft.Container:
         """Build a section showing trained knowledge adapters ready for inference."""
         # Find all entries with completed training
         from advanced_vault.encrypted_kv import QueryFilter
@@ -4234,8 +4277,57 @@ class VaultApp:
         except Exception as e:
             logger.warning(f"Error loading trained adapters: {e}")
         
+        # Build adapter cards or empty state
         if not trained_adapters:
-            return None
+            # Empty state - no trained adapters yet
+            return ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Row(
+                            [
+                                ft.Icon(ft.Icons.SMART_TOY_OUTLINED, color=LightTheme.TEXT_MUTED, size=20),
+                                ft.Container(width=8),
+                                ft.Text(
+                                    "🧠 Knowledge Adapters",
+                                    size=16,
+                                    weight=ft.FontWeight.W_600,
+                                    color=LightTheme.TEXT_SECONDARY,
+                                ),
+                            ],
+                        ),
+                        ft.Container(height=12),
+                        ft.Container(
+                            content=ft.Column(
+                                [
+                                    ft.Icon(ft.Icons.PSYCHOLOGY_OUTLINED, color=LightTheme.TEXT_MUTED, size=40),
+                                    ft.Container(height=8),
+                                    ft.Text(
+                                        "No trained adapters yet",
+                                        size=14,
+                                        weight=ft.FontWeight.W_500,
+                                        color=LightTheme.TEXT_SECONDARY,
+                                    ),
+                                    ft.Text(
+                                        "Upload a PDF and click 'Train' to create your first knowledge adapter",
+                                        size=12,
+                                        color=LightTheme.TEXT_MUTED,
+                                        text_align=ft.TextAlign.CENTER,
+                                    ),
+                                ],
+                                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                                spacing=0,
+                            ),
+                            padding=24,
+                            bgcolor=LightTheme.BG_HOVER,
+                            border_radius=12,
+                            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        ),
+                    ],
+                    spacing=0,
+                ),
+                padding=20,
+                margin=ft.margin.only(left=20, right=20, bottom=10),
+            )
         
         # Build adapter cards
         adapter_cards = []
