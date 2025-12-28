@@ -917,10 +917,11 @@ class VaultApp:
         self.page.clean()
         
         # Clear any floating buttons from overlay (they're for non-chat views)
-        # But preserve file pickers
-        self.page.overlay = [o for o in self.page.overlay 
-                            if isinstance(o, ft.FilePicker) or 
-                            not (isinstance(o, ft.Container) and hasattr(o, 'content') and isinstance(getattr(o, 'content', None), ft.FloatingActionButton))]
+        # But preserve file pickers - modify in place since overlay is read-only
+        items_to_remove = [o for o in self.page.overlay 
+                          if isinstance(o, ft.Container) and hasattr(o, 'content') and isinstance(getattr(o, 'content', None), ft.FloatingActionButton)]
+        for item in items_to_remove:
+            self.page.overlay.remove(item)
         
         # Initialize PDF file picker if needed (for the + button in chat input)
         if not hasattr(self, 'pdf_file_picker') or self.pdf_file_picker is None:
@@ -2412,7 +2413,9 @@ class VaultApp:
         
         # Add floating chat button for quick access to AI assistant (only on non-chat views)
         # First, clear any existing floating buttons to prevent stacking
-        self.page.overlay = [o for o in self.page.overlay if not isinstance(o, ft.Container) or not hasattr(o, 'content') or not isinstance(getattr(o, 'content', None), ft.FloatingActionButton)]
+        items_to_remove = [o for o in self.page.overlay if isinstance(o, ft.Container) and hasattr(o, 'content') and isinstance(getattr(o, 'content', None), ft.FloatingActionButton)]
+        for item in items_to_remove:
+            self.page.overlay.remove(item)
         
         floating_chat_button = ft.Container(
             content=ft.FloatingActionButton(
