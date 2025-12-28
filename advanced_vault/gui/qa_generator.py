@@ -1656,12 +1656,26 @@ A: answer here"""
                         tag = base64.b64decode(encrypted_package['tag'])
                         nonce = base64.b64decode(encrypted_package['nonce'])
                         
-                        if CRYPTO_BACKEND_LOCAL == "pycryptodome":
-                            cipher = ChaCha20_Poly1305.new(key=encryption_key, nonce=nonce)
-                            plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+                        # Handle different nonce sizes from server
+                        # Server may use PyCryptodome (24-byte) or cryptography (12-byte)
+                        if len(nonce) == 24:
+                            # XChaCha20-Poly1305 with 24-byte nonce - requires PyCryptodome
+                            try:
+                                from Crypto.Cipher import ChaCha20_Poly1305 as PyCryptoChaCha
+                                cipher = PyCryptoChaCha.new(key=encryption_key, nonce=nonce)
+                                plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+                            except ImportError:
+                                raise RuntimeError("Server used XChaCha20 (24-byte nonce) but PyCryptodome not installed")
+                        elif len(nonce) == 12:
+                            # Standard ChaCha20-Poly1305 with 12-byte nonce
+                            if CRYPTO_BACKEND_LOCAL == "pycryptodome":
+                                cipher = ChaCha20_Poly1305.new(key=encryption_key, nonce=nonce)
+                                plaintext = cipher.decrypt_and_verify(ciphertext, tag)
+                            else:
+                                cipher = ChaCha20Poly1305(encryption_key)
+                                plaintext = cipher.decrypt(nonce, ciphertext + tag, None)
                         else:
-                            cipher = ChaCha20Poly1305(encryption_key)
-                            plaintext = cipher.decrypt(nonce, ciphertext + tag, None)
+                            raise RuntimeError(f"Unexpected nonce size: {len(nonce)} bytes")
                         
                         qa_pairs = json.loads(plaintext.decode('utf-8'))
                         
