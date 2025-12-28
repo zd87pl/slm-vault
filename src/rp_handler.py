@@ -819,12 +819,16 @@ def inference_with_encrypted_dora(config: Dict[str, Any], user_id: str) -> Dict[
         logger.warning("Adapter cache DISABLED to prevent wrong adapter usage - investigating cache key collision")
         logger.info("Using TinyLlama-Chat format matching (chat template)")
         
+        # NOTE: Cannot use load_in_4bit=True with DoRA ephemeral inference!
+        # 4-bit quantized weights are stored as uint8 (integers), but DoRA formula
+        # requires float weights for torch.linalg.norm() operations.
+        # Using full precision for correctness. A100 has enough memory.
         inference_engine = EphemeralDoRAInference(
             base_model_name=model_name,
             encryption_key=encryption_key,
             enable_cache=False,  # DISABLED: cache may return wrong adapter
-            load_in_4bit=True,  # Use QDoRA for memory efficiency
-            # Set to False for better performance (but uses more memory)
+            load_in_4bit=False,  # MUST be False - DoRA needs float weights for norm ops
+            load_in_8bit=False,  # MUST be False - same reason
         )
         
         # Verify tokenizer has chat template for format matching
