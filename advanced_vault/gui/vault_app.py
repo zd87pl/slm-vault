@@ -4816,7 +4816,7 @@ class VaultApp:
                     "dataset_url": dataset_url,
                     "encryption_key_hex": encryption_key_hex,
                     "adapter_id": adapter_id,
-                    "model_name": "TinyLlama-1.1B",
+                    "model_name": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
                     "rank": 16,
                     "alpha": 32,
                     "epochs": 3,
@@ -5834,6 +5834,55 @@ class VaultApp:
         parent_dialog.open = False
         self.page.update()
         
+        # Check if local inference is available
+        local_available = False
+        try:
+            from local_inference import LocalInferenceEngine
+            engine = LocalInferenceEngine()
+            local_available = engine.is_available()
+        except Exception as e:
+            logger.debug(f"Local inference not available: {e}")
+        
+        # Inference mode toggle (cloud vs local)
+        inference_mode = {"value": "cloud"}  # Use dict for mutable state in closure
+        
+        def on_mode_change(e):
+            inference_mode["value"] = e.control.value
+            # Update button text based on mode
+            if e.control.value == "local":
+                submit_button.text = "Ask Locally"
+                submit_button.icon = ft.Icons.COMPUTER_ROUNDED
+                mode_hint.value = "🏠 Runs on your device - private & offline"
+            else:
+                submit_button.text = "Ask"
+                submit_button.icon = ft.Icons.SEND_ROUNDED
+                mode_hint.value = "☁️ Uses cloud inference endpoint"
+            self.page.update()
+        
+        mode_dropdown = ft.Dropdown(
+            label="Inference Mode",
+            value="cloud",
+            options=[
+                ft.dropdown.Option("cloud", "☁️ Cloud (RunPod)"),
+                ft.dropdown.Option("local", "🏠 Local (Your Device)"),
+            ] if local_available else [
+                ft.dropdown.Option("cloud", "☁️ Cloud (RunPod)"),
+            ],
+            on_change=on_mode_change,
+            width=200,
+            border_radius=8,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
+        )
+        
+        mode_hint = ft.Text(
+            "☁️ Uses cloud inference endpoint",
+            size=11,
+            color=LightTheme.TEXT_MUTED,
+            italic=True,
+        )
+        
         # Query input field
         query_field = ft.TextField(
             label="Ask a question about your document",
@@ -5891,8 +5940,10 @@ class VaultApp:
             visible=False,
         )
         
+        loading_text = loading_indicator.content.controls[1]  # Reference for updating text
+        
         def ask_query(e):
-            """Send query to inference endpoint."""
+            """Send query to inference endpoint (cloud or local)."""
             query = query_field.value.strip()
             if not query:
                 self.page.snack_bar = ft.SnackBar(
@@ -5908,81 +5959,27 @@ class VaultApp:
             response_container.visible = False
             query_field.disabled = True
             submit_button.disabled = True
+            mode_dropdown.disabled = True
             self.page.update()
+            
+            use_local = inference_mode["value"] == "local"
             
             def run_inference():
                 try:
-                    # First check adapter status before inference
-                    # Poll for status update (backend queries RunPod to get latest status)
-                    try:
-                        import time
-                        max_polls = 5  # Check up to 5 times
-                        poll_interval = 2  # Wait 2 seconds between polls
-                        
-                        adapter_status = "unknown"
-                        for poll_count in range(max_polls):
-                            status_result = self.training_manager.get_training_status(knowledge_id)
-                            adapter_status = status_result.get("status", "unknown")
-                            
-                            if adapter_status == "completed":
-                                break  # Ready for inference
-                            elif adapter_status in ["pending", "training"]:
-                                # Still processing - wait and check again
-                                if poll_count < max_polls - 1:
-                                    time.sleep(poll_interval)
-                                    continue
-                            
-                            # If we get here, either failed or still not ready after polling
-                            break
-                        
-                        if adapter_status != "completed":
-                            # Adapter not ready yet
-                            error_msg = f"Knowledge base is still training (status: {adapter_status}). Please wait for training to complete."
-                            if adapter_status == "pending":
-                                error_msg = "Knowledge base is queued for training. Please wait a few minutes and try again."
-                            elif adapter_status == "training":
-                                error_msg = "Knowledge base is currently training. This may take several minutes. Please wait and try again."
-                            elif adapter_status == "failed":
-                                error_msg = "Knowledge base training failed. Please check the training status."
-                            
-                            def show_not_ready():
-                                loading_indicator.visible = False
-                                query_field.disabled = False
-                                submit_button.disabled = False
-                                response_text.value = error_msg
-                                response_container.visible = True
-                                self.page.update()
-                            
-                            show_not_ready()
-                            return
-                    except Exception as status_err:
-                        logger.warning(f"Could not check adapter status: {status_err}")
-                        # Continue anyway - backend will handle the check
-                    
-                    # Call training manager's inference method
-                    response = self.training_manager.inference_with_adapter(
-                        adapter_id=knowledge_id,
-                        query=query,
-                        encryption_key_hex=encryption_key_hex
-                    )
-                    
-                    # Update UI with response
-                    def update_ui():
-                        loading_indicator.visible = False
-                        query_field.disabled = False
-                        submit_button.disabled = False
-                        
-                        if response and "response" in response:
-                            response_text.value = response["response"]
-                            response_container.visible = True
-                        else:
-                            response_text.value = "No response received"
-                            response_container.visible = True
-                        
-                        self.page.update()
-                    
-                    # Call directly (not async)
-                    update_ui()
+                    if use_local:
+                        # LOCAL INFERENCE - runs entirely on device
+                        self._run_local_inference(
+                            query, knowledge_id, encryption_key_hex, filename,
+                            loading_text, loading_indicator, response_text, 
+                            response_container, query_field, submit_button, mode_dropdown
+                        )
+                    else:
+                        # CLOUD INFERENCE - uses RunPod endpoint
+                        self._run_cloud_inference(
+                            query, knowledge_id, encryption_key_hex,
+                            loading_indicator, response_text, response_container,
+                            query_field, submit_button, mode_dropdown
+                        )
                     
                 except Exception as ex:
                     logger.error(f"Demo query error: {ex}")
@@ -5990,11 +5987,11 @@ class VaultApp:
                         loading_indicator.visible = False
                         query_field.disabled = False
                         submit_button.disabled = False
+                        mode_dropdown.disabled = False
                         response_text.value = f"Error: {str(ex)}"
                         response_container.visible = True
                         self.page.update()
                     
-                    # Call directly (not async)
                     show_error()
             
             thread = threading.Thread(target=run_inference, daemon=True)
@@ -6014,7 +6011,7 @@ class VaultApp:
         demo_dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(
-                f"Demo Query - {filename}",
+                f"Ask - {filename}",
                 size=18,
                 weight=ft.FontWeight.BOLD,
                 color=LightTheme.TEXT_PRIMARY,
@@ -6026,6 +6023,12 @@ class VaultApp:
                             "Ask your trained knowledge base a question about the document:",
                             size=13,
                             color=LightTheme.TEXT_SECONDARY,
+                        ),
+                        ft.Container(height=12),
+                        ft.Row(
+                            [mode_dropdown, ft.Container(width=12), mode_hint],
+                            alignment=ft.MainAxisAlignment.START,
+                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
                         ),
                         ft.Container(height=16),
                         query_field,
@@ -6052,6 +6055,206 @@ class VaultApp:
         self.page.overlay.append(demo_dialog)
         demo_dialog.open = True
         self.page.update()
+    
+    def _run_cloud_inference(
+        self, query: str, knowledge_id: str, encryption_key_hex: str,
+        loading_indicator, response_text, response_container,
+        query_field, submit_button, mode_dropdown
+    ):
+        """Run inference using cloud RunPod endpoint."""
+        import time
+        
+        try:
+            # First check adapter status before inference
+            try:
+                max_polls = 5
+                poll_interval = 2
+                
+                adapter_status = "unknown"
+                for poll_count in range(max_polls):
+                    status_result = self.training_manager.get_training_status(knowledge_id)
+                    adapter_status = status_result.get("status", "unknown")
+                    
+                    if adapter_status == "completed":
+                        break
+                    elif adapter_status in ["pending", "training"]:
+                        if poll_count < max_polls - 1:
+                            time.sleep(poll_interval)
+                            continue
+                    break
+                
+                if adapter_status != "completed":
+                    error_msg = f"Knowledge base is still training (status: {adapter_status}). Please wait for training to complete."
+                    if adapter_status == "pending":
+                        error_msg = "Knowledge base is queued for training. Please wait a few minutes and try again."
+                    elif adapter_status == "training":
+                        error_msg = "Knowledge base is currently training. This may take several minutes. Please wait and try again."
+                    elif adapter_status == "failed":
+                        error_msg = "Knowledge base training failed. Please check the training status."
+                    
+                    def show_not_ready():
+                        loading_indicator.visible = False
+                        query_field.disabled = False
+                        submit_button.disabled = False
+                        mode_dropdown.disabled = False
+                        response_text.value = error_msg
+                        response_container.visible = True
+                        self.page.update()
+                    
+                    show_not_ready()
+                    return
+            except Exception as status_err:
+                logger.warning(f"Could not check adapter status: {status_err}")
+            
+            # Call training manager's inference method
+            response = self.training_manager.inference_with_adapter(
+                adapter_id=knowledge_id,
+                query=query,
+                encryption_key_hex=encryption_key_hex
+            )
+            
+            def update_ui():
+                loading_indicator.visible = False
+                query_field.disabled = False
+                submit_button.disabled = False
+                mode_dropdown.disabled = False
+                
+                if response and "response" in response:
+                    response_text.value = response["response"]
+                    response_container.visible = True
+                else:
+                    response_text.value = "No response received"
+                    response_container.visible = True
+                
+                self.page.update()
+            
+            update_ui()
+            
+        except Exception as ex:
+            logger.error(f"Cloud inference error: {ex}")
+            def show_error():
+                loading_indicator.visible = False
+                query_field.disabled = False
+                submit_button.disabled = False
+                mode_dropdown.disabled = False
+                response_text.value = f"Error: {str(ex)}"
+                response_container.visible = True
+                self.page.update()
+            
+            show_error()
+    
+    def _run_local_inference(
+        self, query: str, knowledge_id: str, encryption_key_hex: str, filename: str,
+        loading_text, loading_indicator, response_text, response_container,
+        query_field, submit_button, mode_dropdown
+    ):
+        """Run inference locally using downloaded adapter."""
+        try:
+            from local_inference import get_local_engine
+            
+            engine = get_local_engine()
+            
+            # Step 1: Load model if needed
+            def update_loading(msg):
+                loading_text.value = msg
+                self.page.update()
+            
+            update_loading("Loading TinyLlama model...")
+            
+            if not engine.load_model(progress_callback=update_loading):
+                raise RuntimeError("Failed to load model")
+            
+            # Step 2: Download and decrypt adapter
+            update_loading("Downloading encrypted adapter...")
+            
+            # Get adapter download URL from backend
+            adapter_path = self._download_adapter_for_local(knowledge_id)
+            
+            if not adapter_path:
+                raise RuntimeError("Could not download adapter. Training may not be complete.")
+            
+            update_loading("Decrypting adapter...")
+            adapter_weights = engine.decrypt_adapter(adapter_path, encryption_key_hex)
+            
+            # Step 3: Apply adapter weights
+            update_loading("Applying adapter weights...")
+            engine.apply_adapter_weights(adapter_weights)
+            
+            # Step 4: Generate response
+            update_loading("Generating response...")
+            response = engine.generate(query, max_tokens=256, temperature=0.7)
+            
+            # Show response
+            def update_ui():
+                loading_indicator.visible = False
+                query_field.disabled = False
+                submit_button.disabled = False
+                mode_dropdown.disabled = False
+                response_text.value = response
+                response_container.visible = True
+                self.page.update()
+            
+            update_ui()
+            
+        except Exception as ex:
+            logger.error(f"Local inference error: {ex}")
+            def show_error():
+                loading_indicator.visible = False
+                query_field.disabled = False
+                submit_button.disabled = False
+                mode_dropdown.disabled = False
+                response_text.value = f"Local inference error: {str(ex)}\n\nTry using Cloud inference instead."
+                response_container.visible = True
+                self.page.update()
+            
+            show_error()
+    
+    def _download_adapter_for_local(self, adapter_id: str) -> Optional[str]:
+        """Download encrypted adapter for local inference."""
+        try:
+            # Check if we have it cached locally first
+            local_cache = Path(self.vault_path) / "adapters" / f"{adapter_id}.encrypted"
+            if local_cache.exists():
+                logger.info(f"Using cached adapter: {local_cache}")
+                return str(local_cache)
+            
+            # Get download URL from backend
+            response = requests.get(
+                f"{self.backend_url}/api/adapters/{adapter_id}/download",
+                headers=self.training_manager.headers if self.training_manager else {},
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Failed to get adapter download URL: {response.status_code}")
+                return None
+            
+            data = response.json()
+            download_url = data.get("download_url") or data.get("url")
+            
+            if not download_url:
+                logger.error("No download URL in response")
+                return None
+            
+            # Download the encrypted adapter
+            logger.info(f"Downloading adapter from cloud...")
+            adapter_response = requests.get(download_url, timeout=120)
+            
+            if adapter_response.status_code != 200:
+                logger.error(f"Failed to download adapter: {adapter_response.status_code}")
+                return None
+            
+            # Save to local cache
+            local_cache.parent.mkdir(parents=True, exist_ok=True)
+            with open(local_cache, 'wb') as f:
+                f.write(adapter_response.content)
+            
+            logger.info(f"Adapter downloaded and cached: {local_cache}")
+            return str(local_cache)
+            
+        except Exception as e:
+            logger.error(f"Error downloading adapter: {e}")
+            return None
 
     def show_training_view(self):
         """Show training jobs view."""
