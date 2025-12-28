@@ -2053,6 +2053,18 @@ class VaultApp:
         data_type = entry.get('data_type', 'secret')
         tags = entry.get('tags', [])
 
+        # Extract training status from tags FIRST (needed for icon determination)
+        training_status = None
+        training_job_id = None
+        training_key = None
+        for tag in tags:
+            if tag.startswith("training_status:"):
+                training_status = tag.split(":", 1)[1]
+            elif tag.startswith("training_job:"):
+                training_job_id = tag.split(":", 1)[1]
+            elif tag.startswith("training_key:"):
+                training_key = tag.split(":", 1)[1]
+
         # Determine icon based on type and training status
         if data_type == 'secret':
             entry_icon = ft.Icons.KEY_ROUNDED
@@ -2084,18 +2096,6 @@ class VaultApp:
             bgcolor=icon_bg_color,
             alignment=ft.alignment.center,
         )
-
-        # Extract training status from tags
-        training_status = None
-        training_job_id = None
-        training_key = None
-        for tag in tags:
-            if tag.startswith("training_status:"):
-                training_status = tag.split(":", 1)[1]
-            elif tag.startswith("training_job:"):
-                training_job_id = tag.split(":", 1)[1]
-            elif tag.startswith("training_key:"):
-                training_key = tag.split(":", 1)[1]
         
         # Training status badge
         status_badge = None
