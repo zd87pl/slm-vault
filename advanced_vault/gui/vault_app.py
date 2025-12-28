@@ -4679,6 +4679,264 @@ class VaultApp:
         thread = threading.Thread(target=process_pdf, daemon=True)
         thread.start()
 
+    def _find_saved_dataset(self, filename: str) -> Optional[tuple]:
+        """
+        Check if there's a saved encrypted dataset for this PDF.
+        
+        Returns:
+            Tuple of (dataset_path, encryption_key_hex) if found, None otherwise
+        """
+        if not self.training_manager or not self.training_manager.datasets_dir:
+            return None
+        
+        try:
+            datasets_dir = self.training_manager.datasets_dir
+            if not datasets_dir.exists():
+                return None
+            
+            # Look for datasets matching this filename
+            base_name = Path(filename).stem
+            
+            # Find all matching encrypted datasets, sorted by modification time (newest first)
+            matching_datasets = []
+            for dataset_file in datasets_dir.glob(f"{base_name}*.encrypted"):
+                matching_datasets.append((dataset_file, dataset_file.stat().st_mtime))
+            
+            if not matching_datasets:
+                return None
+            
+            # Get the most recent one
+            matching_datasets.sort(key=lambda x: x[1], reverse=True)
+            dataset_path = matching_datasets[0][0]
+            
+            # Try to find the encryption key from the metadata file or vault
+            key_file = dataset_path.with_suffix('.key')
+            if key_file.exists():
+                encryption_key_hex = key_file.read_text().strip()
+                logger.info(f"Found saved dataset with key: {dataset_path}")
+                return (str(dataset_path), encryption_key_hex)
+            
+            logger.info(f"Found saved dataset (no key file): {dataset_path}")
+            return (str(dataset_path), None)
+            
+        except Exception as e:
+            logger.warning(f"Error searching for saved datasets: {e}")
+            return None
+
+    def _resume_training_from_dataset(self, filename: str, dataset_path: str):
+        """Resume training from a saved encrypted dataset (skip QA generation)."""
+        # Create progress dialog
+        progress_dialog, phase_text, progress_bar, phase_status, encryption_indicator, phase_steps = self._create_training_progress_dialog(filename)
+        
+        self.page.overlay.append(progress_dialog)
+        progress_dialog.open = True
+        self.page.update()
+        
+        def workflow():
+            try:
+                # Skip to Phase 2 completed - we already have the dataset
+                def update_phase2():
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=1,
+                        message="✅ Using saved Q&A dataset",
+                        submessage="Skipping Q&A generation...",
+                        progress=0.5
+                    )
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_phase2)
+                    else:
+                        update_phase2()
+                except Exception:
+                    update_phase2()
+                
+                import time
+                time.sleep(0.5)
+                
+                # Phase 3: Upload saved dataset
+                def update_phase3():
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=2,
+                        message="📤 Uploading encrypted data...",
+                        submessage="Connecting to secure storage",
+                        progress=0.6
+                    )
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_phase3)
+                    else:
+                        update_phase3()
+                except Exception:
+                    update_phase3()
+                
+                # Read encryption key from key file
+                key_file = Path(dataset_path).with_suffix('.key')
+                if not key_file.exists():
+                    raise ValueError("Encryption key file not found. Cannot resume without key.")
+                
+                encryption_key_hex = key_file.read_text().strip()
+                
+                # Upload dataset
+                dataset_url = self.training_manager._upload_dataset_to_supabase_storage(dataset_path)
+                
+                if not dataset_url:
+                    raise ValueError("Failed to upload dataset. Please log out and log back in, then try again.")
+                
+                logger.info(f"Dataset uploaded successfully: {dataset_url}")
+                
+                # Phase 4: Submit training job
+                def update_phase4():
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=3,
+                        message="🚀 Submitting training job...",
+                        submessage="Training on Qwen3-30B",
+                        progress=0.8
+                    )
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_phase4)
+                    else:
+                        update_phase4()
+                except Exception:
+                    update_phase4()
+                
+                # Generate adapter ID and submit
+                import uuid
+                adapter_id = str(uuid.uuid4())
+                dataset_name = Path(dataset_path).stem
+                
+                # Prepare training request
+                payload = {
+                    "dataset_url": dataset_url,
+                    "encryption_key_hex": encryption_key_hex,
+                    "adapter_id": adapter_id,
+                    "model_name": "TinyLlama-1.1B",
+                    "rank": 16,
+                    "alpha": 32,
+                    "epochs": 3,
+                    "batch_size": 4,
+                    "learning_rate": 2e-4,
+                    "enable_compression": True,
+                }
+                
+                # Submit via backend
+                response = requests.post(
+                    f"{self.training_manager.backend_url}/api/training/submit",
+                    headers=self.training_manager.headers,
+                    json=payload,
+                    timeout=30
+                )
+                
+                if response.status_code != 200:
+                    error_msg = response.text
+                    if "401" in error_msg or "unauthorized" in error_msg.lower():
+                        raise ValueError("Session expired. Please log out and log back in.")
+                    raise ValueError(f"Training submission failed: {error_msg}")
+                
+                result = response.json()
+                job_id = result.get("job_id", adapter_id)
+                
+                logger.info(f"Training job submitted: {job_id}")
+                
+                # Store entry in vault
+                entry_tags = [
+                    "data_type:knowledge",
+                    "source:pdf",
+                    f"training_status:pending",
+                    f"training_job:{adapter_id}",
+                    f"training_key:{encryption_key_hex}",
+                ]
+                
+                self.vault.kv_store.store(
+                    service=filename,
+                    username=f"Trained from: {filename}",
+                    password="[ENCRYPTED ADAPTER]",
+                    tags=entry_tags,
+                    description=f"Knowledge adapter trained from {filename}. Adapter ID: {adapter_id}",
+                )
+                
+                # Success!
+                def update_success():
+                    self._update_training_phase(
+                        phase_text, progress_bar, phase_status, phase_steps,
+                        phase=3,
+                        message="✅ Training submitted!",
+                        submessage="Your adapter will be ready in ~5-10 minutes",
+                        progress=1.0
+                    )
+                    progress_dialog.actions = [
+                        ft.ElevatedButton(
+                            "Done",
+                            on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update(),
+                            style=ft.ButtonStyle(
+                                bgcolor=LightTheme.ACCENT_SUCCESS,
+                                color="white",
+                            ),
+                        ),
+                    ]
+                    self.page.update()
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(update_success)
+                    else:
+                        update_success()
+                except Exception:
+                    update_success()
+                
+                logger.info(f"Resume training completed for {filename}")
+                
+            except Exception as ex:
+                logger.error(f"Error resuming training: {ex}")
+                user_msg, help_link = make_user_friendly(str(ex), context="training")
+                is_session_error = help_link == "SESSION_EXPIRED"
+                
+                def show_error():
+                    phase_text.value = f"❌ Error: {user_msg}"
+                    phase_status.value = "Resume failed. Your data remains secure."
+                    progress_bar.value = None
+                    
+                    actions = []
+                    if is_session_error:
+                        actions.append(
+                            ft.ElevatedButton(
+                                "Log Out & Re-Login",
+                                icon=ft.Icons.LOGOUT_ROUNDED,
+                                on_click=lambda e: self._force_logout_and_close_dialog(progress_dialog),
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                                    color="white",
+                                ),
+                            )
+                        )
+                    actions.append(
+                        ft.TextButton(
+                            "Close",
+                            on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update(),
+                            style=ft.ButtonStyle(color=LightTheme.ACCENT_ERROR),
+                        ),
+                    )
+                    progress_dialog.actions = actions
+                    self.page.update()
+                
+                try:
+                    if hasattr(self.page, 'run_task'):
+                        self.page.run_task(show_error)
+                    else:
+                        show_error()
+                except Exception:
+                    show_error()
+        
+        # Run workflow in background
+        thread = threading.Thread(target=workflow, daemon=True)
+        thread.start()
+
     def _offer_training(self, filename: str, text_chunks: List[str], pdf_path: Optional[str] = None):
         """Offer to generate Q&A and train model after PDF processing."""
         # Check if training manager is initialized
@@ -4715,54 +4973,96 @@ class VaultApp:
         if not self.qa_generator:
             logger.warning("Q&A generator not available - training will proceed without Q&A pairs")
         
+        # Check for saved dataset (from previous failed attempt)
+        saved_dataset = self._find_saved_dataset(filename)
+        
         def on_yes(e):
             dialog.open = False
             self.page.update()
             self._start_training_workflow(filename, text_chunks, pdf_path=pdf_path)
         
+        def on_resume(e):
+            """Resume training from saved dataset."""
+            dialog.open = False
+            self.page.update()
+            if saved_dataset:
+                self._resume_training_from_dataset(filename, saved_dataset[0])
+        
         def on_no(e):
             dialog.open = False
             self.page.update()
         
+        # Build dialog content based on whether we have a saved dataset
+        if saved_dataset:
+            # Offer to resume from saved dataset
+            saved_path = saved_dataset[0]
+            content_text = (
+                f"📁 Found saved Q&A dataset from previous attempt!\n\n"
+                f"You can:\n"
+                f"• Resume: Upload saved dataset (faster)\n"
+                f"• Regenerate: Create new Q&A pairs\n\n"
+                f"Saved: {Path(saved_path).name}"
+            )
+            actions = [
+                ft.TextButton(
+                    "Cancel",
+                    on_click=on_no,
+                    style=ft.ButtonStyle(color=LightTheme.TEXT_MUTED),
+                ),
+                ft.TextButton(
+                    "Regenerate",
+                    on_click=on_yes,
+                    style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
+                ),
+                ft.ElevatedButton(
+                    "⚡ Resume Training",
+                    on_click=on_resume,
+                    style=ft.ButtonStyle(
+                        bgcolor=LightTheme.ACCENT_SUCCESS,
+                        color="white",
+                    ),
+                ),
+            ]
+        else:
+            # Normal training offer
+            content_text = (
+                f"Would you like to generate Q&A pairs from this PDF and train a personalized model?\n\n"
+                f"This will:\n"
+                f"• Generate Q&A pairs from {len(text_chunks)} chunks\n"
+                f"• Train a DoRA adapter on your data\n"
+                f"• Store encrypted adapter in your vault\n\n"
+                f"Note: This may take several minutes."
+            )
+            actions = [
+                ft.TextButton(
+                    "No",
+                    on_click=on_no,
+                    style=ft.ButtonStyle(color=LightTheme.TEXT_MUTED),
+                ),
+                ft.ElevatedButton(
+                    "Yes, Train",
+                    on_click=on_yes,
+                    style=ft.ButtonStyle(
+                        bgcolor=LightTheme.ACCENT_PRIMARY,
+                        color="white",
+                    ),
+                ),
+            ]
+        
         dialog = ft.AlertDialog(
             modal=True,
             title=ft.Text(
-                "Generate Training Model?",
+                "Resume Training?" if saved_dataset else "Generate Training Model?",
                 size=20,
                 weight=ft.FontWeight.BOLD,
                 color=LightTheme.TEXT_PRIMARY,
             ),
             bgcolor=LightTheme.BG_ELEVATED,
             content=ft.Text(
-                f"Would you like to generate Q&A pairs from this PDF and train a personalized model?\n\n"
-                f"This will:\n"
-                f"• Generate Q&A pairs from {len(text_chunks)} chunks\n"
-                f"• Train a DoRA adapter on your data\n"
-                f"• Store encrypted adapter in your vault\n\n"
-                f"Note: This may take several minutes.",
+                content_text,
                 color=LightTheme.TEXT_SECONDARY,
             ),
-            actions=[
-                ft.TextButton(
-                    "No",
-                    on_click=on_no,
-                    style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
-                ),
-                ft.Container(
-                    content=ft.ElevatedButton(
-                        "Yes, Generate Model",
-                        icon=ft.Icons.AUTO_AWESOME_ROUNDED,
-                        style=ft.ButtonStyle(
-                            bgcolor=LightTheme.ACCENT_PRIMARY,
-                            color="white",
-                            shape=ft.RoundedRectangleBorder(radius=8),
-                        ),
-                        on_click=on_yes
-                    ),
-                    gradient=LightTheme.get_gradient(LightTheme.GRADIENT_PRIMARY),
-                    border_radius=8,
-                ),
-            ],
+            actions=actions,
             actions_alignment=ft.MainAxisAlignment.END,
         )
         

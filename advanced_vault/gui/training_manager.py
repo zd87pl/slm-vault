@@ -571,9 +571,12 @@ class TrainingManager:
         
         logger.info(f"Saved encrypted dataset to {encrypted_path}")
         
-        # Store encryption key separately (for later use in training)
-        # The key will be sent to backend along with dataset URL
-        # We don't store the key here - it's passed to submit_training_job
+        # Save encryption key to separate file for resume functionality
+        # This allows resuming training if upload fails (session expiration, etc.)
+        # The key file is stored alongside the encrypted dataset
+        key_path = encrypted_path.with_suffix('.key')
+        key_path.write_text(encryption_key.hex())
+        logger.debug(f"Saved encryption key to {key_path}")
         
         return str(encrypted_path)
     
