@@ -1443,8 +1443,14 @@ class VaultApp:
                                     duration=5000,
                                 )
                                 self.page.snack_bar.open = True
+                                self.page.update()
                                 self.show_landing_page()  # Refresh to show updated status
-                            show_completed()
+                            
+                            # Run on main thread
+                            if hasattr(self.page, 'run_task'):
+                                self.page.run_task(show_completed)
+                            else:
+                                show_completed()
                             return
                         elif status == "failed":
                             self._update_document_status(doc_name, "failed", adapter_id_from_vault)
@@ -1455,7 +1461,12 @@ class VaultApp:
                                 )
                                 self.page.snack_bar.open = True
                                 self.page.update()
-                            show_failed()
+                                self.show_landing_page()  # Refresh to show updated status
+                            
+                            if hasattr(self.page, 'run_task'):
+                                self.page.run_task(show_failed)
+                            else:
+                                show_failed()
                             return
                         elif status in ["pending", "training", "in_progress", "in_queue"]:
                             # Still training
@@ -1467,7 +1478,11 @@ class VaultApp:
                                 )
                                 self.page.snack_bar.open = True
                                 self.page.update()
-                            show_still_training()
+                            
+                            if hasattr(self.page, 'run_task'):
+                                self.page.run_task(show_still_training)
+                            else:
+                                show_still_training()
                             return
                         
                     except Exception as status_err:
@@ -1526,7 +1541,7 @@ class VaultApp:
                             # Training completed! Update the vault entry
                             self._update_document_status(doc_name, "completed", doc_job.get("adapter_id"))
                             
-                            def show_completed():
+                            def show_completed_fallback():
                                 self.page.snack_bar = ft.SnackBar(
                                     content=ft.Row([
                                         ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
@@ -1536,18 +1551,27 @@ class VaultApp:
                                     duration=5000,
                                 )
                                 self.page.snack_bar.open = True
+                                self.page.update()
                                 self.show_landing_page()  # Refresh to show updated status
-                            show_completed()
+                            
+                            if hasattr(self.page, 'run_task'):
+                                self.page.run_task(show_completed_fallback)
+                            else:
+                                show_completed_fallback()
                             return
                         elif status == "failed":
-                            def show_failed():
+                            def show_failed_fallback():
                                 self.page.snack_bar = ft.SnackBar(
                                     content=ft.Text(f"❌ Training failed for '{doc_name}'", color="white"),
                                     bgcolor=LightTheme.ACCENT_ERROR,
                                 )
                                 self.page.snack_bar.open = True
                                 self.page.update()
-                            show_failed()
+                            
+                            if hasattr(self.page, 'run_task'):
+                                self.page.run_task(show_failed_fallback)
+                            else:
+                                show_failed_fallback()
                             return
                 
                 # Still pending/training or status unknown
@@ -1559,18 +1583,26 @@ class VaultApp:
                     )
                     self.page.snack_bar.open = True
                     self.page.update()
-                show_pending()
+                
+                if hasattr(self.page, 'run_task'):
+                    self.page.run_task(show_pending)
+                else:
+                    show_pending()
                 
             except Exception as ex:
                 logger.error(f"Error checking training status: {ex}")
-                def show_error():
+                def show_status_error():
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Text(f"❌ Error checking status: {str(ex)}", color="white"),
                         bgcolor=LightTheme.ACCENT_ERROR,
                     )
                     self.page.snack_bar.open = True
                     self.page.update()
-                show_error()
+                
+                if hasattr(self.page, 'run_task'):
+                    self.page.run_task(show_status_error)
+                else:
+                    show_status_error()
         
         import threading
         threading.Thread(target=check_in_background, daemon=True).start()
