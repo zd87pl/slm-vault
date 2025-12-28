@@ -282,7 +282,8 @@ class SecureSyntheticGenerator:
     def _build_prompt(self, chunk_text: str, num_pairs: int) -> str:
         """Build the prompt for Q&A generation."""
         # Simple direct prompt - no examples to copy
-        return f"""Generate {num_pairs} question-answer pairs as JSON from this document.
+        # End with start of JSON to guide model output
+        return f'''Generate {num_pairs} question-answer pairs as JSON from this document.
 
 DOCUMENT:
 {chunk_text}
@@ -293,7 +294,7 @@ RULES:
 3. Output ONLY valid JSON array, no other text
 
 JSON OUTPUT:
-[{{"question": """"
+[{{"question": "'''
 
     def _parse_response(self, response: str) -> List[Dict[str, str]]:
         """Parse JSON Q&A pairs from model response."""
