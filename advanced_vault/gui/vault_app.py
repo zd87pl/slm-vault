@@ -5688,10 +5688,12 @@ class VaultApp:
                     self._update_training_phase(
                         phase_text, progress_bar, phase_status, phase_steps,
                         phase=3,
-                        message="✅ Training submitted!",
-                        submessage="Your adapter will be ready in ~5-10 minutes",
+                        message="✅ Submitted to cloud!",
+                        submessage="Training runs in background (~5-10 min). Click Done to continue using the app!",
                         progress=1.0
                     )
+                    # Mark step 4 as completed
+                    phase_steps.controls[3] = self._create_phase_step("Submit to cloud ☁️", 3, True)
                     progress_dialog.actions = [
                         ft.ElevatedButton(
                             "Done",
@@ -6028,8 +6030,8 @@ class VaultApp:
             [
                 self._create_phase_step("Extracting text", 0, False),
                 self._create_phase_step("Analyzing content", 1, False),
-                self._create_phase_step("Encrypting data", 2, False),
-                self._create_phase_step("Cloud sync", 3, False),
+                self._create_phase_step("Encrypting & uploading", 2, False),
+                self._create_phase_step("Submit to cloud ☁️", 3, False),
             ],
             spacing=8,
         )
@@ -6173,7 +6175,7 @@ class VaultApp:
             ("Preparing the document", "📄 Splitting document into sections..."),
             ("Knowledge extraction", "💡 Extracting knowledge from your content..."),
             ("Uploading encrypted data", "☁️ Uploading encrypted data to secure cloud storage..."),
-            ("Generating Vault Data", "🔐 Generating your encrypted vault data..."),
+            ("Submit to cloud ☁️", "🚀 Submitting training job to secure cloud..."),
         ]
         
         phase_name, default_msg = phases[phase] if phase < len(phases) else ("", "")
@@ -6449,12 +6451,12 @@ class VaultApp:
                 except Exception:
                     update_phase3_upload()
                 
-                # Phase 4: Generating Vault Data (submit training job)
+                # Phase 4: Submit to cloud (training job)
                 def update_phase4():
                     self._update_training_phase(
                         phase_text, progress_bar, phase_status, phase_steps,
                         phase=3,
-                        message="🔐 Submitting Training Job...",
+                        message="🚀 Submitting to cloud...",
                         submessage="Sending encrypted data to secure cloud (Qwen3-30B MoE model, ~2-5 min)",
                         progress=0.85
                     )
@@ -6480,8 +6482,8 @@ class VaultApp:
                     self._update_training_phase(
                         phase_text, progress_bar, phase_status, phase_steps,
                         phase=3,
-                        message="🔐 Generating Vault Data...",
-                        submessage="Your encrypted vault data is being generated on secure infrastructure (check Training Jobs for progress)",
+                        message="☁️ Cloud training starting...",
+                        submessage="Training runs asynchronously on secure cloud infrastructure",
                         progress=0.95
                     )
                 
@@ -6531,8 +6533,8 @@ class VaultApp:
                     phases = [
                         "Preparing the document",
                         "Knowledge extraction",
-                        "Uploading encrypted data",
-                        "Generating Vault Data"
+                        "Encrypting & uploading",
+                        "Submit to cloud ☁️"
                     ]
                     for i in range(4):
                         step = self._create_phase_step(phases[i], i, True)
