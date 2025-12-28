@@ -1433,56 +1433,38 @@ class VaultApp:
                             # Training completed! Update the vault entry
                             self._update_document_status(doc_name, "completed", adapter_id_from_vault)
                             
-                            def show_completed():
-                                self.page.snack_bar = ft.SnackBar(
-                                    content=ft.Row([
-                                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
-                                        ft.Text(f"🎉 '{doc_name}' training completed! Ready to chat.", color="white"),
-                                    ], spacing=12),
-                                    bgcolor=LightTheme.ACCENT_SUCCESS,
-                                    duration=5000,
-                                )
-                                self.page.snack_bar.open = True
-                                self.page.update()
-                                self.show_landing_page()  # Refresh to show updated status
-                            
-                            # Run on main thread
-                            if hasattr(self.page, 'run_task'):
-                                self.page.run_task(show_completed)
-                            else:
-                                show_completed()
+                            # Show success and refresh UI
+                            self.page.snack_bar = ft.SnackBar(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
+                                    ft.Text(f"🎉 '{doc_name}' training completed! Ready to chat.", color="white"),
+                                ], spacing=12),
+                                bgcolor=LightTheme.ACCENT_SUCCESS,
+                                duration=5000,
+                            )
+                            self.page.snack_bar.open = True
+                            self.page.update()
+                            self.show_landing_page()  # Refresh to show updated status
                             return
                         elif status == "failed":
                             self._update_document_status(doc_name, "failed", adapter_id_from_vault)
-                            def show_failed():
-                                self.page.snack_bar = ft.SnackBar(
-                                    content=ft.Text(f"❌ Training failed for '{doc_name}'", color="white"),
-                                    bgcolor=LightTheme.ACCENT_ERROR,
-                                )
-                                self.page.snack_bar.open = True
-                                self.page.update()
-                                self.show_landing_page()  # Refresh to show updated status
-                            
-                            if hasattr(self.page, 'run_task'):
-                                self.page.run_task(show_failed)
-                            else:
-                                show_failed()
+                            self.page.snack_bar = ft.SnackBar(
+                                content=ft.Text(f"❌ Training failed for '{doc_name}'", color="white"),
+                                bgcolor=LightTheme.ACCENT_ERROR,
+                            )
+                            self.page.snack_bar.open = True
+                            self.page.update()
+                            self.show_landing_page()  # Refresh to show updated status
                             return
                         elif status in ["pending", "training", "in_progress", "in_queue"]:
                             # Still training
-                            def show_still_training():
-                                self.page.snack_bar = ft.SnackBar(
-                                    content=ft.Text(f"⏳ '{doc_name}' is still training. Check back in a few minutes.", color="white"),
-                                    bgcolor=LightTheme.ACCENT_WARNING,
-                                    duration=4000,
-                                )
-                                self.page.snack_bar.open = True
-                                self.page.update()
-                            
-                            if hasattr(self.page, 'run_task'):
-                                self.page.run_task(show_still_training)
-                            else:
-                                show_still_training()
+                            self.page.snack_bar = ft.SnackBar(
+                                content=ft.Text(f"⏳ '{doc_name}' is still training. Check back in a few minutes.", color="white"),
+                                bgcolor=LightTheme.ACCENT_WARNING,
+                                duration=4000,
+                            )
+                            self.page.snack_bar.open = True
+                            self.page.update()
                             return
                         
                     except Exception as status_err:
@@ -1541,68 +1523,44 @@ class VaultApp:
                             # Training completed! Update the vault entry
                             self._update_document_status(doc_name, "completed", doc_job.get("adapter_id"))
                             
-                            def show_completed_fallback():
-                                self.page.snack_bar = ft.SnackBar(
-                                    content=ft.Row([
-                                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
-                                        ft.Text(f"🎉 '{doc_name}' training completed! Ready to chat.", color="white"),
-                                    ], spacing=12),
-                                    bgcolor=LightTheme.ACCENT_SUCCESS,
-                                    duration=5000,
-                                )
-                                self.page.snack_bar.open = True
-                                self.page.update()
-                                self.show_landing_page()  # Refresh to show updated status
-                            
-                            if hasattr(self.page, 'run_task'):
-                                self.page.run_task(show_completed_fallback)
-                            else:
-                                show_completed_fallback()
+                            self.page.snack_bar = ft.SnackBar(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
+                                    ft.Text(f"🎉 '{doc_name}' training completed! Ready to chat.", color="white"),
+                                ], spacing=12),
+                                bgcolor=LightTheme.ACCENT_SUCCESS,
+                                duration=5000,
+                            )
+                            self.page.snack_bar.open = True
+                            self.page.update()
+                            self.show_landing_page()  # Refresh to show updated status
                             return
                         elif status == "failed":
-                            def show_failed_fallback():
-                                self.page.snack_bar = ft.SnackBar(
-                                    content=ft.Text(f"❌ Training failed for '{doc_name}'", color="white"),
-                                    bgcolor=LightTheme.ACCENT_ERROR,
-                                )
-                                self.page.snack_bar.open = True
-                                self.page.update()
-                            
-                            if hasattr(self.page, 'run_task'):
-                                self.page.run_task(show_failed_fallback)
-                            else:
-                                show_failed_fallback()
+                            self.page.snack_bar = ft.SnackBar(
+                                content=ft.Text(f"❌ Training failed for '{doc_name}'", color="white"),
+                                bgcolor=LightTheme.ACCENT_ERROR,
+                            )
+                            self.page.snack_bar.open = True
+                            self.page.update()
                             return
                 
                 # Still pending/training or status unknown
-                def show_pending():
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text(f"⏳ '{doc_name}' is still training. Check back in a few minutes.", color="white"),
-                        bgcolor=LightTheme.ACCENT_WARNING,
-                        duration=4000,
-                    )
-                    self.page.snack_bar.open = True
-                    self.page.update()
-                
-                if hasattr(self.page, 'run_task'):
-                    self.page.run_task(show_pending)
-                else:
-                    show_pending()
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"⏳ '{doc_name}' is still training. Check back in a few minutes.", color="white"),
+                    bgcolor=LightTheme.ACCENT_WARNING,
+                    duration=4000,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
                 
             except Exception as ex:
                 logger.error(f"Error checking training status: {ex}")
-                def show_status_error():
-                    self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text(f"❌ Error checking status: {str(ex)}", color="white"),
-                        bgcolor=LightTheme.ACCENT_ERROR,
-                    )
-                    self.page.snack_bar.open = True
-                    self.page.update()
-                
-                if hasattr(self.page, 'run_task'):
-                    self.page.run_task(show_status_error)
-                else:
-                    show_status_error()
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Error checking status: {str(ex)}", color="white"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
         
         import threading
         threading.Thread(target=check_in_background, daemon=True).start()
