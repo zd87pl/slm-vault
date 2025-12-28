@@ -23,9 +23,13 @@ ERROR_PATTERNS = [
      "https://docs.enclave.ai/troubleshooting/ssl-errors"),
     
     # Authentication errors
+    (r"Session.*expired|refresh.*token.*already.*used|log.*out.*log.*in|needs.*to.*log.*in",
+     "Your session has expired. Please log out and log back in to continue.",
+     "SESSION_EXPIRED"),  # Special marker for session errors
+    
     (r"401|Unauthorized|invalid.*token|expired.*token|authentication.*failed",
      "Your session has expired. Please log out and log back in.",
-     "https://docs.enclave.ai/troubleshooting/authentication"),
+     "SESSION_EXPIRED"),
     
     (r"403|Forbidden|permission.*denied|access.*denied",
      "You don't have permission to perform this action. Please contact support if you believe this is an error.",

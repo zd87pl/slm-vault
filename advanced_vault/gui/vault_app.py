@@ -1664,6 +1664,23 @@ class VaultApp:
 
         # Show auth screen
         self.show_auth_screen()
+    
+    def _force_logout_and_close_dialog(self, dialog):
+        """Force logout and close any open dialog (used for session expiration errors)."""
+        # Close the dialog first
+        dialog.open = False
+        self.page.update()
+        
+        # Show a snackbar explaining the re-login
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text("Session expired. Please log in again to continue."),
+            bgcolor=LightTheme.ACCENT_PRIMARY,
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+        
+        # Perform logout
+        self.logout()
 
     def check_backend_connectivity(self):
         """Check Compute Pipeline (backend API) connectivity."""
@@ -5442,20 +5459,41 @@ class VaultApp:
                 
             except Exception as ex:
                 logger.error(f"Error in training workflow: {ex}")
-                user_msg, _ = make_user_friendly(str(ex), context="training")
+                user_msg, help_link = make_user_friendly(str(ex), context="training")
+                is_session_error = help_link == "SESSION_EXPIRED"
                 
                 def show_error():
                     # Update dialog to show error
                     phase_text.value = f"❌ Error: {user_msg}"
                     phase_status.value = "Training workflow failed. Your data remains secure."
                     progress_bar.value = None  # Indeterminate
-                    progress_dialog.actions = [
+                    
+                    # Build action buttons
+                    actions = []
+                    
+                    # Add logout button if session expired
+                    if is_session_error:
+                        actions.append(
+                            ft.ElevatedButton(
+                                "Log Out & Re-Login",
+                                icon=ft.Icons.LOGOUT_ROUNDED,
+                                on_click=lambda e: self._force_logout_and_close_dialog(progress_dialog),
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                                    color="white",
+                                ),
+                            )
+                        )
+                    
+                    actions.append(
                         ft.TextButton(
                             "Close",
                             on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update(),
                             style=ft.ButtonStyle(color=LightTheme.ACCENT_ERROR),
                         ),
-                    ]
+                    )
+                    
+                    progress_dialog.actions = actions
                     self.page.update()
                     
                     # Also show snackbar
