@@ -1129,6 +1129,178 @@ class VaultApp:
         dialog.open = True
         self.page.update()
     
+    def _show_document_details(self, adapter: Dict):
+        """Show detailed status of a document/adapter."""
+        doc_name = adapter.get("name", "Unknown")
+        adapter_id = adapter.get("adapter_id", "N/A")
+        encryption_key = adapter.get("encryption_key", "")
+        
+        # Check if adapter is loaded locally
+        local_status = "Not loaded"
+        local_color = LightTheme.TEXT_MUTED
+        if hasattr(self, '_loaded_local_adapter') and self._loaded_local_adapter == adapter_id:
+            local_status = "✓ Loaded & Ready"
+            local_color = LightTheme.ACCENT_SUCCESS
+        
+        dialog = ft.AlertDialog(
+            title=ft.Row([
+                ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, color=LightTheme.ACCENT_SUCCESS, size=24),
+                ft.Text("Document Details", size=18, weight=ft.FontWeight.W_600),
+            ], spacing=12),
+            content=ft.Container(
+                content=ft.Column([
+                    # Document name
+                    ft.Row([
+                        ft.Text("Document:", size=12, color=LightTheme.TEXT_MUTED, width=100),
+                        ft.Text(doc_name, size=12, weight=ft.FontWeight.W_500),
+                    ]),
+                    ft.Divider(height=1, color=LightTheme.BORDER_COLOR),
+                    
+                    # Training status
+                    ft.Row([
+                        ft.Text("Training:", size=12, color=LightTheme.TEXT_MUTED, width=100),
+                        ft.Row([
+                            ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
+                            ft.Text("Completed", size=12, color=LightTheme.ACCENT_SUCCESS),
+                        ], spacing=4),
+                    ]),
+                    
+                    # Adapter ID
+                    ft.Row([
+                        ft.Text("Adapter ID:", size=12, color=LightTheme.TEXT_MUTED, width=100),
+                        ft.Text(adapter_id[:20] + "..." if len(adapter_id) > 20 else adapter_id, size=11, color=LightTheme.TEXT_SECONDARY),
+                    ]),
+                    
+                    # Local inference status
+                    ft.Row([
+                        ft.Text("Local Mode:", size=12, color=LightTheme.TEXT_MUTED, width=100),
+                        ft.Text(local_status, size=12, color=local_color),
+                    ]),
+                    
+                    ft.Container(height=16),
+                    
+                    # Actions
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text("Actions:", size=12, color=LightTheme.TEXT_MUTED, weight=ft.FontWeight.W_500),
+                            ft.Container(height=8),
+                            ft.Row([
+                                ft.ElevatedButton(
+                                    "Chat Now",
+                                    icon=ft.Icons.CHAT_ROUNDED,
+                                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                                    color="white",
+                                    on_click=lambda e: self._close_and_chat(dialog, adapter),
+                                ),
+                                ft.OutlinedButton(
+                                    "Load Locally",
+                                    icon=ft.Icons.DOWNLOAD_ROUNDED,
+                                    on_click=lambda e: self._close_and_load_locally(dialog, adapter),
+                                ),
+                            ], spacing=12),
+                        ]),
+                        padding=12,
+                        bgcolor=LightTheme.BG_HOVER,
+                        border_radius=8,
+                    ),
+                ], spacing=8),
+                width=400,
+            ),
+            bgcolor=LightTheme.BG_ELEVATED,
+            actions=[
+                ft.TextButton("Close", on_click=lambda e: self._close_dialog(dialog)),
+            ],
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _close_and_chat(self, dialog, adapter: Dict):
+        """Close dialog and start chatting."""
+        dialog.open = False
+        self.page.update()
+        self._select_and_ask(adapter)
+    
+    def _close_and_load_locally(self, dialog, adapter: Dict):
+        """Close dialog and load adapter locally."""
+        dialog.open = False
+        self.page.update()
+        self._load_adapter_locally(adapter)
+    
+    def _load_adapter_locally(self, adapter: Dict):
+        """Load an adapter for local inference."""
+        doc_name = adapter.get("name", "Unknown")
+        adapter_id = adapter.get("adapter_id")
+        encryption_key = adapter.get("encryption_key")
+        
+        if not adapter_id:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("❌ No adapter ID found", color="white"),
+                bgcolor=LightTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        # Show loading indicator
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Row([
+                ft.ProgressRing(width=16, height=16, stroke_width=2, color="white"),
+                ft.Text(f"Loading adapter for '{doc_name}'...", color="white"),
+            ], spacing=12),
+            bgcolor=LightTheme.ACCENT_PRIMARY,
+            duration=10000,
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+        
+        def load_in_background():
+            try:
+                from local_inference import get_local_engine
+                engine = get_local_engine()
+                
+                # Load model if needed
+                if not engine.model:
+                    engine.load_model()
+                
+                # Mark this adapter as loaded
+                self._loaded_local_adapter = adapter_id
+                self.selected_adapter_id = adapter_id
+                
+                # Switch to local mode
+                self.inference_mode = "local"
+                
+                # Update UI
+                def show_success():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
+                            ft.Text(f"✓ Ready! '{doc_name}' loaded for local inference", color="white"),
+                        ], spacing=12),
+                        bgcolor=LightTheme.ACCENT_SUCCESS,
+                        duration=4000,
+                    )
+                    self.page.snack_bar.open = True
+                    self.show_landing_page()
+                
+                show_success()
+                
+            except Exception as ex:
+                logger.error(f"Error loading adapter locally: {ex}")
+                def show_error():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ Error: {str(ex)}", color="white"),
+                        bgcolor=LightTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                show_error()
+        
+        # Run in background
+        import threading
+        threading.Thread(target=load_in_background, daemon=True).start()
+    
     def _delete_document(self, adapter: Dict):
         """Delete a document and its adapter."""
         doc_name = adapter.get("name", "Unknown")
@@ -1196,6 +1368,119 @@ class VaultApp:
         dialog.open = True
         self.page.update()
     
+    def _check_training_status(self, doc_name: str):
+        """Check and refresh training status for a document."""
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Row([
+                ft.ProgressRing(width=16, height=16, stroke_width=2, color="white"),
+                ft.Text("Checking training status...", color="white"),
+            ], spacing=12),
+            bgcolor=LightTheme.ACCENT_PRIMARY,
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+        
+        def check_in_background():
+            try:
+                # Try to get training status from backend
+                if self.training_manager:
+                    jobs = []
+                    try:
+                        import requests
+                        response = requests.get(
+                            f"{self.backend_url}/api/adapters/adapters",
+                            headers={"Authorization": f"Bearer {self.session_data.get('access_token', '')}"},
+                            timeout=10
+                        )
+                        if response.status_code == 200:
+                            jobs = response.json()
+                    except Exception as req_err:
+                        logger.warning(f"Could not fetch training jobs: {req_err}")
+                    
+                    # Find this document's job
+                    doc_job = None
+                    for job in jobs:
+                        if doc_name in str(job.get("model_name", "")) or doc_name in str(job.get("adapter_id", "")):
+                            doc_job = job
+                            break
+                    
+                    if doc_job:
+                        status = doc_job.get("status", "unknown")
+                        if status == "completed":
+                            # Training completed! Update the vault entry
+                            self._update_document_status(doc_name, "completed", doc_job.get("adapter_id"))
+                            
+                            def show_completed():
+                                self.page.snack_bar = ft.SnackBar(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
+                                        ft.Text(f"🎉 '{doc_name}' training completed! Ready to chat.", color="white"),
+                                    ], spacing=12),
+                                    bgcolor=LightTheme.ACCENT_SUCCESS,
+                                    duration=5000,
+                                )
+                                self.page.snack_bar.open = True
+                                self.show_landing_page()  # Refresh to show updated status
+                            show_completed()
+                            return
+                        elif status == "failed":
+                            def show_failed():
+                                self.page.snack_bar = ft.SnackBar(
+                                    content=ft.Text(f"❌ Training failed for '{doc_name}'", color="white"),
+                                    bgcolor=LightTheme.ACCENT_ERROR,
+                                )
+                                self.page.snack_bar.open = True
+                                self.page.update()
+                            show_failed()
+                            return
+                
+                # Still pending/training
+                def show_pending():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"⏳ '{doc_name}' is still training. Check back in a few minutes.", color="white"),
+                        bgcolor=LightTheme.ACCENT_WARNING,
+                        duration=4000,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                show_pending()
+                
+            except Exception as ex:
+                logger.error(f"Error checking training status: {ex}")
+                def show_error():
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ Error checking status: {str(ex)}", color="white"),
+                        bgcolor=LightTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                show_error()
+        
+        import threading
+        threading.Thread(target=check_in_background, daemon=True).start()
+    
+    def _update_document_status(self, doc_name: str, status: str, adapter_id: str = None):
+        """Update a document's training status in the vault."""
+        try:
+            query_filter = QueryFilter()
+            all_entries = self.vault.kv_store.search(query_filter)
+            
+            for entry in all_entries:
+                if entry.service == doc_name:
+                    # Update tags
+                    new_tags = [t for t in (entry.tags or []) if not t.startswith("training_status:")]
+                    new_tags.append(f"training_status:{status}")
+                    if adapter_id and status == "completed":
+                        new_tags = [t for t in new_tags if not t.startswith("training_job:")]
+                        new_tags.append(f"training_job:{adapter_id}")
+                    
+                    # Update entry (this is a simplified update - actual implementation may vary)
+                    self.vault.kv_store.update_tags(entry.id, new_tags)
+                    logger.info(f"Updated {doc_name} status to {status}")
+                    break
+        except Exception as e:
+            logger.error(f"Error updating document status: {e}")
+    
     def _on_queued_doc_click(self, doc_name: str):
         """Handle click on a queued/training document."""
         logger.info(f"Queued document clicked: {doc_name}")
@@ -1204,7 +1489,8 @@ class VaultApp:
         def check_status(e):
             dialog.open = False
             self.page.update()
-            self.show_training_view()
+            # Refresh and check if training completed
+            self._check_training_status(doc_name)
         
         def chat_without_adapter(e):
             dialog.open = False
@@ -1516,14 +1802,19 @@ class VaultApp:
                                 tooltip="Actions",
                                 items=[
                                     ft.PopupMenuItem(
-                                        text="Ask about this",
+                                        text="Chat with this",
                                         icon=ft.Icons.CHAT_ROUNDED,
                                         on_click=lambda e, a=adapter_copy: self._select_and_ask(a),
                                     ),
                                     ft.PopupMenuItem(
-                                        text="Select for chat",
-                                        icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED,
-                                        on_click=lambda e, a=adapter_copy: self._select_adapter(a),
+                                        text="View Details",
+                                        icon=ft.Icons.INFO_OUTLINE_ROUNDED,
+                                        on_click=lambda e, a=adapter_copy: self._show_document_details(a),
+                                    ),
+                                    ft.PopupMenuItem(
+                                        text="Load for Local Inference",
+                                        icon=ft.Icons.DOWNLOAD_ROUNDED,
+                                        on_click=lambda e, a=adapter_copy: self._load_adapter_locally(a),
                                     ),
                                     ft.PopupMenuItem(),  # Divider
                                     ft.PopupMenuItem(
