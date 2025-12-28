@@ -185,7 +185,9 @@ class VaultApp:
         if self.session_data:
             # User is authenticated, initialize vault
             self.initialize_vault()
-            self.build_ui()
+            
+            # Show chat-first landing page (not the old secrets view)
+            self.show_landing_page()
             
             # Initialize PDF processor after GUI is ready
             self._initialize_pdf_processor()
@@ -1049,7 +1051,7 @@ class VaultApp:
                     content=ft.Row(
                         [
                             ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
-                            ft.Text(
+                                ft.Text(
                                 adapter["name"][:25] + ("..." if len(adapter["name"]) > 25 else ""),
                                 size=12,
                                 color=LightTheme.TEXT_PRIMARY,
@@ -1080,7 +1082,7 @@ class VaultApp:
                 if status in ["pending", "training"]:
                     status_text = "⏳ Queued" if status == "pending" else "☁️ Training..."
                     doc_items.append(
-                        ft.Container(
+                    ft.Container(
                             content=ft.Row(
                                 [
                                     ft.ProgressRing(width=14, height=14, stroke_width=2, color=LightTheme.ACCENT_WARNING) if status == "training" else ft.Icon(ft.Icons.HOURGLASS_EMPTY_ROUNDED, size=14, color=LightTheme.ACCENT_WARNING),
@@ -1104,8 +1106,8 @@ class VaultApp:
                     )
         
         left_sidebar = ft.Container(
-            content=ft.Column(
-                [
+                        content=ft.Column(
+                            [
                     # Logo and title
                     ft.Container(
                         content=ft.Row(
@@ -1249,8 +1251,8 @@ class VaultApp:
                     
                     # Privacy status at bottom
                     ft.Container(
-                        content=ft.Column(
-                            [
+                                        content=ft.Column(
+                                            [
                                 ft.Row([
                                     ft.Icon(ft.Icons.VERIFIED_USER_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
                                     ft.Text("E2E Encrypted", size=10, color=LightTheme.ACCENT_SUCCESS),
@@ -1264,17 +1266,17 @@ class VaultApp:
                                         ft.Icons.CLOUD_DONE_ROUNDED if backend_connected else ft.Icons.CLOUD_OFF_ROUNDED,
                                         size=14,
                                         color=LightTheme.ACCENT_SUCCESS if backend_connected else LightTheme.TEXT_MUTED,
-                                    ),
-                                    ft.Text(
+                                                ),
+                                                ft.Text(
                                         "Cloud Sync" if backend_connected else "Offline",
                                         size=10,
                                         color=LightTheme.ACCENT_SUCCESS if backend_connected else LightTheme.TEXT_MUTED,
                                     ),
                                 ], spacing=6),
-                            ],
-                            spacing=4,
-                        ),
-                        padding=16,
+                                            ],
+                                            spacing=4,
+                                    ),
+                                    padding=16,
                         bgcolor=LightTheme.ACCENT_SUCCESS + "08",
                         border=ft.border.only(top=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
                     ),
@@ -6358,7 +6360,7 @@ class VaultApp:
                                     logger.debug("Using RUNPOD_QA_API_KEY for QA generation")
                                 elif runpod_api_key:
                                     logger.debug("Using RUNPOD_API_KEY for QA generation")
-                                    
+                                        
                                 def update_phase2_synthetic():
                                     self._update_training_phase(
                                         phase_text, progress_bar, phase_status, phase_steps,
@@ -6367,7 +6369,7 @@ class VaultApp:
                                         submessage="Creating high-quality training pairs via cloud AI (~2-5 min, encrypted)",
                                         progress=0.35
                                     )
-                                
+                            
                                 try:
                                     if hasattr(self.page, 'run_task'):
                                         self.page.run_task(update_phase2_synthetic)
