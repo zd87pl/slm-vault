@@ -281,42 +281,43 @@ class SecureSyntheticGenerator:
     
     def _build_prompt(self, chunk_text: str, num_pairs: int) -> str:
         """Build the prompt for Q&A generation."""
-        # Qwen3 format - /no_think must be first user message content
-        return f"""<|im_start|>system
-You are a JSON generator. You output ONLY valid JSON arrays, nothing else. No explanations, no markdown, just JSON.<|im_end|>
-<|im_start|>user
-/no_think
+        # Simple direct prompt - no examples to copy
+        return f"""Generate {num_pairs} question-answer pairs as JSON from this document.
 
-Create exactly {num_pairs} question-answer pairs from this text. Return ONLY a JSON array.
-
-TEXT:
+DOCUMENT:
 {chunk_text}
 
-Return this exact format (valid JSON array):
-[
-  {{"question": "What is X?", "answer": "X is..."}},
-  {{"question": "How does Y work?", "answer": "Y works by..."}}
-]<|im_end|>
-<|im_start|>assistant
-["""
+RULES:
+1. Questions must be specific to this document's content
+2. Answers must be 2-4 sentences with facts from the document
+3. Output ONLY valid JSON array, no other text
+
+JSON OUTPUT:
+[{{"question": """"
 
     def _parse_response(self, response: str) -> List[Dict[str, str]]:
         """Parse JSON Q&A pairs from model response."""
         import re
         
         # Clean response
-        original_response = response
         response = response.strip()
+        
+        # Remove thinking tags if present
+        if "</think>" in response:
+            response = response.split("</think>")[-1].strip()
+        if "<think>" in response:
+            response = response.split("<think>")[0].strip()
+        
+        # Remove chat markers
         if "<|im_end|>" in response:
             response = response.split("<|im_end|>")[0]
         
         # Remove control characters that break JSON parsing
         response = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', response)
         
-        # Since our prompt ends with "[", the response continues the array
-        # Prepend "[" if the response doesn't start with it
+        # Our prompt ends with '[{"question": "' so prepend that
         if not response.startswith('['):
-            response = '[' + response
+            response = '[{"question": "' + response
         
         # Log what we received for debugging
         logger.info(f"Raw response (first 300 chars): {response[:300]}")
