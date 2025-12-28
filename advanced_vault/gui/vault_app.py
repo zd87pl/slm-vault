@@ -2053,28 +2053,49 @@ class VaultApp:
         data_type = entry.get('data_type', 'secret')
         tags = entry.get('tags', [])
 
+        # Determine icon based on type and training status
+        if data_type == 'secret':
+            entry_icon = ft.Icons.KEY_ROUNDED
+            icon_color = LightTheme.TEXT_PRIMARY
+            icon_bg_color = LightTheme.BG_ELEVATED
+        elif training_status == "completed":
+            entry_icon = ft.Icons.SMART_TOY_ROUNDED
+            icon_color = "#FFFFFF"
+            icon_bg_color = LightTheme.ACCENT_SUCCESS
+        elif training_status in ["pending", "training"]:
+            entry_icon = ft.Icons.MODEL_TRAINING_ROUNDED
+            icon_color = LightTheme.ACCENT_WARNING
+            icon_bg_color = LightTheme.BG_ELEVATED
+        else:
+            entry_icon = ft.Icons.LIGHTBULB_ROUNDED
+            icon_color = LightTheme.TEXT_PRIMARY
+            icon_bg_color = LightTheme.BG_ELEVATED
+        
         # Compact icon with subtle background
         icon_bg = ft.Container(
             content=ft.Icon(
-                ft.Icons.KEY_ROUNDED if data_type == 'secret' else ft.Icons.LIGHTBULB_ROUNDED,
-                color=LightTheme.TEXT_PRIMARY,
+                entry_icon,
+                color=icon_color,
                 size=LightTheme.ICON_SIZE_SM
             ),
             width=36,
             height=36,
             border_radius=8,
-            bgcolor=LightTheme.BG_ELEVATED,
+            bgcolor=icon_bg_color,
             alignment=ft.alignment.center,
         )
 
         # Extract training status from tags
         training_status = None
         training_job_id = None
+        training_key = None
         for tag in tags:
             if tag.startswith("training_status:"):
                 training_status = tag.split(":", 1)[1]
             elif tag.startswith("training_job:"):
                 training_job_id = tag.split(":", 1)[1]
+            elif tag.startswith("training_key:"):
+                training_key = tag.split(":", 1)[1]
         
         # Training status badge
         status_badge = None
@@ -2087,32 +2108,60 @@ class VaultApp:
             }
             status_icons = {
                 "pending": ft.Icons.HOURGLASS_EMPTY_ROUNDED,
-                "training": ft.Icons.TRAIN_ROUNDED,
-                "completed": ft.Icons.CHECK_CIRCLE_ROUNDED,
+                "training": ft.Icons.MODEL_TRAINING_ROUNDED,
+                "completed": ft.Icons.SMART_TOY_ROUNDED,
                 "failed": ft.Icons.ERROR_ROUNDED
+            }
+            status_labels = {
+                "pending": "Training Queued",
+                "training": "Training...",
+                "completed": "🧠 AI Ready",
+                "failed": "Training Failed"
             }
             status_color = status_colors.get(training_status, LightTheme.TEXT_MUTED)
             status_icon = status_icons.get(training_status, ft.Icons.INFO_ROUNDED)
+            status_label = status_labels.get(training_status, training_status.title())
             
-            status_badge = ft.Container(
-                content=ft.Row(
-                    [
-                        ft.Icon(status_icon, size=10, color=status_color),
-                        ft.Text(
-                            training_status.title(),
-                            size=LightTheme.FONT_SIZE_XS,
-                            weight=ft.FontWeight.W_500,
-                            color=status_color
-                        )
-                    ],
-                    spacing=3,
-                    tight=True
-                ),
-                bgcolor=status_color + "15",
-                padding=ft.padding.symmetric(horizontal=6, vertical=3),
-                border_radius=6,
-                border=ft.border.all(1, status_color + "30"),
-            )
+            # Make "completed" badge more prominent
+            if training_status == "completed":
+                status_badge = ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Icon(status_icon, size=12, color="#FFFFFF"),
+                            ft.Text(
+                                status_label,
+                                size=LightTheme.FONT_SIZE_XS,
+                                weight=ft.FontWeight.W_600,
+                                color="#FFFFFF"
+                            )
+                        ],
+                        spacing=4,
+                        tight=True
+                    ),
+                    bgcolor=status_color,
+                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                    border_radius=12,
+                )
+            else:
+                status_badge = ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Icon(status_icon, size=10, color=status_color),
+                            ft.Text(
+                                status_label,
+                                size=LightTheme.FONT_SIZE_XS,
+                                weight=ft.FontWeight.W_500,
+                                color=status_color
+                            )
+                        ],
+                        spacing=3,
+                        tight=True
+                    ),
+                    bgcolor=status_color + "15",
+                    padding=ft.padding.symmetric(horizontal=6, vertical=3),
+                    border_radius=6,
+                    border=ft.border.all(1, status_color + "30"),
+                )
 
         # Sleek tag chips
         regular_tags = [t for t in tags if not t.startswith("training_")]
@@ -2151,6 +2200,18 @@ class VaultApp:
                     tooltip="Train Model",
                     on_click=lambda _, e=entry: self._offer_training_from_entry(e),
                     icon_color=LightTheme.ACCENT_WARNING,
+                    icon_size=LightTheme.ICON_SIZE_SM,
+                )
+            )
+        
+        # Add "Ask" button for completed training entries
+        if training_status == "completed" and training_job_id and training_key:
+            action_buttons.append(
+                ft.IconButton(
+                    ft.Icons.QUESTION_ANSWER_ROUNDED,
+                    tooltip="Ask Questions",
+                    on_click=lambda _, job_id=training_job_id, key=training_key, svc=service: self._open_ask_dialog(job_id, key, svc),
+                    icon_color=LightTheme.ACCENT_SUCCESS,
                     icon_size=LightTheme.ICON_SIZE_SM,
                 )
             )
@@ -4838,8 +4899,8 @@ class VaultApp:
                                     self._update_training_phase(
                                         phase_text, progress_bar, phase_status, phase_steps,
                                         phase=1,
-                                        message="💡 Generating knowledge with cloud endpoint...",
-                                        submessage="Creating 1,000+ high-quality Q&A pairs (All data encrypted)",
+                                        message="🧠 Generating Q&A with Qwen3-30B...",
+                                        submessage="Creating high-quality training pairs via cloud AI (~2-5 min, encrypted)",
                                         progress=0.35
                                     )
                                 
@@ -4994,8 +5055,8 @@ class VaultApp:
                     self._update_training_phase(
                         phase_text, progress_bar, phase_status, phase_steps,
                         phase=3,
-                        message="🔐 Generating Vault Data...",
-                        submessage="Your encrypted data is being processed to generate vault data (this may take a few minutes)",
+                        message="🔐 Submitting Training Job...",
+                        submessage="Sending encrypted data to secure cloud (Qwen3-30B MoE model, ~2-5 min)",
                         progress=0.85
                     )
                 
@@ -5052,6 +5113,7 @@ class VaultApp:
                             # Add new training tags
                             tags.append(f"training_job:{result['adapter_id']}")
                             tags.append(f"training_status:pending")
+                            tags.append(f"training_key:{encryption_key_hex}")
                             # Update entry with new tags
                             self.vault.kv_store.put(
                                 service=entry.service,
@@ -5155,6 +5217,19 @@ class VaultApp:
         # Run workflow in background thread
         thread = threading.Thread(target=workflow, daemon=True)
         thread.start()
+    
+    def _open_ask_dialog(self, adapter_id: str, encryption_key_hex: str, filename: str):
+        """
+        Open the Ask dialog for a trained knowledge base.
+        This is called from the Knowledge list when clicking the Ask button on a completed adapter.
+        """
+        # Create a dummy parent dialog that does nothing (reusing the demo dialog logic)
+        class DummyDialog:
+            def __init__(self):
+                self.open = False
+        
+        dummy = DummyDialog()
+        self._show_demo_query_dialog(adapter_id, encryption_key_hex, filename, dummy)
     
     def _show_demo_query_dialog(self, knowledge_id: str, encryption_key_hex: str, filename: str, parent_dialog: ft.AlertDialog):
         """Show dialog for demo query to test the trained knowledge base."""
