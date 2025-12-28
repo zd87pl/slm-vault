@@ -4844,7 +4844,7 @@ class VaultApp:
                 
                 logger.info(f"Training job submitted: {job_id}")
                 
-                # Store entry in vault
+                # Store or update entry in vault (avoid duplicates)
                 entry_tags = [
                     "data_type:knowledge",
                     "source:pdf",
@@ -4853,9 +4853,9 @@ class VaultApp:
                     f"training_key:{encryption_key_hex}",
                 ]
                 
-                self.vault.kv_store.put(
-                    service=filename,
-                    secret_value=f"Adapter: {adapter_id}",
+                self._store_or_update_knowledge_entry(
+                    filename=filename,
+                    adapter_id=adapter_id,
                     tags=entry_tags,
                     description=f"Knowledge adapter trained from {filename}. Adapter ID: {adapter_id}",
                 )
@@ -6209,6 +6209,72 @@ class VaultApp:
             
             show_error()
     
+    def _store_or_update_knowledge_entry(
+        self, 
+        filename: str, 
+        adapter_id: str, 
+        tags: list, 
+        description: str
+    ):
+        """
+        Store or update a knowledge entry, avoiding duplicates.
+        
+        If an entry with the same filename exists, update it instead of creating a new one.
+        """
+        # Check if entry already exists
+        existing_entry = None
+        try:
+            filter = QueryFilter(service=filename, limit=10)
+            results = self.vault.kv_store.search(filter)
+            
+            # Find existing knowledge entry for this filename
+            for entry in results:
+                if entry.service == filename:
+                    # Check if it's a knowledge entry (has data_type:knowledge tag)
+                    if any(t.startswith("data_type:knowledge") for t in (entry.tags or [])):
+                        existing_entry = entry
+                        break
+        except Exception as e:
+            logger.warning(f"Could not search for existing entry: {e}")
+        
+        if existing_entry:
+            # Update existing entry instead of creating duplicate
+            logger.info(f"Updating existing knowledge entry for: {filename}")
+            try:
+                # Get decrypted value (or use placeholder)
+                decrypted_value = self.vault.kv_store.get_by_id(existing_entry.id)
+                if not decrypted_value:
+                    decrypted_value = f"Adapter: {adapter_id}"
+                
+                # Update with new tags and description
+                self.vault.kv_store.put(
+                    service=filename,
+                    secret_value=decrypted_value,
+                    entry_type=existing_entry.entry_type,
+                    tags=tags,
+                    description=description,
+                    entry_id=existing_entry.id,  # Use existing ID to update
+                )
+                logger.info(f"Updated existing entry: {existing_entry.id}")
+            except Exception as e:
+                logger.error(f"Failed to update existing entry, creating new: {e}")
+                # Fall back to creating new entry
+                self.vault.kv_store.put(
+                    service=filename,
+                    secret_value=f"Adapter: {adapter_id}",
+                    tags=tags,
+                    description=description,
+                )
+        else:
+            # Create new entry
+            logger.info(f"Creating new knowledge entry for: {filename}")
+            self.vault.kv_store.put(
+                service=filename,
+                secret_value=f"Adapter: {adapter_id}",
+                tags=tags,
+                description=description,
+            )
+    
     def _download_adapter_for_local(self, adapter_id: str) -> Optional[str]:
         """Download encrypted adapter for local inference."""
         try:
@@ -7146,8 +7212,7 @@ class VaultApp:
         
         progress_callback(80.0, "Training submitted...")
         
-        # Store entry in vault
-        entry_name = filename
+        # Store or update entry in vault (avoid duplicates)
         entry_tags = [
             "data_type:knowledge",
             "source:pdf",
@@ -7156,9 +7221,9 @@ class VaultApp:
             f"training_key:{encryption_key_hex}",
         ]
         
-        self.vault.kv_store.put(
-            service=entry_name,
-            secret_value=f"Adapter: {adapter_id}",
+        self._store_or_update_knowledge_entry(
+            filename=filename,
+            adapter_id=adapter_id,
             tags=entry_tags,
             description=f"Knowledge adapter trained from {filename}. Adapter ID: {adapter_id}",
         )
