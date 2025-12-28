@@ -7274,6 +7274,11 @@ class VaultApp:
     def show_training_view(self):
         """Show training jobs view."""
         self.current_view = "training"
+        
+        # Ensure main UI layout exists (secrets_list is created by build_ui)
+        if not hasattr(self, 'secrets_list') or self.secrets_list is None:
+            self.build_ui()
+        
         self.secrets_list.controls.clear()
         
         # Fetch training jobs from backend
@@ -7591,6 +7596,11 @@ class VaultApp:
             return
         
         self.current_view = "settings"
+        
+        # Ensure main UI layout exists (secrets_list is created by build_ui)
+        if not hasattr(self, 'secrets_list') or self.secrets_list is None:
+            self.build_ui()
+        
         self.secrets_list.controls.clear()
         
         # Get MCP setup status (uses cache to avoid repeated initialization)
@@ -8189,6 +8199,11 @@ class VaultApp:
     def show_library_view(self):
         """Show the Knowledge Library with training queue and folder watching."""
         self.current_view = "library"
+        
+        # Ensure main UI layout exists (secrets_list is created by build_ui)
+        if not hasattr(self, 'secrets_list') or self.secrets_list is None:
+            self.build_ui()
+        
         self.secrets_list.controls.clear()
         
         # Check if training queue is available
