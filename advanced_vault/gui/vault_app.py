@@ -173,6 +173,13 @@ class VaultApp:
         # Tracks documents being processed in background
         # Key: filename, Value: {status, step, progress, message, error}
         self.processing_documents: Dict[str, Dict[str, Any]] = {}
+        
+        # Inference mode: "cloud" or "local"
+        # Cloud uses RunPod endpoint, Local uses MLX/Ollama on device
+        self.inference_mode = "cloud"  # Default to cloud for better quality
+        
+        # Selected adapter for focused querying (None = all adapters)
+        self.selected_adapter_id = None
 
         # Check for existing session
         self.check_authentication()
@@ -913,6 +920,282 @@ class VaultApp:
             self.page.snack_bar.open = True
             self.page.update()
     
+    def _set_inference_mode(self, mode: str):
+        """Set inference mode (cloud or local)."""
+        if mode not in ["cloud", "local"]:
+            return
+        
+        old_mode = self.inference_mode
+        self.inference_mode = mode
+        logger.info(f"Inference mode changed: {old_mode} -> {mode}")
+        
+        # Show feedback
+        if mode == "cloud":
+            msg = "☁️ Cloud inference: Better quality, uses secure cloud"
+        else:
+            msg = "💻 Local inference: Private, works offline"
+        
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text(msg, color="white"),
+            bgcolor=LightTheme.ACCENT_PRIMARY if mode == "cloud" else LightTheme.ACCENT_SUCCESS,
+            duration=2000,
+        )
+        self.page.snack_bar.open = True
+        
+        # Refresh landing page to update toggle state
+        self.show_landing_page()
+    
+    def _show_adapter_selector(self, adapters: List[Dict]):
+        """Show popup to select which adapter to query."""
+        if not adapters:
+            return
+        
+        def select_adapter(adapter_id, name):
+            self.selected_adapter_id = adapter_id
+            dialog.open = False
+            self.page.update()
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"📄 Now asking: {name}", color="white"),
+                bgcolor=LightTheme.ACCENT_PRIMARY,
+                duration=2000,
+            )
+            self.page.snack_bar.open = True
+            self.show_landing_page()
+        
+        def select_all():
+            self.selected_adapter_id = None
+            dialog.open = False
+            self.page.update()
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"📚 Now asking all {len(adapters)} documents", color="white"),
+                bgcolor=LightTheme.ACCENT_PRIMARY,
+                duration=2000,
+            )
+            self.page.snack_bar.open = True
+            self.show_landing_page()
+        
+        # Build adapter list
+        adapter_items = [
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.SELECT_ALL_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
+                    ft.Text(f"All documents ({len(adapters)})", size=13, color=LightTheme.TEXT_PRIMARY, expand=True),
+                    ft.Icon(ft.Icons.CHECK_ROUNDED, size=16, color=LightTheme.ACCENT_SUCCESS) if self.selected_adapter_id is None else ft.Container(),
+                ], spacing=12),
+                padding=ft.padding.all(12),
+                border_radius=8,
+                on_click=lambda e: select_all(),
+                on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                ink=True,
+            ),
+            ft.Divider(height=1, color=LightTheme.BORDER_COLOR),
+        ]
+        
+        for adapter in adapters:
+            adapter_id = adapter.get("adapter_id")
+            name = adapter.get("name", "Unknown")
+            is_selected = self.selected_adapter_id == adapter_id
+            
+            adapter_items.append(
+                ft.Container(
+                    content=ft.Row([
+                        ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=16, color=LightTheme.ACCENT_SUCCESS),
+                        ft.Text(name[:30] + ("..." if len(name) > 30 else ""), size=13, color=LightTheme.TEXT_PRIMARY, expand=True),
+                        ft.Icon(ft.Icons.CHECK_ROUNDED, size=16, color=LightTheme.ACCENT_SUCCESS) if is_selected else ft.Container(),
+                    ], spacing=12),
+                    padding=ft.padding.all(12),
+                    border_radius=8,
+                    on_click=lambda e, aid=adapter_id, n=name: select_adapter(aid, n),
+                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                    ink=True,
+                )
+            )
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Select Document", size=16, weight=ft.FontWeight.W_600),
+            content=ft.Container(
+                content=ft.Column(adapter_items, spacing=4, scroll=ft.ScrollMode.AUTO),
+                width=350,
+                height=min(400, 80 + len(adapters) * 50),
+            ),
+            bgcolor=LightTheme.BG_ELEVATED,
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog(dialog)),
+            ],
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _close_dialog(self, dialog):
+        """Close a dialog."""
+        dialog.open = False
+        self.page.update()
+    
+    def _select_and_ask(self, adapter: Dict):
+        """Select an adapter and focus the chat input."""
+        self.selected_adapter_id = adapter.get("adapter_id")
+        logger.info(f"Selected adapter for chat: {adapter.get('name')}")
+        
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text(f"📄 Ready to chat with: {adapter.get('name')}", color="white"),
+            bgcolor=LightTheme.ACCENT_PRIMARY,
+            duration=2000,
+        )
+        self.page.snack_bar.open = True
+        
+        # Refresh UI and focus chat input
+        self.show_landing_page()
+        
+        # Focus the chat input after a brief delay
+        if hasattr(self, 'chat_input'):
+            self.chat_input.focus()
+            self.page.update()
+    
+    def _select_adapter(self, adapter: Dict):
+        """Select an adapter for subsequent queries."""
+        self.selected_adapter_id = adapter.get("adapter_id")
+        
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text(f"✓ Selected: {adapter.get('name')}", color="white"),
+            bgcolor=LightTheme.ACCENT_SUCCESS,
+            duration=2000,
+        )
+        self.page.snack_bar.open = True
+        self.show_landing_page()
+    
+    def _retrain_document(self, adapter: Dict):
+        """Offer to retrain a document."""
+        doc_name = adapter.get("name", "Unknown")
+        
+        def confirm_retrain(e):
+            dialog.open = False
+            self.page.update()
+            
+            # Find the entry and trigger retraining
+            try:
+                query_filter = QueryFilter()
+                all_entries = self.vault.kv_store.search(query_filter)
+                
+                for entry in all_entries:
+                    if entry.service == doc_name:
+                        # Convert entry to dict format expected by _offer_training_from_entry
+                        entry_dict = {
+                            "service": entry.service,
+                            "tags": entry.tags or [],
+                            "description": entry.description,
+                        }
+                        self._offer_training_from_entry(entry_dict)
+                        return
+                
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Could not find document: {doc_name}", color="white"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                
+            except Exception as ex:
+                logger.error(f"Error retraining document: {ex}")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Error: {str(ex)}", color="white"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Retrain Document?", size=16, weight=ft.FontWeight.W_600),
+            content=ft.Text(
+                f"This will regenerate Q&A pairs and retrain the adapter for '{doc_name}'.\n\n"
+                "This may improve response quality but takes a few minutes.",
+                size=14,
+            ),
+            bgcolor=LightTheme.BG_ELEVATED,
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog(dialog)),
+                ft.ElevatedButton(
+                    "Retrain",
+                    icon=ft.Icons.REFRESH_ROUNDED,
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                    color="white",
+                    on_click=confirm_retrain,
+                ),
+            ],
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
+    def _delete_document(self, adapter: Dict):
+        """Delete a document and its adapter."""
+        doc_name = adapter.get("name", "Unknown")
+        adapter_id = adapter.get("adapter_id")
+        
+        def confirm_delete(e):
+            dialog.open = False
+            self.page.update()
+            
+            try:
+                # Delete from vault
+                query_filter = QueryFilter()
+                all_entries = self.vault.kv_store.search(query_filter)
+                
+                for entry in all_entries:
+                    if entry.service == doc_name:
+                        self.vault.kv_store.delete(entry.id)
+                        logger.info(f"Deleted document: {doc_name}")
+                        break
+                
+                # Clear selection if this was selected
+                if self.selected_adapter_id == adapter_id:
+                    self.selected_adapter_id = None
+                
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"🗑️ Deleted: {doc_name}", color="white"),
+                    bgcolor=LightTheme.ACCENT_SUCCESS,
+                    duration=2000,
+                )
+                self.page.snack_bar.open = True
+                
+                # Refresh UI
+                self.show_landing_page()
+                
+            except Exception as ex:
+                logger.error(f"Error deleting document: {ex}")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Error: {str(ex)}", color="white"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Text("Delete Document?", size=16, weight=ft.FontWeight.W_600),
+            content=ft.Text(
+                f"This will permanently delete '{doc_name}' and its trained adapter.\n\n"
+                "This action cannot be undone.",
+                size=14,
+            ),
+            bgcolor=LightTheme.BG_ELEVATED,
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog(dialog)),
+                ft.ElevatedButton(
+                    "Delete",
+                    icon=ft.Icons.DELETE_ROUNDED,
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                    color="white",
+                    on_click=confirm_delete,
+                ),
+            ],
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+    
     def _on_queued_doc_click(self, doc_name: str):
         """Handle click on a queued/training document."""
         logger.info(f"Queued document clicked: {doc_name}")
@@ -1139,28 +1422,66 @@ class VaultApp:
         for adapter in trained_adapters:
             # Capture adapter in closure
             adapter_copy = adapter.copy()
+            is_selected = self.selected_adapter_id == adapter.get("adapter_id")
+            
             doc_items.append(
                 ft.Container(
                     content=ft.Row(
                         [
-                            ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
-                                ft.Text(
-                                adapter["name"][:25] + ("..." if len(adapter["name"]) > 25 else ""),
+                            ft.Icon(
+                                ft.Icons.DESCRIPTION_ROUNDED, 
+                                size=14, 
+                                color=LightTheme.ACCENT_PRIMARY if is_selected else LightTheme.ACCENT_SUCCESS
+                            ),
+                            ft.Text(
+                                adapter["name"][:22] + ("..." if len(adapter["name"]) > 22 else ""),
                                 size=12,
-                                color=LightTheme.TEXT_PRIMARY,
+                                color=LightTheme.ACCENT_PRIMARY if is_selected else LightTheme.TEXT_PRIMARY,
+                                weight=ft.FontWeight.W_600 if is_selected else ft.FontWeight.W_400,
                                 overflow=ft.TextOverflow.ELLIPSIS,
                                 expand=True,
                             ),
-                            ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=12, color=LightTheme.ACCENT_SUCCESS),
+                            # Actions popup menu
+                            ft.PopupMenuButton(
+                                icon=ft.Icons.MORE_VERT_ROUNDED,
+                                icon_size=14,
+                                icon_color=LightTheme.TEXT_MUTED,
+                                tooltip="Actions",
+                                items=[
+                                    ft.PopupMenuItem(
+                                        text="Ask about this",
+                                        icon=ft.Icons.CHAT_ROUNDED,
+                                        on_click=lambda e, a=adapter_copy: self._select_and_ask(a),
+                                    ),
+                                    ft.PopupMenuItem(
+                                        text="Select for chat",
+                                        icon=ft.Icons.CHECK_CIRCLE_OUTLINE_ROUNDED,
+                                        on_click=lambda e, a=adapter_copy: self._select_adapter(a),
+                                    ),
+                                    ft.PopupMenuItem(),  # Divider
+                                    ft.PopupMenuItem(
+                                        text="Retrain",
+                                        icon=ft.Icons.REFRESH_ROUNDED,
+                                        on_click=lambda e, a=adapter_copy: self._retrain_document(a),
+                                    ),
+                                    ft.PopupMenuItem(
+                                        text="Delete",
+                                        icon=ft.Icons.DELETE_OUTLINE_ROUNDED,
+                                        on_click=lambda e, a=adapter_copy: self._delete_document(a),
+                                    ),
+                                ],
+                            ),
                         ],
-                        spacing=8,
+                        spacing=6,
                     ),
-                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                    padding=ft.padding.only(left=12, top=6, bottom=6, right=4),
                     border_radius=8,
-                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
-                    on_click=lambda e, a=adapter_copy: self._quick_ask(f"Tell me about {a['name']}", [a]),
+                    bgcolor=LightTheme.ACCENT_PRIMARY + "15" if is_selected else "transparent",
+                    border=ft.border.all(1, LightTheme.ACCENT_PRIMARY) if is_selected else None,
+                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" and not is_selected else (LightTheme.ACCENT_PRIMARY + "15" if is_selected else "transparent")),
+                    on_click=lambda e, a=adapter_copy: self._select_and_ask(a),
                     ink=True,
-                    tooltip=f"Click to ask about {adapter['name']}",
+                    tooltip=f"Click to chat with {adapter['name']}",
                 )
             )
         
@@ -1510,12 +1831,48 @@ class VaultApp:
         )
         self.chat_input = chat_input  # Store reference
         
+        # Create inference mode toggle
+        inference_toggle = ft.Container(
+            content=ft.Row(
+                [
+                    # Cloud mode button
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.CLOUD_ROUNDED, size=14, color="white" if self.inference_mode == "cloud" else LightTheme.TEXT_MUTED),
+                            ft.Text("Cloud", size=11, color="white" if self.inference_mode == "cloud" else LightTheme.TEXT_MUTED),
+                        ], spacing=4),
+                        padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                        bgcolor=LightTheme.ACCENT_PRIMARY if self.inference_mode == "cloud" else "transparent",
+                        border_radius=ft.border_radius.only(top_left=8, bottom_left=8),
+                        on_click=lambda e: self._set_inference_mode("cloud"),
+                        tooltip="Use cloud inference (better quality, requires internet)",
+                    ),
+                    # Local mode button
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.COMPUTER_ROUNDED, size=14, color="white" if self.inference_mode == "local" else LightTheme.TEXT_MUTED),
+                            ft.Text("Local", size=11, color="white" if self.inference_mode == "local" else LightTheme.TEXT_MUTED),
+                        ], spacing=4),
+                        padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                        bgcolor=LightTheme.ACCENT_SUCCESS if self.inference_mode == "local" else "transparent",
+                        border_radius=ft.border_radius.only(top_right=8, bottom_right=8),
+                        on_click=lambda e: self._set_inference_mode("local"),
+                        tooltip="Use local inference (private, works offline)",
+                    ),
+                ],
+                spacing=0,
+            ),
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            border_radius=8,
+        )
+        
         input_area = ft.Container(
             content=ft.Column(
                 [
-                    # Document selector chips (if multiple)
+                    # Controls row: Document selector + Inference mode
                     ft.Row(
                         [
+                            # Document/Adapter selector
                             ft.Container(
                                 content=ft.Row(
                                     [
@@ -1525,23 +1882,30 @@ class VaultApp:
                                             size=11,
                                             color=LightTheme.ACCENT_PRIMARY if adapter_count > 0 else LightTheme.TEXT_MUTED,
                                         ),
+                                        ft.Icon(ft.Icons.ARROW_DROP_DOWN_ROUNDED, size=16, color=LightTheme.TEXT_MUTED) if adapter_count > 1 else ft.Container(),
                                     ],
                                     spacing=4,
                                 ),
                                 padding=ft.padding.symmetric(horizontal=10, vertical=4),
                                 bgcolor=LightTheme.ACCENT_PRIMARY + "10" if adapter_count > 0 else LightTheme.BG_HOVER,
                                 border_radius=12,
+                                on_click=lambda e: self._show_adapter_selector(trained_adapters) if adapter_count > 1 else None,
+                                tooltip="Click to select specific document" if adapter_count > 1 else None,
                             ),
                             ft.Container(expand=True),
+                            # Inference mode toggle
+                            inference_toggle,
+                            ft.Container(width=8),
                             # Privacy indicator
-                                ft.Container(
+                            ft.Container(
                                 content=ft.Row(
                                     [
                                         ft.Icon(ft.Icons.LOCK_ROUNDED, size=12, color=LightTheme.ACCENT_SUCCESS),
-                                        ft.Text("End-to-end encrypted", size=11, color=LightTheme.ACCENT_SUCCESS),
-                                            ],
-                                            spacing=4,
+                                        ft.Text("E2E", size=11, color=LightTheme.ACCENT_SUCCESS),
+                                    ],
+                                    spacing=4,
                                 ),
+                                tooltip="End-to-end encrypted",
                             ),
                         ],
                         alignment=ft.MainAxisAlignment.START,
@@ -2040,18 +2404,50 @@ class VaultApp:
             self.chat_messages_list.controls.append(loading_bubble)
             self.page.update()
         
-        # Use first adapter for now (could add selector later)
-        adapter = adapters[0]
+        # Use selected adapter or first one
+        if self.selected_adapter_id:
+            adapter = next((a for a in adapters if a.get("adapter_id") == self.selected_adapter_id), adapters[0])
+        else:
+            adapter = adapters[0]
+        
+        inference_mode = self.inference_mode  # Capture current mode
         
         def run_inference():
             try:
-                response = self.training_manager.inference_with_adapter(
-                    adapter_id=adapter["adapter_id"],
-                    query=query,
-                    encryption_key_hex=adapter["encryption_key"]
-                )
+                response_text = None
                 
-                response_text = response.get("response", "I couldn't generate a response.") if response else "No response received."
+                if inference_mode == "local":
+                    # LOCAL INFERENCE - runs on device
+                    try:
+                        from local_inference import get_local_engine
+                        engine = get_local_engine()
+                        
+                        # Load model if needed
+                        if not engine.model:
+                            engine.load_model()
+                        
+                        # Run inference
+                        response_text = engine.query(
+                            query=query,
+                            adapter_id=adapter["adapter_id"],
+                            encryption_key_hex=adapter.get("encryption_key")
+                        )
+                        
+                    except ImportError:
+                        logger.warning("Local inference not available, falling back to cloud")
+                        response_text = None
+                    except Exception as local_err:
+                        logger.error(f"Local inference error: {local_err}")
+                        response_text = None
+                
+                # Cloud inference (default or fallback)
+                if response_text is None:
+                    response = self.training_manager.inference_with_adapter(
+                        adapter_id=adapter["adapter_id"],
+                        query=query,
+                        encryption_key_hex=adapter["encryption_key"]
+                    )
+                    response_text = response.get("response", "I couldn't generate a response.") if response else "No response received."
                 
                 # Add AI response
                 ai_msg = {"role": "assistant", "content": response_text, "document": adapter["name"]}
@@ -2059,7 +2455,7 @@ class VaultApp:
                 self._save_chat_history_to_file()
                 
                 # Save to question history too
-                self._save_question_history(query, adapter["name"], response_text, mode="cloud")
+                self._save_question_history(query, adapter["name"], response_text, mode=inference_mode)
                 
                 def update_ui():
                     # Remove loading bubble
