@@ -1200,18 +1200,85 @@ class VaultApp:
         """Handle click on a queued/training document."""
         logger.info(f"Queued document clicked: {doc_name}")
         
-        # Show toast with status info
-        self.page.snack_bar = ft.SnackBar(
-            content=ft.Row([
-                ft.ProgressRing(width=16, height=16, stroke_width=2, color="white"),
-                ft.Text(f"'{doc_name}' is being trained on secure cloud. Check Training Jobs for status.", color="white"),
+        # Show a helpful dialog explaining the status and options
+        def check_status(e):
+            dialog.open = False
+            self.page.update()
+            self.show_training_view()
+        
+        def chat_without_adapter(e):
+            dialog.open = False
+            self.page.update()
+            # Set chat input with a question about the doc
+            if hasattr(self, 'chat_input') and self.chat_input:
+                self.chat_input.value = f"Tell me about {doc_name}"
+                self.chat_input.focus()
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("💡 Tip: Switch to Local mode to chat while training completes!", color="white"),
+                bgcolor=LightTheme.ACCENT_PRIMARY,
+                duration=4000,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Row([
+                ft.Icon(ft.Icons.HOURGLASS_EMPTY_ROUNDED, color=LightTheme.ACCENT_WARNING, size=24),
+                ft.Text("Training in Progress", size=18, weight=ft.FontWeight.W_600),
             ], spacing=12),
-            bgcolor=LightTheme.ACCENT_WARNING,
-            duration=4000,
-            action="View Jobs",
-            on_action=lambda e: self.show_training_view(),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        f"'{doc_name}' is being trained on the secure cloud.",
+                        size=14,
+                    ),
+                    ft.Container(height=12),
+                    ft.Text(
+                        "This typically takes 2-5 minutes. Once complete, you'll see a ✓ next to the document.",
+                        size=13,
+                        color=LightTheme.TEXT_MUTED,
+                    ),
+                    ft.Container(height=16),
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text("While you wait, you can:", size=12, color=LightTheme.TEXT_MUTED, weight=ft.FontWeight.W_500),
+                            ft.Container(height=8),
+                            ft.Row([
+                                ft.Icon(ft.Icons.SMART_TOY_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
+                                ft.Text("Chat with the base AI (switch to Local mode)", size=12),
+                            ], spacing=8),
+                            ft.Row([
+                                ft.Icon(ft.Icons.UPLOAD_FILE_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
+                                ft.Text("Upload more documents", size=12),
+                            ], spacing=8),
+                            ft.Row([
+                                ft.Icon(ft.Icons.VISIBILITY_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
+                                ft.Text("Check training progress", size=12),
+                            ], spacing=8),
+                        ], spacing=4),
+                        padding=12,
+                        bgcolor=LightTheme.BG_HOVER,
+                        border_radius=8,
+                    ),
+                ], spacing=0),
+                width=350,
+            ),
+            bgcolor=LightTheme.BG_ELEVATED,
+            actions=[
+                ft.TextButton("Check Status", icon=ft.Icons.VISIBILITY_ROUNDED, on_click=check_status),
+                ft.ElevatedButton(
+                    "Chat Now (Base AI)",
+                    icon=ft.Icons.CHAT_ROUNDED,
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                    color="white",
+                    on_click=chat_without_adapter,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
         )
-        self.page.snack_bar.open = True
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
         self.page.update()
     
     def _configure_claude_mcp(self):
