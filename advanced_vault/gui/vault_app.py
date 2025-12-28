@@ -917,14 +917,22 @@ class VaultApp:
         self.page.clean()
         
         # Clear any floating buttons from overlay (they're for non-chat views)
-        self.page.overlay = [o for o in self.page.overlay if not isinstance(o, ft.Container) or not hasattr(o, 'content') or not isinstance(getattr(o, 'content', None), ft.FloatingActionButton)]
+        # But preserve file pickers
+        self.page.overlay = [o for o in self.page.overlay 
+                            if isinstance(o, ft.FilePicker) or 
+                            not (isinstance(o, ft.Container) and hasattr(o, 'content') and isinstance(getattr(o, 'content', None), ft.FloatingActionButton))]
         
         # Initialize PDF file picker if needed (for the + button in chat input)
         if not hasattr(self, 'pdf_file_picker') or self.pdf_file_picker is None:
             self.pdf_file_picker = ft.FilePicker(
                 on_result=self.on_pdf_selected
             )
+        
+        # Ensure file picker is in overlay (page.clean() may have removed it)
+        if self.pdf_file_picker not in self.page.overlay:
             self.page.overlay.append(self.pdf_file_picker)
+        
+        self.page.update()
         
         # Get vault statistics
         try:
@@ -4952,15 +4960,20 @@ class VaultApp:
         """Handle upload button click."""
         logger.info("Upload PDF button clicked")
         try:
+            # Initialize file picker if needed
             if not hasattr(self, 'pdf_file_picker') or self.pdf_file_picker is None:
-                logger.error("PDF file picker not initialized")
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text("❌ File picker not initialized. Please restart the app."),
-                    bgcolor=LightTheme.ACCENT_ERROR,
+                logger.info("Initializing PDF file picker on first use...")
+                self.pdf_file_picker = ft.FilePicker(
+                    on_result=self.on_pdf_selected
                 )
-                self.page.snack_bar.open = True
+                self.page.overlay.append(self.pdf_file_picker)
                 self.page.update()
-                return
+            
+            # Ensure picker is in overlay
+            if self.pdf_file_picker not in self.page.overlay:
+                logger.debug("Re-adding file picker to overlay")
+                self.page.overlay.append(self.pdf_file_picker)
+                self.page.update()
             
             logger.debug("Opening file picker...")
             
