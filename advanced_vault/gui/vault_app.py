@@ -913,6 +913,72 @@ class VaultApp:
             self.page.snack_bar.open = True
             self.page.update()
     
+    def _configure_claude_mcp(self):
+        """Configure Claude Desktop MCP integration with one click."""
+        try:
+            if not hasattr(self, 'mcp_setup') or not self.mcp_setup:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("❌ MCP setup not available"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Check if Claude Desktop is installed
+            if not self.mcp_setup.detect_claude_desktop():
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("⚠️ Claude Desktop not detected. Please install it first from claude.ai/download"),
+                    bgcolor=LightTheme.ACCENT_WARNING,
+                    duration=5000,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Auto-configure
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Row([
+                    ft.ProgressRing(width=16, height=16, stroke_width=2, color="white"),
+                    ft.Text("Configuring Claude Desktop...", color="white"),
+                ], spacing=12),
+                bgcolor=LightTheme.ACCENT_PRIMARY,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            
+            result = self.mcp_setup.auto_configure()
+            
+            if result.get("success"):
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("✅ Claude Desktop configured! Restart Claude to activate."),
+                    bgcolor=LightTheme.ACCENT_SUCCESS,
+                    duration=5000,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                
+                # Refresh landing page to show updated status
+                self.show_landing_page()
+            else:
+                error = result.get("error", "Unknown error")
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text(f"❌ Configuration failed: {error}"),
+                    bgcolor=LightTheme.ACCENT_ERROR,
+                    duration=5000,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                
+        except Exception as e:
+            logger.error(f"Error configuring Claude MCP: {e}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Error: {str(e)}"),
+                bgcolor=LightTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+    
     def show_landing_page(self):
         """Show chat-first landing page - the primary AI assistant experience."""
         self.current_view = "landing"
@@ -994,6 +1060,15 @@ class VaultApp:
         
         # Backend connected
         backend_connected = self.backend_status == "connected"
+        
+        # MCP configured (Claude Desktop integration)
+        mcp_configured = False
+        try:
+            if hasattr(self, 'mcp_setup') and self.mcp_setup:
+                mcp_status = self.mcp_setup.get_setup_status()
+                mcp_configured = mcp_status.get("mcp_configured", False)
+        except Exception as e:
+            logger.debug(f"Could not check MCP status: {e}")
         
         # Get time-based greeting
         hour = datetime.now().hour
@@ -1223,13 +1298,13 @@ class VaultApp:
                                 ),
                                 ft.Container(
                                     content=ft.Row([
-                                        ft.Icon(ft.Icons.MODEL_TRAINING_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
-                                        ft.Text("Training Jobs", size=11, color=LightTheme.TEXT_SECONDARY),
+                                        ft.Icon(ft.Icons.HISTORY_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
+                                        ft.Text("Activity Log", size=11, color=LightTheme.TEXT_SECONDARY),
                                     ], spacing=8),
                                     padding=ft.padding.symmetric(horizontal=12, vertical=6),
                                     border_radius=6,
                                     on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
-                                    on_click=lambda e: self.show_training_view(),
+                                    on_click=lambda e: self.show_activity_view(),
                                     ink=True,
                                 ),
                                 ft.Container(
@@ -1247,6 +1322,49 @@ class VaultApp:
                             spacing=2,
                         ),
                         padding=ft.padding.only(left=4, right=4, top=8, bottom=8),
+                    ),
+                    
+                    ft.Divider(height=1, color=LightTheme.BORDER_COLOR),
+                    
+                    # MCP Integration status
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Text("AI Integrations", size=10, color=LightTheme.TEXT_MUTED, weight=ft.FontWeight.W_500),
+                                ft.Container(height=6),
+                                # Claude Desktop status
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Text("🤖", size=12),
+                                        ft.Text("Claude", size=11, color=LightTheme.TEXT_SECONDARY, expand=True),
+                                        ft.Icon(
+                                            ft.Icons.CHECK_CIRCLE_ROUNDED if mcp_configured else ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED,
+                                            size=14,
+                                            color=LightTheme.ACCENT_SUCCESS if mcp_configured else LightTheme.ACCENT_PRIMARY,
+                                        ),
+                                    ], spacing=6),
+                                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                    border_radius=6,
+                                    bgcolor=LightTheme.ACCENT_SUCCESS + "10" if mcp_configured else LightTheme.BG_HOVER,
+                                    on_click=lambda e: self._configure_claude_mcp() if not mcp_configured else None,
+                                    tooltip="✓ Claude Desktop configured" if mcp_configured else "Click to configure Claude Desktop",
+                                ),
+                                # ChatGPT status (future)
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Text("💬", size=12),
+                                        ft.Text("ChatGPT", size=11, color=LightTheme.TEXT_MUTED, expand=True),
+                                        ft.Text("Soon", size=9, color=LightTheme.TEXT_MUTED, italic=True),
+                                    ], spacing=6),
+                                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                    border_radius=6,
+                                    bgcolor=LightTheme.BG_HOVER,
+                                    tooltip="ChatGPT integration coming soon",
+                                ),
+                            ],
+                            spacing=4,
+                        ),
+                        padding=ft.padding.only(left=12, right=12, top=8, bottom=8),
                     ),
                     
                     # Privacy status at bottom
@@ -3946,6 +4064,11 @@ class VaultApp:
     def show_activity_view(self):
         """Show MCP access activity log."""
         self.current_view = "activity"
+        
+        # Ensure main UI layout exists (secrets_list is created by build_ui)
+        if not hasattr(self, 'secrets_list') or self.secrets_list is None:
+            self.build_ui()
+        
         self.secrets_list.controls.clear()
         
         # Initialize activity logger
