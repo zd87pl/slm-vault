@@ -7628,12 +7628,14 @@ class VaultApp:
         queue_items = self.training_queue.get_all_items()
         watched_folders = self.training_queue.get_watched_folders()
         
-        # Create multi-file picker
+        # Create multi-file picker (must be added to overlay before use)
+        pickers_added = False
         if not hasattr(self, 'multi_file_picker') or self.multi_file_picker is None:
             self.multi_file_picker = ft.FilePicker(
                 on_result=self._on_multi_files_selected
             )
             self.page.overlay.append(self.multi_file_picker)
+            pickers_added = True
         
         # Create folder picker
         if not hasattr(self, 'folder_picker') or self.folder_picker is None:
@@ -7641,6 +7643,11 @@ class VaultApp:
                 on_result=self._on_folder_selected
             )
             self.page.overlay.append(self.folder_picker)
+            pickers_added = True
+        
+        # CRITICAL: Update page after adding pickers to overlay
+        if pickers_added:
+            self.page.update()
         
         # Header with actions
         # Count trained adapters for unified query button
@@ -7678,10 +7685,7 @@ class VaultApp:
                         ft.ElevatedButton(
                             "📁 Add Files",
                             icon=ft.Icons.ADD_ROUNDED,
-                            on_click=lambda e: self.multi_file_picker.pick_files(
-                                allow_multiple=True,
-                                allowed_extensions=["pdf"],
-                            ),
+                            on_click=self._on_add_files_click,
                             style=ft.ButtonStyle(
                                 bgcolor=LightTheme.ACCENT_PRIMARY,
                                 color="white",
@@ -7691,7 +7695,7 @@ class VaultApp:
                         ft.ElevatedButton(
                             "📂 Watch Folder",
                             icon=ft.Icons.FOLDER_OPEN_ROUNDED,
-                            on_click=lambda e: self.folder_picker.get_directory_path(),
+                            on_click=self._on_watch_folder_click,
                             style=ft.ButtonStyle(
                                 bgcolor=LightTheme.ACCENT_SUCCESS,
                                 color="white",
@@ -7972,6 +7976,122 @@ class VaultApp:
             border_radius=8,
             border=ft.border.all(1, config["color"] + "30" if item.status in [QueueItemStatus.PROCESSING, QueueItemStatus.FAILED] else LightTheme.BORDER_COLOR),
         )
+    
+    def _on_add_files_click(self, e):
+        """Handle Add Files button click with macOS fallback."""
+        import platform
+        
+        if platform.system() == "Darwin":
+            # Use macOS native file picker as it's more reliable than Flet's
+            try:
+                import subprocess
+                
+                # AppleScript to open multi-file selection dialog
+                script = '''
+                tell application "System Events"
+                    activate
+                end tell
+                set selectedFiles to choose file of type {"pdf"} with prompt "Select PDF files to add to queue" with multiple selections allowed
+                set filePaths to {}
+                repeat with aFile in selectedFiles
+                    set end of filePaths to POSIX path of aFile
+                end repeat
+                return filePaths as text
+                '''
+                
+                result = subprocess.run(
+                    ['osascript', '-e', script],
+                    capture_output=True,
+                    text=True,
+                    timeout=120  # 2 minute timeout for file selection
+                )
+                
+                if result.returncode == 0 and result.stdout.strip():
+                    # Parse comma-separated paths
+                    paths = result.stdout.strip().split(", ")
+                    
+                    # Create fake FilePickerResultEvent
+                    class FakeFile:
+                        def __init__(self, path):
+                            self.path = path.strip()
+                            self.name = Path(path.strip()).name
+                    
+                    class FakeEvent:
+                        def __init__(self, files):
+                            self.files = files
+                    
+                    files = [FakeFile(p) for p in paths if p.strip()]
+                    if files:
+                        self._on_multi_files_selected(FakeEvent(files))
+                    return
+                    
+            except Exception as ex:
+                logger.debug(f"macOS native picker failed: {ex}")
+        
+        # Fallback to Flet FilePicker
+        try:
+            self.multi_file_picker.pick_files(
+                allow_multiple=True,
+                allowed_extensions=["pdf"],
+            )
+        except Exception as ex:
+            logger.error(f"File picker error: {ex}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Could not open file picker: {ex}"),
+                bgcolor=LightTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+    
+    def _on_watch_folder_click(self, e):
+        """Handle Watch Folder button click with macOS fallback."""
+        import platform
+        
+        if platform.system() == "Darwin":
+            # Use macOS native folder picker
+            try:
+                import subprocess
+                
+                script = '''
+                tell application "System Events"
+                    activate
+                end tell
+                set selectedFolder to choose folder with prompt "Select folder to watch for PDFs"
+                return POSIX path of selectedFolder
+                '''
+                
+                result = subprocess.run(
+                    ['osascript', '-e', script],
+                    capture_output=True,
+                    text=True,
+                    timeout=120
+                )
+                
+                if result.returncode == 0 and result.stdout.strip():
+                    folder_path = result.stdout.strip()
+                    
+                    # Create fake FilePickerResultEvent
+                    class FakeEvent:
+                        def __init__(self, path):
+                            self.path = path
+                    
+                    self._on_folder_selected(FakeEvent(folder_path))
+                    return
+                    
+            except Exception as ex:
+                logger.debug(f"macOS native folder picker failed: {ex}")
+        
+        # Fallback to Flet FilePicker
+        try:
+            self.folder_picker.get_directory_path()
+        except Exception as ex:
+            logger.error(f"Folder picker error: {ex}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Could not open folder picker: {ex}"),
+                bgcolor=LightTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
     
     def _on_multi_files_selected(self, e: ft.FilePickerResultEvent):
         """Handle multiple file selection."""
