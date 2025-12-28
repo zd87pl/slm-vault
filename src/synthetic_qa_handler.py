@@ -119,7 +119,7 @@ except ImportError:
 
 class SecureSyntheticGenerator:
     """
-    Generate synthetic Q&A pairs using Qwen3-30B-A3B.
+    Generate synthetic Q&A pairs using configurable Qwen models.
     
     Maintains end-to-end encryption:
     - PDF encrypted before network transmission
@@ -127,38 +127,70 @@ class SecureSyntheticGenerator:
     - Results encrypted before returning
     
     Uses vLLM for 5-10x faster inference when available.
+    
+    Model Options (set QA_MODEL env var):
+    - "fast": Qwen2.5-14B-Instruct-AWQ (default) - Fast loading (~3GB), good quality
+    - "quality": Qwen3-30B-A3B - Best quality, slower loading (~4GB)
     """
     
+    # Model configurations
+    MODEL_CONFIGS = {
+        "fast": {
+            "name": "Qwen/Qwen2.5-14B-Instruct-AWQ",
+            "specs": "14B params, AWQ 4-bit quantized, ~3GB, fast loading",
+            "quantization": "awq",
+            "dtype": "auto",  # AWQ handles dtype internally
+        },
+        "quality": {
+            "name": "Qwen/Qwen3-30B-A3B", 
+            "specs": "30.5B total params, 3.3B activated (MoE), ~4GB",
+            "quantization": None,
+            "dtype": "bfloat16",
+        },
+    }
+    
     def __init__(self):
-        """Initialize with Qwen3-30B-A3B model."""
-        self.model_name = "Qwen/Qwen3-30B-A3B"
+        """Initialize with configurable model."""
+        # Choose model based on environment variable (default: fast)
+        model_choice = os.environ.get("QA_MODEL", "fast").lower()
+        if model_choice not in self.MODEL_CONFIGS:
+            logger.warning(f"Unknown QA_MODEL '{model_choice}', using 'fast'")
+            model_choice = "fast"
+        
+        config = self.MODEL_CONFIGS[model_choice]
+        self.model_name = config["name"]
         self.use_vllm = VLLM_AVAILABLE
         
+        logger.info(f"Model selection: {model_choice.upper()}")
         logger.info(f"Loading model: {self.model_name}")
-        logger.info("Model specs: 30.5B total params, 3.3B activated (MoE), 32K-131K context")
+        logger.info(f"Model specs: {config['specs']}")
         logger.info(f"Cache directory: {CACHE_DIR}")
         logger.info(f"Backend: {'vLLM (fast)' if self.use_vllm else 'transformers (slow)'}")
         
         if self.use_vllm:
             # vLLM: Much faster inference with PagedAttention
-            # Note: MoE models only activate 3.3B params, so bf16 is efficient
             try:
-                self.llm = LLM(
-                    model=self.model_name,
-                    download_dir=CACHE_DIR,
-                    tensor_parallel_size=1,  # Single GPU
-                    gpu_memory_utilization=0.90,  # Use 90% of GPU memory
-                    max_model_len=8192,  # Limit context for speed
-                    trust_remote_code=True,
-                    dtype="bfloat16",
-                    # Note: bitsandbytes not well supported in vLLM
-                    # MoE's 3.3B active params fits in bf16 on 80GB GPU
-                )
+                vllm_kwargs = {
+                    "model": self.model_name,
+                    "download_dir": CACHE_DIR,
+                    "tensor_parallel_size": 1,
+                    "gpu_memory_utilization": 0.90,
+                    "max_model_len": 8192,
+                    "trust_remote_code": True,
+                    "dtype": config["dtype"],
+                }
+                
+                # Add quantization config for AWQ models
+                if config["quantization"] == "awq":
+                    vllm_kwargs["quantization"] = "awq"
+                    logger.info("Using AWQ quantization for faster loading")
+                
+                self.llm = LLM(**vllm_kwargs)
                 self.sampling_params = SamplingParams(
                     temperature=0.4,
                     top_p=0.9,
                     top_k=50,
-                    max_tokens=2048,  # Reduced for faster generation
+                    max_tokens=2048,
                 )
                 self.model = None
                 self.tokenizer = None

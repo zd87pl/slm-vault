@@ -5,7 +5,20 @@
 set -e
 
 echo "=== Synthetic Q&A Handler Startup ==="
-echo "Model: Qwen3-30B-A3B (MoE: 30.5B total, 3.3B activated)"
+
+# Model selection (default: fast)
+QA_MODEL=${QA_MODEL:-fast}
+export QA_MODEL
+
+echo "Model Mode: $QA_MODEL"
+if [ "$QA_MODEL" = "fast" ]; then
+    echo "  → Qwen2.5-14B-Instruct-AWQ (14B, AWQ 4-bit, ~3GB, fast loading)"
+    MODEL_CACHE_DIR="models--Qwen--Qwen2.5-14B-Instruct-AWQ"
+else
+    echo "  → Qwen3-30B-A3B (30.5B total, 3.3B active MoE, ~4GB)"
+    MODEL_CACHE_DIR="models--Qwen--Qwen3-30B-A3B"
+fi
+echo ""
 
 # Check if RunPod Network Volume is mounted
 if [ -d "/runpod-volume" ] && [ -w "/runpod-volume" ]; then
@@ -29,10 +42,10 @@ if [ -d "/runpod-volume" ] && [ -w "/runpod-volume" ]; then
     fi
     
     # Check if model is already cached
-    if [ -d "/runpod-volume/huggingface/hub/models--Qwen--Qwen3-30B-A3B" ]; then
+    if [ -d "/runpod-volume/huggingface/hub/$MODEL_CACHE_DIR" ]; then
         echo "✓ Model already cached - fast startup expected"
     else
-        echo "→ Model not cached - first request will download (~4GB)"
+        echo "→ Model not cached - first request will download"
     fi
 else
     echo "⚠ No RunPod Network Volume detected"
@@ -81,9 +94,14 @@ except ImportError:
 " || echo "  → transformers (fallback)"
 echo ""
 
-echo "Expected performance:"
-echo "  - With vLLM: ~2-5 minutes for 100 samples"
-echo "  - With transformers: ~15-20 minutes for 100 samples"
+echo "Expected performance (QA_MODEL=$QA_MODEL):"
+if [ "$QA_MODEL" = "fast" ]; then
+    echo "  - Cold start: ~2-3 minutes (model loading)"
+    echo "  - Generation: ~1-2 minutes for 100 samples"
+else
+    echo "  - Cold start: ~5-10 minutes (model loading)"
+    echo "  - Generation: ~2-5 minutes for 100 samples"
+fi
 echo ""
 
 echo "=== Starting Handler ==="
