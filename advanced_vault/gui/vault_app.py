@@ -6897,54 +6897,122 @@ class VaultApp:
         """Offer training from an existing PDF entry."""
         service = entry.get('service', 'Unknown')
         tags = entry.get('tags', [])
+        description = entry.get('description', '')
         
-        # Extract PDF data from entry
-        tmp_path = None
-        try:
-            logger.info(f"Extracting PDF for training: {service}")
-            secret_value = self.vault.kv_store.get(service)
-            if not secret_value:
-                logger.error(f"No secret value found for service: {service}")
+        # Try to find existing PDF path from description or temp_pdfs
+        existing_pdf_path = None
+        
+        # Check description for path (format: "PDF: X pages, Y chunks | Path: /path/to/file")
+        if description and "Path:" in description:
+            try:
+                path_part = description.split("Path:")[-1].strip()
+                if os.path.exists(path_part):
+                    existing_pdf_path = path_part
+                    logger.info(f"Found existing PDF at: {existing_pdf_path}")
+            except Exception:
+                pass
+        
+        # Check temp_pdfs directory for matching file
+        if not existing_pdf_path:
+            vault_data_dir = Path(self.vault_path) / "temp_pdfs"
+            if vault_data_dir.exists():
+                # Look for files matching the service name
+                for pdf_file in vault_data_dir.glob(f"*{service}*"):
+                    if pdf_file.suffix.lower() == '.pdf' or 'pdf' in service.lower():
+                        # Verify it's a valid PDF
+                        try:
+                            with open(pdf_file, 'rb') as f:
+                                header = f.read(5)
+                                if header == b'%PDF-':
+                                    existing_pdf_path = str(pdf_file)
+                                    logger.info(f"Found existing PDF in temp_pdfs: {existing_pdf_path}")
+                                    break
+                        except Exception:
+                            continue
+        
+        # If we found an existing PDF, use it directly
+        if existing_pdf_path and os.path.exists(existing_pdf_path):
+            safe_pdf_path = Path(existing_pdf_path)
+        else:
+            # Extract PDF data from entry
+            try:
+                logger.info(f"Extracting PDF for training: {service}")
+                secret_value = self.vault.kv_store.get(service)
+                if not secret_value:
+                    logger.error(f"No secret value found for service: {service}")
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ Could not retrieve PDF data for '{service}'"),
+                        bgcolor=LightTheme.ACCENT_ERROR,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                    return
+                
+                logger.info(f"Secret value type: {type(secret_value)}, length: {len(secret_value) if secret_value else 0}")
+                
+                # Decode base64 PDF data (with padding fix)
+                pdf_data = None
+                try:
+                    # Add padding if needed (base64 strings should be multiple of 4)
+                    if isinstance(secret_value, str):
+                        missing_padding = len(secret_value) % 4
+                        if missing_padding:
+                            secret_value += '=' * (4 - missing_padding)
+                        pdf_data = base64.b64decode(secret_value)
+                except Exception as decode_err:
+                    logger.warning(f"Base64 decode failed: {decode_err}")
+                
+                # Check if it's already raw bytes
+                if pdf_data is None:
+                    if isinstance(secret_value, bytes):
+                        pdf_data = secret_value
+                    elif isinstance(secret_value, str) and os.path.exists(secret_value):
+                        # It might be a file path
+                        with open(secret_value, 'rb') as f:
+                            pdf_data = f.read()
+                
+                if pdf_data is None:
+                    raise ValueError("Could not decode or read PDF data")
+                
+                # Validate PDF header
+                if not pdf_data[:5] == b'%PDF-':
+                    logger.error(f"Invalid PDF header. First 20 bytes: {pdf_data[:20]}")
+                    self.page.snack_bar = ft.SnackBar(
+                        content=ft.Text(f"❌ Stored data is not a valid PDF. Please re-upload the document."),
+                        bgcolor=LightTheme.ACCENT_ERROR,
+                        duration=5000,
+                    )
+                    self.page.snack_bar.open = True
+                    self.page.update()
+                    return
+                
+                # Write to persistent location
+                vault_data_dir = Path(self.vault_path) / "temp_pdfs"
+                vault_data_dir.mkdir(parents=True, exist_ok=True)
+                
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                safe_pdf_path = vault_data_dir / f"{timestamp}_{service}"
+                
+                with open(safe_pdf_path, 'wb') as f:
+                    f.write(pdf_data)
+                
+                logger.info(f"Saved PDF to persistent location: {safe_pdf_path}")
+                
+            except Exception as ex:
+                logger.error(f"Error extracting PDF for training: {ex}")
+                user_msg, _ = make_user_friendly(str(ex), context="training")
                 self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"❌ Could not retrieve PDF data"),
+                    content=ft.Text(f"❌ {user_msg}"),
                     bgcolor=LightTheme.ACCENT_ERROR,
                 )
                 self.page.snack_bar.open = True
                 self.page.update()
                 return
-            
-            # Decode base64 PDF data (with padding fix)
-            try:
-                # Add padding if needed (base64 strings should be multiple of 4)
-                missing_padding = len(secret_value) % 4
-                if missing_padding:
-                    secret_value += '=' * (4 - missing_padding)
-                pdf_data = base64.b64decode(secret_value)
-            except Exception as decode_err:
-                logger.warning(f"Base64 decode failed, trying as raw data: {decode_err}")
-                # Maybe it's already raw bytes or a path
-                if isinstance(secret_value, bytes):
-                    pdf_data = secret_value
-                elif isinstance(secret_value, str) and os.path.exists(secret_value):
-                    # It might be a file path
-                    with open(secret_value, 'rb') as f:
-                        pdf_data = f.read()
-                else:
-                    raise ValueError(f"Cannot decode PDF data: {decode_err}")
-            
-            # Write to persistent location (not tempfile) so it exists during training workflow
-            vault_data_dir = Path(self.vault_path) / "temp_pdfs"
-            vault_data_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Create persistent copy with timestamp
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            safe_pdf_path = vault_data_dir / f"{timestamp}_{service}"
-            
-            # Write PDF data to persistent location
-            with open(safe_pdf_path, 'wb') as f:
-                f.write(pdf_data)
-            
-            logger.info(f"Saved PDF to persistent location: {safe_pdf_path}")
+        
+        # Now process the PDF
+        tmp_path = None
+        try:
+            logger.info(f"Processing PDF: {safe_pdf_path}")
             
             # Process PDF to get text chunks
             self.page.snack_bar = ft.SnackBar(
