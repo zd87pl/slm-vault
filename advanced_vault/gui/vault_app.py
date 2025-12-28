@@ -907,19 +907,12 @@ class VaultApp:
             self.page.update()
     
     def show_landing_page(self):
-        """Show value-focused landing page with chat interface and trust signals."""
+        """Show chat-first landing page - the primary AI assistant experience."""
         self.current_view = "landing"
         
-        # Update sidebar selection to Home
-        if hasattr(self, 'sidebar'):
-            self.sidebar.selected_index = -1
-            sidebar_container = self.sidebar.build()
-        else:
-            self.sidebar = ModernSidebar(
-                on_nav_change=self.on_nav_change,
-                selected_index=-1
-            )
-            sidebar_container = self.sidebar.build()
+        # Initialize chat messages if not exists
+        if not hasattr(self, 'chat_messages'):
+            self.chat_messages = self._load_chat_history()
         
         self.page.clean()
         
@@ -971,508 +964,671 @@ class VaultApp:
             user_info = self.session_data.get("user", {})
             user_email = user_info.get("email") or self.session_data.get("user_email") or self.session_data.get("email") or "User"
         
-        # Get first name for friendlier greeting
         user_first_name = user_email.split("@")[0].split(".")[0].capitalize() if "@" in user_email else user_email
-        
-        # Component status
-        ocr_ready = False
-        qa_ready = False
-        if hasattr(self, 'pdf_processor') and self.pdf_processor:
-            ocr_ready = self.pdf_processor.smoldocling_available or self.pdf_processor.ollama_available
-        if hasattr(self, 'qa_generator') and self.qa_generator:
-            qa_status = self.qa_generator.get_qa_status()
-            qa_ready = qa_status.get("status") == "ready"
         
         # Backend connected
         backend_connected = self.backend_status == "connected"
         
-        # ===== HERO: ASK YOUR DOCUMENTS =====
-        ask_input = ft.TextField(
-            hint_text="Ask anything about your documents...",
-            border_radius=12,
-            bgcolor=LightTheme.BG_PRIMARY,
-            border_color=LightTheme.BORDER_COLOR,
-            focused_border_color=LightTheme.ACCENT_PRIMARY,
-            prefix_icon=ft.Icons.SEARCH_ROUNDED,
-            suffix=ft.IconButton(
-                ft.Icons.MIC_ROUNDED,
-                icon_color=LightTheme.TEXT_MUTED,
-                tooltip="Voice input (coming soon)",
-            ),
-            expand=True,
-            on_submit=lambda e: self._handle_home_ask(e, ask_input, trained_adapters),
-        )
+        # Get time-based greeting
+        hour = datetime.now().hour
+        if hour < 12:
+            greeting = "Good morning"
+        elif hour < 17:
+            greeting = "Good afternoon"
+        else:
+            greeting = "Good evening"
         
-        # Document chips for trained adapters
-        doc_chips = []
-        for adapter in trained_adapters[:4]:  # Show max 4
-            doc_chips.append(
-                ft.Container(
+        # ===== LEFT SIDEBAR: Chat History + Documents =====
+        
+        # Recent chats from history
+        recent_questions = self._get_recent_questions(8)
+        chat_history_items = []
+        
+        for q in recent_questions:
+            chat_history_items.append(
+                    ft.Container(
+                    content=ft.Row(
+                            [
+                            ft.Icon(ft.Icons.CHAT_BUBBLE_OUTLINE_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
+                                ft.Text(
+                                q.get("question", "")[:30] + ("..." if len(q.get("question", "")) > 30 else ""),
+                                size=12,
+                                    color=LightTheme.TEXT_PRIMARY,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                    border_radius=8,
+                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                    on_click=lambda e, question=q.get("question", ""): self._quick_ask(question, trained_adapters),
+                    ink=True,
+                )
+            )
+        
+        # Document list
+        doc_items = []
+        for adapter in trained_adapters:
+            doc_items.append(
+                    ft.Container(
                     content=ft.Row(
                         [
                             ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
                             ft.Text(
-                                adapter["name"][:20] + "..." if len(adapter["name"]) > 20 else adapter["name"],
+                                adapter["name"][:25] + ("..." if len(adapter["name"]) > 25 else ""),
                                 size=12,
                                 color=LightTheme.TEXT_PRIMARY,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                                expand=True,
                             ),
+                            ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=12, color=LightTheme.ACCENT_SUCCESS),
                         ],
-                        spacing=6,
+                        spacing=8,
                     ),
-                    padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                    bgcolor=LightTheme.ACCENT_SUCCESS + "15",
-                    border_radius=16,
+                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                    border_radius=8,
+                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                    ink=True,
                 )
             )
         
-        if adapter_count > 4:
-            doc_chips.append(
-                ft.Text(f"+{adapter_count - 4} more", size=12, color=LightTheme.TEXT_MUTED)
-            )
-        
-        # Empty state or ready state
-        if adapter_count == 0:
-            hero_subtitle = ft.Column([
-                ft.Text(
-                    "Upload a PDF to get started",
-                    size=14,
-                    color=LightTheme.TEXT_SECONDARY,
-                ),
-                ft.Container(height=12),
-                ft.ElevatedButton(
-                    "📄 Upload Your First PDF",
-                    icon=ft.Icons.UPLOAD_FILE_ROUNDED,
-                    on_click=lambda e: self._on_upload_click(e),
-                    style=ft.ButtonStyle(
-                        bgcolor=LightTheme.ACCENT_PRIMARY,
-                        color="white",
-                        shape=ft.RoundedRectangleBorder(radius=8),
-                    ),
-                ),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-            ask_input.disabled = True
-            ask_input.hint_text = "Upload a document first to ask questions..."
-        else:
-            hero_subtitle = ft.Column([
-                ft.Row(
-                    [
-                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, size=16, color=LightTheme.ACCENT_SUCCESS),
-                        ft.Text(
-                            f"{adapter_count} document{'s' if adapter_count != 1 else ''} ready to answer",
-                            size=14,
-                            color=LightTheme.ACCENT_SUCCESS,
-                            weight=ft.FontWeight.W_500,
-                        ),
-                    ],
-                    alignment=ft.MainAxisAlignment.CENTER,
-                    spacing=8,
-                ),
-                ft.Container(height=8),
-                ft.Row(doc_chips, wrap=True, spacing=8, alignment=ft.MainAxisAlignment.CENTER),
-            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER)
-        
-        hero_section = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Row(
-                        [
-                            ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, size=28, color=LightTheme.ACCENT_PRIMARY),
-                            ft.Text(
-                                "Ask Your Documents",
-                                size=24,
-                                weight=ft.FontWeight.BOLD,
-                                color=LightTheme.TEXT_PRIMARY,
+        # Training in progress items
+        for entry in all_entries:
+            if entry.tags:
+                status = None
+                for tag in entry.tags:
+                    if tag.startswith("training_status:"):
+                        status = tag.split(":", 1)[1]
+                        break
+                if status in ["pending", "training"]:
+                    doc_items.append(
+                        ft.Container(
+                            content=ft.Row(
+                                [
+                                    ft.ProgressRing(width=14, height=14, stroke_width=2, color=LightTheme.ACCENT_WARNING),
+                                    ft.Text(
+                                        entry.service[:25] + ("..." if len(entry.service) > 25 else ""),
+                                        size=12,
+                                        color=LightTheme.TEXT_MUTED,
+                                        overflow=ft.TextOverflow.ELLIPSIS,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=8,
                             ),
-                        ],
-                        alignment=ft.MainAxisAlignment.CENTER,
-                        spacing=12,
-                    ),
-                    ft.Container(height=16),
-                    ft.Container(
-                        content=ask_input,
-                        width=500,
-                    ),
-                    ft.Container(height=12),
-                    hero_subtitle,
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                spacing=0,
-            ),
-            padding=32,
-            bgcolor=LightTheme.BG_ELEVATED,
-            border_radius=16,
-            border=ft.border.all(1, LightTheme.BORDER_COLOR),
-            margin=ft.margin.only(bottom=24),
-        )
+                            padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                            border_radius=8,
+                        )
+                    )
         
-        # ===== EXAMPLE QUESTIONS =====
-        example_questions = [
-            "Summarize the main points",
-            "What are the key dates?",
-            "Explain in simple terms",
-        ]
-        
-        example_chips = ft.Row(
-            [
-                ft.Container(
-                    content=ft.TextButton(
-                        content=ft.Row([
-                            ft.Icon(ft.Icons.LIGHTBULB_OUTLINE_ROUNDED, size=14, color=LightTheme.ACCENT_PRIMARY),
-                            ft.Text(q, size=12, color=LightTheme.ACCENT_PRIMARY),
-                        ], spacing=6),
-                        on_click=lambda e, query=q: self._set_example_question(ask_input, query),
-                    ),
-                    bgcolor=LightTheme.ACCENT_PRIMARY + "10",
-                    border_radius=16,
-                ) for q in example_questions
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-            spacing=8,
-            wrap=True,
-        ) if adapter_count > 0 else ft.Container()
-        
-        # ===== SECURITY STATUS =====
-        def security_item(icon, label, status, color):
-            return ft.Row(
-                [
-                    ft.Icon(icon, size=18, color=color),
-                    ft.Text(label, size=13, color=LightTheme.TEXT_PRIMARY, expand=True),
-                    ft.Text(status, size=12, color=color, weight=ft.FontWeight.W_500),
-                ],
-                spacing=12,
-            )
-        
-        security_panel = ft.Container(
+        left_sidebar = ft.Container(
             content=ft.Column(
                 [
-                    ft.Row([
-                        ft.Icon(ft.Icons.SHIELD_ROUNDED, size=20, color=LightTheme.ACCENT_SUCCESS),
-                        ft.Text("Security Status", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                    ], spacing=8),
-                    ft.Container(height=12),
-                    security_item(
-                        ft.Icons.LOCK_ROUNDED, 
-                        "End-to-end encryption", 
-                        "Active", 
-                        LightTheme.ACCENT_SUCCESS
-                    ),
-                    ft.Container(height=8),
-                    security_item(
-                        ft.Icons.KEY_ROUNDED, 
-                        "Local key storage", 
-                        "Secure", 
-                        LightTheme.ACCENT_SUCCESS
-                    ),
-                    ft.Container(height=8),
-                    security_item(
-                        ft.Icons.CLOUD_DONE_ROUNDED if backend_connected else ft.Icons.CLOUD_OFF_ROUNDED, 
-                        "Cloud training", 
-                        "Connected" if backend_connected else "Offline", 
-                        LightTheme.ACCENT_SUCCESS if backend_connected else LightTheme.ACCENT_WARNING
-                    ),
-                ],
-            ),
-            padding=20,
-            bgcolor=LightTheme.BG_ELEVATED,
-            border_radius=12,
-            border=ft.border.all(1, LightTheme.ACCENT_SUCCESS + "30"),
-            expand=True,
-        )
-        
-        # ===== KNOWLEDGE BASE STATS =====
-        stats_panel = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Row([
-                        ft.Icon(ft.Icons.INSIGHTS_ROUNDED, size=20, color=LightTheme.ACCENT_PRIMARY),
-                        ft.Text("Your Knowledge Base", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                    ], spacing=8),
-                    ft.Container(height=12),
-                    ft.Row([
-                        ft.Icon(ft.Icons.SMART_TOY_ROUNDED, size=18, color=LightTheme.ACCENT_SUCCESS),
-                        ft.Text(f"{adapter_count} document{'s' if adapter_count != 1 else ''} ready to query", size=13, color=LightTheme.TEXT_PRIMARY),
-                    ], spacing=12),
-                    ft.Container(height=8),
-                    ft.Row([
-                        ft.Icon(ft.Icons.HOURGLASS_TOP_ROUNDED if training_in_progress > 0 else ft.Icons.CHECK_CIRCLE_OUTLINED, size=18, color=LightTheme.ACCENT_WARNING if training_in_progress > 0 else LightTheme.TEXT_MUTED),
-                        ft.Text(f"{training_in_progress} training in progress" if training_in_progress > 0 else "No training in progress", size=13, color=LightTheme.TEXT_PRIMARY if training_in_progress > 0 else LightTheme.TEXT_MUTED),
-                    ], spacing=12),
-                    ft.Container(height=8),
-                    ft.Row([
-                        ft.Icon(ft.Icons.LOCK_ROUNDED, size=18, color=LightTheme.ACCENT_SUCCESS),
-                        ft.Text(f"{secrets_count} secret{'s' if secrets_count != 1 else ''} stored securely", size=13, color=LightTheme.TEXT_PRIMARY),
-                    ], spacing=12),
-                    ft.Container(height=12),
-                    ft.Row([
-                        ft.TextButton(
-                            "📄 Add PDF",
-                            on_click=lambda e: self._on_upload_click(e),
-                            style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
-                        ),
-                        ft.TextButton(
-                            "🔑 Add Secret",
-                            on_click=lambda e: self.show_add_dialog(e, default_type="secret"),
-                            style=ft.ButtonStyle(color=LightTheme.TEXT_SECONDARY),
-                        ),
-                    ], spacing=8),
-                ],
-            ),
-            padding=20,
-            bgcolor=LightTheme.BG_ELEVATED,
-            border_radius=12,
-            border=ft.border.all(1, LightTheme.BORDER_COLOR),
-            expand=True,
-        )
-        
-        # ===== QUICK ACTIONS ROW =====
-        quick_actions = ft.Row(
-            [
-                security_panel,
-                stats_panel,
-            ],
-            spacing=16,
-        )
-        
-        # ===== RECENT QUESTIONS =====
-        recent_questions = self._get_recent_questions(5)
-        recent_questions_section = ft.Container()  # Empty by default
-        
-        if recent_questions:
-            question_items = []
-            for q in recent_questions:
-                # Format timestamp
-                try:
-                    ts = datetime.fromisoformat(q.get("timestamp", ""))
-                    time_str = ts.strftime("%b %d, %H:%M")
-                except:
-                    time_str = ""
-                
-                question_items.append(
+                    # Logo and title
                     ft.Container(
                         content=ft.Row(
                             [
-                                ft.Icon(
-                                    ft.Icons.CHAT_BUBBLE_OUTLINE_ROUNDED,
-                                    size=16,
-                                    color=LightTheme.ACCENT_PRIMARY,
-                                ),
-                                ft.Column(
-                                    [
-                                        ft.Text(
-                                            q.get("question", "")[:60] + ("..." if len(q.get("question", "")) > 60 else ""),
-                                            size=13,
-                                            color=LightTheme.TEXT_PRIMARY,
-                                            weight=ft.FontWeight.W_500,
-                                        ),
-                                        ft.Text(
-                                            f"📄 {q.get('document', 'Unknown')} • {time_str}",
-                                            size=11,
-                                            color=LightTheme.TEXT_MUTED,
-                                        ),
-                                    ],
-                                    spacing=2,
-                                    expand=True,
-                                ),
-                                ft.Container(
-                                    content=ft.Icon(
-                                        ft.Icons.CLOUD_DONE_ROUNDED if q.get("mode") == "cloud" else ft.Icons.COMPUTER_ROUNDED,
-                                        size=14,
-                                        color=LightTheme.TEXT_MUTED,
-                                    ),
-                                    tooltip="Cloud" if q.get("mode") == "cloud" else "Local",
+                                ft.Text("🔐", size=24),
+                                ft.Text("Enclave", size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                            ],
+                            spacing=8,
+                        ),
+                        padding=ft.padding.only(left=16, top=16, bottom=8),
+                    ),
+                    
+                    # New Chat button
+                    ft.Container(
+                        content=ft.ElevatedButton(
+                            "✨ New Chat",
+                            icon=ft.Icons.ADD_ROUNDED,
+                            on_click=lambda e: self._new_chat(),
+                            style=ft.ButtonStyle(
+                                bgcolor=LightTheme.ACCENT_PRIMARY,
+                                color="white",
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                            ),
+                            width=200,
+                        ),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                    ),
+                    
+                    ft.Divider(height=1, color=LightTheme.BORDER_COLOR),
+                    
+                    # Recents section
+                    ft.Container(
+                        content=ft.Text("Recents", size=11, color=LightTheme.TEXT_MUTED, weight=ft.FontWeight.W_500),
+                        padding=ft.padding.only(left=16, top=12, bottom=4),
+                    ),
+                    ft.Column(
+                        chat_history_items if chat_history_items else [
+                            ft.Container(
+                                content=ft.Text("No recent chats", size=12, color=LightTheme.TEXT_MUTED, italic=True),
+                                padding=ft.padding.symmetric(horizontal=16, vertical=8),
+                            )
+                        ],
+                        spacing=2,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
+                    
+                    ft.Divider(height=1, color=LightTheme.BORDER_COLOR),
+                    
+                    # Documents section
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Text("📚 Documents", size=11, color=LightTheme.TEXT_MUTED, weight=ft.FontWeight.W_500),
+                                ft.Container(expand=True),
+                                ft.IconButton(
+                                    ft.Icons.ADD_ROUNDED,
+                                    icon_size=16,
+                                    icon_color=LightTheme.TEXT_MUTED,
+                                    tooltip="Add PDF",
+                                    on_click=lambda e: self._on_upload_click(e),
                                 ),
                             ],
-                            spacing=12,
                         ),
-                        padding=12,
-                        bgcolor=LightTheme.BG_PRIMARY,
-                        border_radius=8,
-                        on_click=lambda e, question=q.get("question", ""): self._set_example_question(ask_input, question),
-                        ink=True,
-                    )
+                        padding=ft.padding.only(left=16, right=4, top=8, bottom=4),
+                    ),
+                    ft.Column(
+                        doc_items if doc_items else [
+                                ft.Container(
+                                content=ft.Column([
+                                    ft.Text("No documents yet", size=12, color=LightTheme.TEXT_MUTED, italic=True),
+                                    ft.TextButton(
+                                        "Upload PDF",
+                                        icon=ft.Icons.UPLOAD_FILE_ROUNDED,
+                                        on_click=lambda e: self._on_upload_click(e),
+                                        style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
+                                    ),
+                                ], spacing=4, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+                                padding=ft.padding.symmetric(horizontal=16, vertical=8),
+                            )
+                        ],
+                        spacing=2,
+                        scroll=ft.ScrollMode.AUTO,
+                        expand=True,
+                    ),
+                    
+                    # Privacy status at bottom
+                    ft.Container(
+                                        content=ft.Column(
+                                            [
+                                ft.Row([
+                                    ft.Icon(ft.Icons.VERIFIED_USER_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
+                                    ft.Text("E2E Encrypted", size=10, color=LightTheme.ACCENT_SUCCESS),
+                                ], spacing=6),
+                                ft.Row([
+                                    ft.Icon(ft.Icons.KEY_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
+                                    ft.Text("Local Keys", size=10, color=LightTheme.ACCENT_SUCCESS),
+                                ], spacing=6),
+                                ft.Row([
+                                    ft.Icon(
+                                        ft.Icons.CLOUD_DONE_ROUNDED if backend_connected else ft.Icons.CLOUD_OFF_ROUNDED,
+                                        size=14,
+                                        color=LightTheme.ACCENT_SUCCESS if backend_connected else LightTheme.TEXT_MUTED,
+                                                ),
+                                                ft.Text(
+                                        "Cloud Sync" if backend_connected else "Offline",
+                                        size=10,
+                                        color=LightTheme.ACCENT_SUCCESS if backend_connected else LightTheme.TEXT_MUTED,
+                                    ),
+                                ], spacing=6),
+                                            ],
+                                            spacing=4,
+                                    ),
+                                    padding=16,
+                        bgcolor=LightTheme.ACCENT_SUCCESS + "08",
+                        border=ft.border.only(top=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+                    ),
+                ],
+                spacing=0,
+                expand=True,
+            ),
+            width=240,
+            bgcolor=LightTheme.BG_SECONDARY,
+            border=ft.border.only(right=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+        )
+        
+        # ===== MAIN CHAT AREA =====
+        
+        # Chat messages container
+        chat_messages_list = ft.ListView(
+            spacing=16,
+            padding=ft.padding.symmetric(horizontal=40, vertical=20),
+            expand=True,
+            auto_scroll=True,
+        )
+        
+        # Populate with existing messages or welcome
+        if self.chat_messages:
+            for msg in self.chat_messages:
+                chat_messages_list.controls.append(
+                    self._create_chat_bubble(msg["role"], msg["content"], msg.get("document"))
                 )
-            
-            recent_questions_section = ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Row([
-                            ft.Icon(ft.Icons.HISTORY_ROUNDED, size=18, color=LightTheme.TEXT_SECONDARY),
-                            ft.Text("Recent Questions", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                        ], spacing=8),
-                        ft.Container(height=12),
-                        ft.Column(question_items, spacing=8),
-                    ],
-                ),
-                padding=20,
-                bgcolor=LightTheme.BG_ELEVATED,
-                border_radius=12,
-                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+        else:
+            # Welcome message
+            chat_messages_list.controls.append(
+                                ft.Container(
+                                        content=ft.Column(
+                                            [
+                                                ft.Text(
+                                f"✨ {greeting}, {user_first_name}",
+                                size=32,
+                                                    weight=ft.FontWeight.BOLD,
+                                color=LightTheme.TEXT_PRIMARY,
+                                                    text_align=ft.TextAlign.CENTER,
+                                                ),
+                            ft.Container(height=8),
+                                                ft.Text(
+                                "Your private AI — only you can see this conversation",
+                                size=14,
+                                color=LightTheme.TEXT_MUTED,
+                                                    text_align=ft.TextAlign.CENTER,
+                                                ),
+                            ft.Container(height=24),
+                            # Quick action chips
+                            ft.Row(
+                                [
+                                    self._create_action_chip("📝 Summarize", "Summarize the main points", trained_adapters),
+                                    self._create_action_chip("🔍 Find", "Find specific information about", trained_adapters),
+                                    self._create_action_chip("📊 Compare", "Compare and contrast", trained_adapters),
+                                    self._create_action_chip("💡 Explain", "Explain in simple terms", trained_adapters),
+                                ],
+                                alignment=ft.MainAxisAlignment.CENTER,
+                                spacing=12,
+                                wrap=True,
+                            ),
+                        ],
+                                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=0,
+                    ),
+                    padding=ft.padding.only(top=80),
+                )
             )
         
-        # ===== TRAINING IN PROGRESS =====
-        training_cards = []
-        if training_in_progress > 0:
-            for entry in all_entries:
-                if entry.tags:
-                    status = None
-                    for tag in entry.tags:
-                        if tag.startswith("training_status:"):
-                            status = tag.split(":", 1)[1]
-                            break
-                    
-                    if status in ["pending", "training"]:
-                        # Create progress card
-                        progress_value = 0.3 if status == "pending" else 0.65  # Simulated progress
-                        progress_text = "Queued" if status == "pending" else "Training..."
-                        
-                        training_cards.append(
+        # Store reference for updates
+        self.chat_messages_list = chat_messages_list
+        self.trained_adapters = trained_adapters
+        
+        # Input area
+        chat_input = ft.TextField(
+            hint_text="Ask your documents anything..." if adapter_count > 0 else "Upload a document first to start chatting...",
+            border_radius=24,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
+            content_padding=ft.padding.symmetric(horizontal=20, vertical=14),
+            expand=True,
+            disabled=adapter_count == 0,
+            on_submit=lambda e: self._send_chat_message(e, chat_input, trained_adapters),
+        )
+        self.chat_input = chat_input  # Store reference
+        
+        input_area = ft.Container(
+            content=ft.Column(
+                [
+                    # Document selector chips (if multiple)
+                    ft.Row(
+                        [
                             ft.Container(
                                 content=ft.Row(
                                     [
-                                        ft.Container(
-                                            content=ft.ProgressRing(
-                                                width=32,
-                                                height=32,
-                                                stroke_width=3,
-                                                color=LightTheme.ACCENT_WARNING,
-                                            ),
-                                        ),
-                                        ft.Column(
-                                            [
-                                                ft.Text(
-                                                    entry.service[:25] + ("..." if len(entry.service) > 25 else ""),
-                                                    size=13,
-                                                    weight=ft.FontWeight.W_500,
-                                                    color=LightTheme.TEXT_PRIMARY,
-                                                ),
-                                                ft.Row([
-                                                    ft.Container(
-                                                        content=ft.ProgressBar(
-                                                            value=progress_value,
-                                                            bgcolor=LightTheme.BORDER_COLOR,
-                                                            color=LightTheme.ACCENT_WARNING,
-                                                        ),
-                                                        width=120,
-                                                        height=4,
-                                                        border_radius=2,
-                                                    ),
-                                                    ft.Text(
-                                                        progress_text,
-                                                        size=11,
-                                                        color=LightTheme.ACCENT_WARNING,
-                                                    ),
-                                                ], spacing=8),
-                                            ],
-                                            spacing=4,
-                                            expand=True,
+                                        ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=12, color=LightTheme.ACCENT_PRIMARY),
+                                        ft.Text(
+                                            f"Asking {adapter_count} document{'s' if adapter_count != 1 else ''}" if adapter_count > 0 else "No documents",
+                                            size=11,
+                                            color=LightTheme.ACCENT_PRIMARY if adapter_count > 0 else LightTheme.TEXT_MUTED,
                                         ),
                                     ],
-                                    spacing=12,
+                                    spacing=4,
                                 ),
-                                padding=12,
-                                bgcolor=LightTheme.ACCENT_WARNING + "10",
-                                border_radius=8,
-                                border=ft.border.all(1, LightTheme.ACCENT_WARNING + "30"),
-                            )
-                        )
-        
-        training_section = ft.Container()
-        if training_cards:
-            training_section = ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Row([
-                            ft.Icon(ft.Icons.MODEL_TRAINING_ROUNDED, size=18, color=LightTheme.ACCENT_WARNING),
-                            ft.Text("Training in Progress", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                        ], spacing=8),
-                        ft.Container(height=12),
-                        ft.Column(training_cards, spacing=8),
-                    ],
-                ),
-                padding=20,
-                bgcolor=LightTheme.BG_ELEVATED,
-                border_radius=12,
-                border=ft.border.all(1, LightTheme.ACCENT_WARNING + "30"),
-            )
-        
-        # ===== MAIN CONTENT =====
-        main_column_items = [
-            # Welcome header
-            ft.Container(
-                content=ft.Text(
-                    f"Welcome back, {user_first_name}",
-                    size=18,
-                    weight=ft.FontWeight.W_500,
-                    color=LightTheme.TEXT_SECONDARY,
-                ),
-                padding=ft.padding.only(bottom=24),
-            ),
-            
-            # Hero: Ask Your Documents
-            hero_section,
-            
-            # Example questions
-            example_chips,
-            
-            ft.Container(height=24),
-            
-            # Security + Stats panels
-            quick_actions,
-        ]
-        
-        # Add training section if exists
-        if training_cards:
-            main_column_items.append(ft.Container(height=16))
-            main_column_items.append(training_section)
-        
-        # Add recent questions if exists  
-        if recent_questions:
-            main_column_items.append(ft.Container(height=16))
-            main_column_items.append(recent_questions_section)
-        
-        main_column_items.append(ft.Container(height=24))
-        
-        content = ft.Container(
-            content=ft.Column(
-                main_column_items,
-                scroll=ft.ScrollMode.AUTO,
-                spacing=0,
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            padding=40,
-            expand=True,
+                                padding=ft.padding.symmetric(horizontal=10, vertical=4),
+                                bgcolor=LightTheme.ACCENT_PRIMARY + "10" if adapter_count > 0 else LightTheme.BG_HOVER,
+                                border_radius=12,
+                            ),
+                            ft.Container(expand=True),
+                            # Privacy indicator
+                                ft.Container(
+                                content=ft.Row(
+                                    [
+                                        ft.Icon(ft.Icons.LOCK_ROUNDED, size=12, color=LightTheme.ACCENT_SUCCESS),
+                                        ft.Text("End-to-end encrypted", size=11, color=LightTheme.ACCENT_SUCCESS),
+                                            ],
+                                            spacing=4,
+                                ),
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.START,
+                    ) if adapter_count > 0 else ft.Container(),
+                    ft.Container(height=8) if adapter_count > 0 else ft.Container(),
+                    # Input row
+                    ft.Row(
+                        [
+                            ft.IconButton(
+                                ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED,
+                                icon_color=LightTheme.TEXT_MUTED,
+                                tooltip="Upload PDF",
+                                on_click=lambda e: self._on_upload_click(e),
+                            ),
+                            chat_input,
+                            ft.Container(
+                                content=ft.IconButton(
+                                    ft.Icons.SEND_ROUNDED,
+                                    icon_color="white",
+                                    bgcolor=LightTheme.ACCENT_PRIMARY if adapter_count > 0 else LightTheme.TEXT_MUTED,
+                                    on_click=lambda e: self._send_chat_message(e, chat_input, trained_adapters),
+                                    disabled=adapter_count == 0,
+                                ),
+                                border_radius=24,
+                            ),
+                        ],
+                        spacing=8,
+                            alignment=ft.MainAxisAlignment.CENTER,
+                    ),
+                ],
+                            spacing=0,
+                        ),
+            padding=ft.padding.symmetric(horizontal=40, vertical=16),
+            bgcolor=LightTheme.BG_PRIMARY,
+            border=ft.border.only(top=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
         )
         
-        # Add sidebar and content
-        if hasattr(self, 'sidebar'):
+        # Main chat container
+        main_chat = ft.Container(
+            content=ft.Column(
+                [
+                    # Header with user email
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Container(expand=True),
+                                ft.Container(
+                                    content=ft.Row(
+                                        [
+                                            ft.Icon(ft.Icons.PERSON_ROUNDED, size=16, color=LightTheme.TEXT_MUTED),
+                                            ft.Text(user_email, size=12, color=LightTheme.TEXT_MUTED),
+                                        ],
+                                        spacing=6,
+                                    ),
+                                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                    bgcolor=LightTheme.BG_HOVER,
+                                    border_radius=16,
+                                ),
+                                ft.IconButton(
+                                    ft.Icons.SETTINGS_ROUNDED,
+                                    icon_color=LightTheme.TEXT_MUTED,
+                                    icon_size=20,
+                                    tooltip="Settings",
+                                    on_click=lambda e: self.show_settings(),
+                                ),
+                                ft.IconButton(
+                                    ft.Icons.LOGOUT_ROUNDED,
+                                    icon_color=LightTheme.TEXT_MUTED,
+                                    icon_size=20,
+                                    tooltip="Logout",
+                                    on_click=lambda e: self.logout(),
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=8),
+                        border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+                    ),
+                    # Chat messages
+                    chat_messages_list,
+                    # Input area
+                    input_area,
+                ],
+                spacing=0,
+                expand=True,
+            ),
+            expand=True,
+            bgcolor=LightTheme.BG_PRIMARY,
+        )
+        
+        # Full layout
             self.page.add(
                 ft.Row(
-                    [sidebar_container, content],
-                    spacing=0,
-                    expand=True,
-                )
+                    [
+                    left_sidebar,
+                    main_chat,
+                ],
+                spacing=0,
+                expand=True,
             )
-        else:
-            self.page.add(content)
+        )
         self.page.update()
-    
-    def _handle_home_ask(self, e, input_field: ft.TextField, trained_adapters: list):
-        """Handle ask query from home page."""
-        query = input_field.value.strip()
-        if not query or not trained_adapters:
-            return
-        
-        # Use first available adapter (could add adapter selector later)
-        adapter = trained_adapters[0]
-        self._open_ask_dialog(adapter["adapter_id"], adapter["encryption_key"], adapter["name"])
-        
-        # Pre-fill the query in the dialog (if possible)
-        # For now, just open the dialog
     
     def _set_example_question(self, input_field: ft.TextField, question: str):
         """Set example question in the input field."""
         input_field.value = question
         self.page.update()
+    
+    def _create_chat_bubble(self, role: str, content: str, document: str = None) -> ft.Container:
+        """Create a chat message bubble."""
+        is_user = role == "user"
+        
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Container(width=40) if is_user else ft.Container(
+                        content=ft.Icon(ft.Icons.SMART_TOY_ROUNDED, size=20, color="white"),
+                        width=36,
+                        height=36,
+                        bgcolor=LightTheme.ACCENT_PRIMARY,
+                        border_radius=18,
+                        alignment=ft.alignment.center,
+                    ),
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Text(
+                        content,
+                                    size=14,
+                                    color=LightTheme.TEXT_PRIMARY,
+                                    selectable=True,
+                                ),
+                                ft.Container(height=4) if document and not is_user else ft.Container(),
+                                ft.Text(
+                                    f"📄 Based on: {document}",
+                                    size=11,
+                                    color=LightTheme.TEXT_MUTED,
+                                    italic=True,
+                                ) if document and not is_user else ft.Container(),
+                    ],
+                    spacing=0,
+                        ),
+                        padding=16,
+                        bgcolor=LightTheme.ACCENT_PRIMARY + "10" if is_user else LightTheme.BG_ELEVATED,
+                        border_radius=ft.border_radius.only(
+                            top_left=16,
+                            top_right=16,
+                            bottom_left=4 if is_user else 16,
+                            bottom_right=16 if is_user else 4,
+                        ),
+                    expand=True,
+                    ),
+                    ft.Container(
+                        content=ft.Icon(ft.Icons.PERSON_ROUNDED, size=20, color="white"),
+                        width=36,
+                        height=36,
+                        bgcolor=LightTheme.ACCENT_SUCCESS,
+                        border_radius=18,
+                        alignment=ft.alignment.center,
+                    ) if is_user else ft.Container(width=40),
+                ],
+                spacing=12,
+                alignment=ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START,
+                vertical_alignment=ft.CrossAxisAlignment.START,
+            ),
+            margin=ft.margin.only(left=60 if is_user else 0, right=0 if is_user else 60),
+        )
+    
+    def _create_action_chip(self, label: str, prompt: str, adapters: list) -> ft.Container:
+        """Create a quick action chip."""
+        return ft.Container(
+            content=ft.TextButton(
+                label,
+                on_click=lambda e: self._quick_ask(prompt, adapters),
+                style=ft.ButtonStyle(
+                    color=LightTheme.TEXT_PRIMARY,
+                    shape=ft.RoundedRectangleBorder(radius=20),
+                ),
+            ),
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=20,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+        )
+    
+    def _quick_ask(self, question: str, adapters: list):
+        """Handle quick ask from history or chips."""
+        if hasattr(self, 'chat_input') and self.chat_input:
+            self.chat_input.value = question
+        self.page.update()
+            # Optionally auto-submit
+            # self._send_chat_message(None, self.chat_input, adapters)
+    
+    def _new_chat(self):
+        """Start a new chat session."""
+        self.chat_messages = []
+        self._save_chat_history_to_file()
+        self.show_landing_page()
+    
+    def _load_chat_history(self) -> list:
+        """Load chat history from file."""
+        import json
+        chat_file = self.vault_path / "chat_history.json"
+        try:
+            if chat_file.exists():
+                with open(chat_file, 'r') as f:
+                    return json.load(f)
+        except Exception as e:
+            logger.debug(f"Failed to load chat history: {e}")
+        return []
+    
+    def _save_chat_history_to_file(self):
+        """Save chat history to file."""
+        import json
+        chat_file = self.vault_path / "chat_history.json"
+        try:
+            with open(chat_file, 'w') as f:
+                json.dump(self.chat_messages if hasattr(self, 'chat_messages') else [], f, indent=2)
+        except Exception as e:
+            logger.debug(f"Failed to save chat history: {e}")
+    
+    def _send_chat_message(self, e, input_field: ft.TextField, adapters: list):
+        """Send a chat message and get AI response."""
+        query = input_field.value.strip() if input_field.value else ""
+        if not query or not adapters:
+            return
+        
+        # Clear input
+        input_field.value = ""
+        self.page.update()
+        
+        # Add user message to chat
+        user_msg = {"role": "user", "content": query}
+        if not hasattr(self, 'chat_messages'):
+            self.chat_messages = []
+        self.chat_messages.append(user_msg)
+        
+        # Add to UI
+        if hasattr(self, 'chat_messages_list'):
+            # Remove welcome message if it's first message
+            if len(self.chat_messages) == 1 and self.chat_messages_list.controls:
+                self.chat_messages_list.controls.clear()
+            
+            self.chat_messages_list.controls.append(
+                self._create_chat_bubble("user", query)
+            )
+            
+            # Add loading indicator
+            loading_bubble = ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Container(
+                            content=ft.Icon(ft.Icons.SMART_TOY_ROUNDED, size=20, color="white"),
+                            width=36,
+                            height=36,
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
+                            border_radius=18,
+                            alignment=ft.alignment.center,
+                        ),
+                        ft.Container(
+                            content=ft.Row(
+                                [
+                                    ft.ProgressRing(width=16, height=16, stroke_width=2, color=LightTheme.ACCENT_PRIMARY),
+                                    ft.Text("Thinking...", size=14, color=LightTheme.TEXT_MUTED, italic=True),
+                                ],
+                                spacing=12,
+                            ),
+                            padding=16,
+                            bgcolor=LightTheme.BG_ELEVATED,
+                            border_radius=16,
+                        ),
+                        ft.Container(width=40),
+                    ],
+                    spacing=12,
+                ),
+                margin=ft.margin.only(right=60),
+            )
+            self.chat_messages_list.controls.append(loading_bubble)
+            self.page.update()
+        
+        # Use first adapter for now (could add selector later)
+        adapter = adapters[0]
+        
+        def run_inference():
+            try:
+                response = self.training_manager.inference_with_adapter(
+                    adapter_id=adapter["adapter_id"],
+                    query=query,
+                    encryption_key_hex=adapter["encryption_key"]
+                )
+                
+                response_text = response.get("response", "I couldn't generate a response.") if response else "No response received."
+                
+                # Add AI response
+                ai_msg = {"role": "assistant", "content": response_text, "document": adapter["name"]}
+                self.chat_messages.append(ai_msg)
+                self._save_chat_history_to_file()
+                
+                # Save to question history too
+                self._save_question_history(query, adapter["name"], response_text, mode="cloud")
+                
+                def update_ui():
+                    # Remove loading bubble
+                    if hasattr(self, 'chat_messages_list') and self.chat_messages_list.controls:
+                        self.chat_messages_list.controls.pop()
+                    
+                    # Add response bubble
+                    self.chat_messages_list.controls.append(
+                        self._create_chat_bubble("assistant", response_text, adapter["name"])
+                    )
+                    self.page.update()
+                
+                update_ui()
+                
+            except Exception as ex:
+                logger.error(f"Chat inference error: {ex}")
+                error_msg = f"Sorry, I encountered an error: {str(ex)}"
+                
+                def show_error():
+                    if hasattr(self, 'chat_messages_list') and self.chat_messages_list.controls:
+                        self.chat_messages_list.controls.pop()
+                    
+                    self.chat_messages_list.controls.append(
+                        self._create_chat_bubble("assistant", error_msg)
+                    )
+                    self.page.update()
+                
+                show_error()
+        
+        # Run inference in background
+        thread = threading.Thread(target=run_inference, daemon=True)
+        thread.start()
     
     def _save_question_history(self, question: str, document: str, response: str, mode: str = "cloud"):
         """Save a question to history."""
@@ -2452,7 +2608,7 @@ class VaultApp:
             entry_icon = ft.Icons.LIGHTBULB_ROUNDED
             icon_color = LightTheme.TEXT_PRIMARY
             icon_bg_color = LightTheme.BG_ELEVATED
-        
+
         # Compact icon with subtle background
         icon_bg = ft.Container(
             content=ft.Icon(
@@ -2513,25 +2669,25 @@ class VaultApp:
                     border_radius=12,
                 )
             else:
-                status_badge = ft.Container(
-                    content=ft.Row(
-                        [
-                            ft.Icon(status_icon, size=10, color=status_color),
-                            ft.Text(
+            status_badge = ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Icon(status_icon, size=10, color=status_color),
+                        ft.Text(
                                 status_label,
-                                size=LightTheme.FONT_SIZE_XS,
-                                weight=ft.FontWeight.W_500,
-                                color=status_color
-                            )
-                        ],
-                        spacing=3,
-                        tight=True
-                    ),
-                    bgcolor=status_color + "15",
-                    padding=ft.padding.symmetric(horizontal=6, vertical=3),
-                    border_radius=6,
-                    border=ft.border.all(1, status_color + "30"),
-                )
+                            size=LightTheme.FONT_SIZE_XS,
+                            weight=ft.FontWeight.W_500,
+                            color=status_color
+                        )
+                    ],
+                    spacing=3,
+                    tight=True
+                ),
+                bgcolor=status_color + "15",
+                padding=ft.padding.symmetric(horizontal=6, vertical=3),
+                border_radius=6,
+                border=ft.border.all(1, status_color + "30"),
+            )
 
         # Sleek tag chips
         regular_tags = [t for t in tags if not t.startswith("training_")]
@@ -4510,8 +4666,8 @@ class VaultApp:
                                     weight=ft.FontWeight.BOLD,
                                     color=LightTheme.TEXT_PRIMARY,
                                 ),
-                                upload_button,
-                            ],
+                                        upload_button,
+                                    ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         ),
                         ft.Container(height=8),
@@ -4526,7 +4682,7 @@ class VaultApp:
                                     self._create_workflow_step("3", "💬 Ask", "Query your documents"),
                                 ],
                                 alignment=ft.MainAxisAlignment.CENTER,
-                                spacing=12,
+                                    spacing=12,
                             ),
                             padding=ft.padding.symmetric(vertical=16),
                             bgcolor=LightTheme.BG_HOVER,
@@ -5347,9 +5503,9 @@ class VaultApp:
                 ft.ElevatedButton(
                     "Yes, Train",
                     on_click=on_yes,
-                    style=ft.ButtonStyle(
-                        bgcolor=LightTheme.ACCENT_PRIMARY,
-                        color="white",
+                        style=ft.ButtonStyle(
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
+                            color="white",
                     ),
                 ),
             ]
@@ -5748,64 +5904,64 @@ class VaultApp:
                             logger.info("To use cloud QA generation, set RUNPOD_QA_ENDPOINT_ID environment variable")
                             use_synthetic = False
                         else:
-                            # Check if API key is available for QA generation endpoint
-                            # Default behavior: RUNPOD_QA_API_KEY defaults to RUNPOD_API_KEY if not set
-                            # This ensures QA endpoint works by default when RUNPOD_API_KEY is set
-                            runpod_api_key = os.getenv("RUNPOD_API_KEY")
-                            qa_api_key = os.getenv("RUNPOD_QA_API_KEY")
-                            
-                            # Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default if not explicitly set
-                            # This ensures the QA endpoint is used by default
-                            if not qa_api_key and runpod_api_key:
-                                os.environ["RUNPOD_QA_API_KEY"] = runpod_api_key
-                                qa_api_key = runpod_api_key
-                                logger.debug("Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default")
-                            
-                            # Priority: RUNPOD_QA_API_KEY (now set by default) > constructor api_key > RUNPOD_API_KEY
+                        # Check if API key is available for QA generation endpoint
+                        # Default behavior: RUNPOD_QA_API_KEY defaults to RUNPOD_API_KEY if not set
+                        # This ensures QA endpoint works by default when RUNPOD_API_KEY is set
+                        runpod_api_key = os.getenv("RUNPOD_API_KEY")
+                        qa_api_key = os.getenv("RUNPOD_QA_API_KEY")
+                        
+                        # Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default if not explicitly set
+                        # This ensures the QA endpoint is used by default
+                        if not qa_api_key and runpod_api_key:
+                            os.environ["RUNPOD_QA_API_KEY"] = runpod_api_key
+                            qa_api_key = runpod_api_key
+                            logger.debug("Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default")
+                        
+                        # Priority: RUNPOD_QA_API_KEY (now set by default) > constructor api_key > RUNPOD_API_KEY
                             api_key = qa_api_key or (self.qa_generator.api_key if self.qa_generator else None) or runpod_api_key
-                            
-                            if not api_key:
-                                logger.warning("RunPod API key not configured - falling back to local generation")
-                                logger.info("To use cloud QA generation, set RUNPOD_QA_API_KEY or RUNPOD_API_KEY environment variable")
-                                use_synthetic = False
-                            else:
-                                # Log which API key source is being used
-                                if qa_api_key == runpod_api_key and runpod_api_key:
-                                    logger.debug("Using RUNPOD_API_KEY (default) for QA generation via RUNPOD_QA_API_KEY")
-                                elif qa_api_key:
-                                    logger.debug("Using RUNPOD_QA_API_KEY for QA generation")
-                                elif runpod_api_key:
-                                    logger.debug("Using RUNPOD_API_KEY for QA generation")
+                        
+                        if not api_key:
+                            logger.warning("RunPod API key not configured - falling back to local generation")
+                            logger.info("To use cloud QA generation, set RUNPOD_QA_API_KEY or RUNPOD_API_KEY environment variable")
+                            use_synthetic = False
+                        else:
+                            # Log which API key source is being used
+                            if qa_api_key == runpod_api_key and runpod_api_key:
+                                logger.debug("Using RUNPOD_API_KEY (default) for QA generation via RUNPOD_QA_API_KEY")
+                            elif qa_api_key:
+                                logger.debug("Using RUNPOD_QA_API_KEY for QA generation")
+                            elif runpod_api_key:
+                                logger.debug("Using RUNPOD_API_KEY for QA generation")
                                 
-                                def update_phase2_synthetic():
-                                    self._update_training_phase(
-                                        phase_text, progress_bar, phase_status, phase_steps,
-                                        phase=1,
+                            def update_phase2_synthetic():
+                                self._update_training_phase(
+                                    phase_text, progress_bar, phase_status, phase_steps,
+                                    phase=1,
                                         message="🧠 Generating Q&A with Qwen3-30B...",
                                         submessage="Creating high-quality training pairs via cloud AI (~2-5 min, encrypted)",
-                                        progress=0.35
-                                    )
-                                
-                                try:
-                                    if hasattr(self.page, 'run_task'):
-                                        self.page.run_task(update_phase2_synthetic)
-                                    else:
-                                        update_phase2_synthetic()
-                                except Exception:
-                                    update_phase2_synthetic()
-                                
-                                logger.info("Using synthetic Q&A generation (cloud endpoint)")
-                                logger.info(f"PDF path: {pdf_path}, exists: {Path(pdf_path).exists()}")
-                                logger.info(f"QA Generation Endpoint: {os.getenv('RUNPOD_QA_ENDPOINT_ID', 'not configured')} (separate from inference endpoint)")
-                                logger.info(f"API key configured: {bool(api_key)}")
-                                
-                                qa_pairs, dataset_encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
-                                    pdf_path=pdf_path,
-                                    target_samples=100,  # Quality > quantity for adapter training
-                                    encryption_key_hex=None  # Generate new key
+                                    progress=0.35
                                 )
-                                
-                                logger.info(f"✓ Generated {len(qa_pairs)} synthetic Q&A pairs from cloud endpoint")
+                            
+                            try:
+                                if hasattr(self.page, 'run_task'):
+                                    self.page.run_task(update_phase2_synthetic)
+                                else:
+                                    update_phase2_synthetic()
+                            except Exception:
+                                update_phase2_synthetic()
+                            
+                                logger.info("Using synthetic Q&A generation (cloud endpoint)")
+                            logger.info(f"PDF path: {pdf_path}, exists: {Path(pdf_path).exists()}")
+                                logger.info(f"QA Generation Endpoint: {os.getenv('RUNPOD_QA_ENDPOINT_ID', 'not configured')} (separate from inference endpoint)")
+                            logger.info(f"API key configured: {bool(api_key)}")
+                            
+                            qa_pairs, dataset_encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
+                                pdf_path=pdf_path,
+                                    target_samples=100,  # Quality > quantity for adapter training
+                                encryption_key_hex=None  # Generate new key
+                            )
+                            
+                            logger.info(f"✓ Generated {len(qa_pairs)} synthetic Q&A pairs from cloud endpoint")
                     
                     except RuntimeError as e:
                         logger.error(f"Synthetic generation failed: {e}")
@@ -6277,8 +6433,8 @@ class VaultApp:
                             ),
                         ],
                         spacing=16,
-                        alignment=ft.MainAxisAlignment.CENTER,
-                    ),
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
                     ft.Container(height=8),
                     ft.Container(
                         content=ft.ProgressBar(
@@ -6425,87 +6581,87 @@ class VaultApp:
         """Run inference using cloud RunPod endpoint."""
         import time
         
-        try:
-            # First check adapter status before inference
-            try:
+                try:
+                    # First check adapter status before inference
+                    try:
                 max_polls = 5
                 poll_interval = 2
-                
-                adapter_status = "unknown"
-                for poll_count in range(max_polls):
-                    status_result = self.training_manager.get_training_status(knowledge_id)
-                    adapter_status = status_result.get("status", "unknown")
-                    
-                    if adapter_status == "completed":
+                        
+                        adapter_status = "unknown"
+                        for poll_count in range(max_polls):
+                            status_result = self.training_manager.get_training_status(knowledge_id)
+                            adapter_status = status_result.get("status", "unknown")
+                            
+                            if adapter_status == "completed":
                         break
-                    elif adapter_status in ["pending", "training"]:
-                        if poll_count < max_polls - 1:
-                            time.sleep(poll_interval)
-                            continue
-                    break
-                
-                if adapter_status != "completed":
-                    error_msg = f"Knowledge base is still training (status: {adapter_status}). Please wait for training to complete."
-                    if adapter_status == "pending":
-                        error_msg = "Knowledge base is queued for training. Please wait a few minutes and try again."
-                    elif adapter_status == "training":
-                        error_msg = "Knowledge base is currently training. This may take several minutes. Please wait and try again."
-                    elif adapter_status == "failed":
-                        error_msg = "Knowledge base training failed. Please check the training status."
+                            elif adapter_status in ["pending", "training"]:
+                                if poll_count < max_polls - 1:
+                                    time.sleep(poll_interval)
+                                    continue
+                            break
+                        
+                        if adapter_status != "completed":
+                            error_msg = f"Knowledge base is still training (status: {adapter_status}). Please wait for training to complete."
+                            if adapter_status == "pending":
+                                error_msg = "Knowledge base is queued for training. Please wait a few minutes and try again."
+                            elif adapter_status == "training":
+                                error_msg = "Knowledge base is currently training. This may take several minutes. Please wait and try again."
+                            elif adapter_status == "failed":
+                                error_msg = "Knowledge base training failed. Please check the training status."
+                            
+                            def show_not_ready():
+                                loading_indicator.visible = False
+                                query_field.disabled = False
+                                submit_button.disabled = False
+                        mode_dropdown.disabled = False
+                                response_text.value = error_msg
+                                response_container.visible = True
+                                self.page.update()
+                            
+                            show_not_ready()
+                            return
+                    except Exception as status_err:
+                        logger.warning(f"Could not check adapter status: {status_err}")
                     
-                    def show_not_ready():
+                    # Call training manager's inference method
+                    response = self.training_manager.inference_with_adapter(
+                        adapter_id=knowledge_id,
+                        query=query,
+                        encryption_key_hex=encryption_key_hex
+                    )
+                    
+                    def update_ui():
                         loading_indicator.visible = False
                         query_field.disabled = False
                         submit_button.disabled = False
-                        mode_dropdown.disabled = False
-                        response_text.value = error_msg
+                mode_dropdown.disabled = False
+                        
+                        if response and "response" in response:
+                            response_text.value = response["response"]
+                            response_container.visible = True
+                    # Save to question history
+                    self._save_question_history(query, filename, response["response"], mode="cloud")
+                        else:
+                            response_text.value = "No response received"
+                            response_container.visible = True
+                        
+                        self.page.update()
+                    
+                    update_ui()
+                    
+                except Exception as ex:
+            logger.error(f"Cloud inference error: {ex}")
+                    def show_error():
+                        loading_indicator.visible = False
+                        query_field.disabled = False
+                        submit_button.disabled = False
+                mode_dropdown.disabled = False
+                        response_text.value = f"Error: {str(ex)}"
                         response_container.visible = True
                         self.page.update()
                     
-                    show_not_ready()
-                    return
-            except Exception as status_err:
-                logger.warning(f"Could not check adapter status: {status_err}")
+                    show_error()
             
-            # Call training manager's inference method
-            response = self.training_manager.inference_with_adapter(
-                adapter_id=knowledge_id,
-                query=query,
-                encryption_key_hex=encryption_key_hex
-            )
-            
-            def update_ui():
-                loading_indicator.visible = False
-                query_field.disabled = False
-                submit_button.disabled = False
-                mode_dropdown.disabled = False
-                
-                if response and "response" in response:
-                    response_text.value = response["response"]
-                    response_container.visible = True
-                    # Save to question history
-                    self._save_question_history(query, filename, response["response"], mode="cloud")
-                else:
-                    response_text.value = "No response received"
-                    response_container.visible = True
-                
-                self.page.update()
-            
-            update_ui()
-            
-        except Exception as ex:
-            logger.error(f"Cloud inference error: {ex}")
-            def show_error():
-                loading_indicator.visible = False
-                query_field.disabled = False
-                submit_button.disabled = False
-                mode_dropdown.disabled = False
-                response_text.value = f"Error: {str(ex)}"
-                response_container.visible = True
-                self.page.update()
-            
-            show_error()
-    
     def _run_local_inference(
         self, query: str, knowledge_id: str, encryption_key_hex: str, filename: str,
         loading_text, loading_indicator, response_text, response_container,
