@@ -1789,9 +1789,9 @@ class VaultApp:
                             on_click=lambda e: self.show_add_dialog(e, default_type="secret"),
                         ),
                         ft.PopupMenuItem(
-                            text="Add Knowledge",
-                            icon=ft.Icons.LIGHTBULB_ROUNDED,
-                            on_click=lambda e: self.show_add_dialog(e, default_type="knowledge"),
+                            text="Upload PDF (Knowledge)",
+                            icon=ft.Icons.UPLOAD_FILE_ROUNDED,
+                            on_click=lambda e: self._on_upload_click(e),
                         ),
                     ],
                 ),
@@ -4166,21 +4166,8 @@ class VaultApp:
             border_radius=12,
         )
         
-        # Add Knowledge button
-        add_knowledge_button = ft.Container(
-            content=ft.ElevatedButton(
-                "➕ Add Knowledge",
-                icon=ft.Icons.ADD_ROUNDED,
-                on_click=lambda e: self.show_add_dialog(e, default_type="knowledge"),
-                style=ft.ButtonStyle(
-                    bgcolor=LightTheme.ACCENT_SUCCESS,
-                    color="white",
-                    shape=ft.RoundedRectangleBorder(radius=12),
-                    padding=ft.padding.symmetric(horizontal=24, vertical=12),
-                ),
-            ),
-            border_radius=12,
-        )
+        # Note: Removed separate "Add Knowledge" button - "Upload PDF" is the primary action
+        # Knowledge entries are created by uploading PDFs, not text input
         
         # Clear and rebuild knowledge view
         self.secrets_list.controls.clear()
@@ -4198,13 +4185,7 @@ class VaultApp:
                                     weight=ft.FontWeight.BOLD,
                                     color=LightTheme.TEXT_PRIMARY,
                                 ),
-                                ft.Row(
-                                    [
-                                        add_knowledge_button,
-                                        upload_button,
-                                    ],
-                                    spacing=12,
-                                ),
+                                upload_button,
                             ],
                             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
                         ),
