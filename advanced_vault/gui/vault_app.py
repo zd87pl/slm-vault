@@ -4200,7 +4200,7 @@ class VaultApp:
         self.page.update()
     
     def _build_trained_models_section(self) -> Optional[ft.Container]:
-        """Build a section showing trained models ready for inference."""
+        """Build a section showing trained knowledge adapters ready for inference."""
         # Find all entries with completed training
         from advanced_vault.encrypted_kv import QueryFilter
         
@@ -4308,7 +4308,7 @@ class VaultApp:
                             ft.Icon(ft.Icons.SMART_TOY_ROUNDED, color=LightTheme.ACCENT_SUCCESS, size=20),
                             ft.Container(width=8),
                             ft.Text(
-                                f"🧠 Trained Models ({len(trained_adapters)})",
+                                f"🧠 Knowledge Adapters ({len(trained_adapters)})",
                                 size=16,
                                 weight=ft.FontWeight.W_600,
                                 color=LightTheme.TEXT_PRIMARY,
@@ -4317,7 +4317,7 @@ class VaultApp:
                     ),
                     ft.Container(height=8),
                     ft.Text(
-                        "Click 'Ask' to query your trained knowledge base",
+                        "Ask questions about your trained documents",
                         size=12,
                         color=LightTheme.TEXT_MUTED,
                     ),
