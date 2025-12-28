@@ -2688,25 +2688,25 @@ class VaultApp:
                     border_radius=12,
                 )
             else:
-            status_badge = ft.Container(
-                content=ft.Row(
-                    [
-                        ft.Icon(status_icon, size=10, color=status_color),
-                        ft.Text(
+                status_badge = ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Icon(status_icon, size=10, color=status_color),
+                            ft.Text(
                                 status_label,
-                            size=LightTheme.FONT_SIZE_XS,
-                            weight=ft.FontWeight.W_500,
-                            color=status_color
-                        )
-                    ],
-                    spacing=3,
-                    tight=True
-                ),
-                bgcolor=status_color + "15",
-                padding=ft.padding.symmetric(horizontal=6, vertical=3),
-                border_radius=6,
-                border=ft.border.all(1, status_color + "30"),
-            )
+                                size=LightTheme.FONT_SIZE_XS,
+                                weight=ft.FontWeight.W_500,
+                                color=status_color
+                            )
+                        ],
+                        spacing=3,
+                        tight=True
+                    ),
+                    bgcolor=status_color + "15",
+                    padding=ft.padding.symmetric(horizontal=6, vertical=3),
+                    border_radius=6,
+                    border=ft.border.all(1, status_color + "30"),
+                )
 
         # Sleek tag chips
         regular_tags = [t for t in tags if not t.startswith("training_")]
@@ -5923,64 +5923,64 @@ class VaultApp:
                             logger.info("To use cloud QA generation, set RUNPOD_QA_ENDPOINT_ID environment variable")
                             use_synthetic = False
                         else:
-                        # Check if API key is available for QA generation endpoint
-                        # Default behavior: RUNPOD_QA_API_KEY defaults to RUNPOD_API_KEY if not set
-                        # This ensures QA endpoint works by default when RUNPOD_API_KEY is set
-                        runpod_api_key = os.getenv("RUNPOD_API_KEY")
-                        qa_api_key = os.getenv("RUNPOD_QA_API_KEY")
-                        
-                        # Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default if not explicitly set
-                        # This ensures the QA endpoint is used by default
-                        if not qa_api_key and runpod_api_key:
-                            os.environ["RUNPOD_QA_API_KEY"] = runpod_api_key
-                            qa_api_key = runpod_api_key
-                            logger.debug("Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default")
-                        
-                        # Priority: RUNPOD_QA_API_KEY (now set by default) > constructor api_key > RUNPOD_API_KEY
+                            # Check if API key is available for QA generation endpoint
+                            # Default behavior: RUNPOD_QA_API_KEY defaults to RUNPOD_API_KEY if not set
+                            # This ensures QA endpoint works by default when RUNPOD_API_KEY is set
+                            runpod_api_key = os.getenv("RUNPOD_API_KEY")
+                            qa_api_key = os.getenv("RUNPOD_QA_API_KEY")
+                            
+                            # Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default if not explicitly set
+                            # This ensures the QA endpoint is used by default
+                            if not qa_api_key and runpod_api_key:
+                                os.environ["RUNPOD_QA_API_KEY"] = runpod_api_key
+                                qa_api_key = runpod_api_key
+                                logger.debug("Set RUNPOD_QA_API_KEY to RUNPOD_API_KEY by default")
+                            
+                            # Priority: RUNPOD_QA_API_KEY (now set by default) > constructor api_key > RUNPOD_API_KEY
                             api_key = qa_api_key or (self.qa_generator.api_key if self.qa_generator else None) or runpod_api_key
-                        
-                        if not api_key:
-                            logger.warning("RunPod API key not configured - falling back to local generation")
-                            logger.info("To use cloud QA generation, set RUNPOD_QA_API_KEY or RUNPOD_API_KEY environment variable")
-                            use_synthetic = False
-                        else:
-                            # Log which API key source is being used
-                            if qa_api_key == runpod_api_key and runpod_api_key:
-                                logger.debug("Using RUNPOD_API_KEY (default) for QA generation via RUNPOD_QA_API_KEY")
-                            elif qa_api_key:
-                                logger.debug("Using RUNPOD_QA_API_KEY for QA generation")
-                            elif runpod_api_key:
-                                logger.debug("Using RUNPOD_API_KEY for QA generation")
-                                
-                            def update_phase2_synthetic():
-                                self._update_training_phase(
-                                    phase_text, progress_bar, phase_status, phase_steps,
-                                    phase=1,
+                            
+                            if not api_key:
+                                logger.warning("RunPod API key not configured - falling back to local generation")
+                                logger.info("To use cloud QA generation, set RUNPOD_QA_API_KEY or RUNPOD_API_KEY environment variable")
+                                use_synthetic = False
+                            else:
+                                # Log which API key source is being used
+                                if qa_api_key == runpod_api_key and runpod_api_key:
+                                    logger.debug("Using RUNPOD_API_KEY (default) for QA generation via RUNPOD_QA_API_KEY")
+                                elif qa_api_key:
+                                    logger.debug("Using RUNPOD_QA_API_KEY for QA generation")
+                                elif runpod_api_key:
+                                    logger.debug("Using RUNPOD_API_KEY for QA generation")
+                                    
+                                def update_phase2_synthetic():
+                                    self._update_training_phase(
+                                        phase_text, progress_bar, phase_status, phase_steps,
+                                        phase=1,
                                         message="🧠 Generating Q&A with Qwen3-30B...",
                                         submessage="Creating high-quality training pairs via cloud AI (~2-5 min, encrypted)",
-                                    progress=0.35
-                                )
-                            
-                            try:
-                                if hasattr(self.page, 'run_task'):
-                                    self.page.run_task(update_phase2_synthetic)
-                                else:
+                                        progress=0.35
+                                    )
+                                
+                                try:
+                                    if hasattr(self.page, 'run_task'):
+                                        self.page.run_task(update_phase2_synthetic)
+                                    else:
+                                        update_phase2_synthetic()
+                                except Exception:
                                     update_phase2_synthetic()
-                            except Exception:
-                                update_phase2_synthetic()
-                            
+                                
                                 logger.info("Using synthetic Q&A generation (cloud endpoint)")
-                            logger.info(f"PDF path: {pdf_path}, exists: {Path(pdf_path).exists()}")
+                                logger.info(f"PDF path: {pdf_path}, exists: {Path(pdf_path).exists()}")
                                 logger.info(f"QA Generation Endpoint: {os.getenv('RUNPOD_QA_ENDPOINT_ID', 'not configured')} (separate from inference endpoint)")
-                            logger.info(f"API key configured: {bool(api_key)}")
-                            
-                            qa_pairs, dataset_encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
-                                pdf_path=pdf_path,
+                                logger.info(f"API key configured: {bool(api_key)}")
+                                
+                                qa_pairs, dataset_encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
+                                    pdf_path=pdf_path,
                                     target_samples=100,  # Quality > quantity for adapter training
-                                encryption_key_hex=None  # Generate new key
-                            )
-                            
-                            logger.info(f"✓ Generated {len(qa_pairs)} synthetic Q&A pairs from cloud endpoint")
+                                    encryption_key_hex=None  # Generate new key
+                                )
+                                
+                                logger.info(f"✓ Generated {len(qa_pairs)} synthetic Q&A pairs from cloud endpoint")
                     
                     except RuntimeError as e:
                         logger.error(f"Synthetic generation failed: {e}")
@@ -6600,86 +6600,86 @@ class VaultApp:
         """Run inference using cloud RunPod endpoint."""
         import time
         
-                try:
-                    # First check adapter status before inference
-                    try:
+        try:
+            # First check adapter status before inference
+            try:
                 max_polls = 5
                 poll_interval = 2
-                        
-                        adapter_status = "unknown"
-                        for poll_count in range(max_polls):
-                            status_result = self.training_manager.get_training_status(knowledge_id)
-                            adapter_status = status_result.get("status", "unknown")
-                            
-                            if adapter_status == "completed":
+                
+                adapter_status = "unknown"
+                for poll_count in range(max_polls):
+                    status_result = self.training_manager.get_training_status(knowledge_id)
+                    adapter_status = status_result.get("status", "unknown")
+                    
+                    if adapter_status == "completed":
                         break
-                            elif adapter_status in ["pending", "training"]:
-                                if poll_count < max_polls - 1:
-                                    time.sleep(poll_interval)
-                                    continue
-                            break
-                        
-                        if adapter_status != "completed":
-                            error_msg = f"Knowledge base is still training (status: {adapter_status}). Please wait for training to complete."
-                            if adapter_status == "pending":
-                                error_msg = "Knowledge base is queued for training. Please wait a few minutes and try again."
-                            elif adapter_status == "training":
-                                error_msg = "Knowledge base is currently training. This may take several minutes. Please wait and try again."
-                            elif adapter_status == "failed":
-                                error_msg = "Knowledge base training failed. Please check the training status."
-                            
-                            def show_not_ready():
-                                loading_indicator.visible = False
-                                query_field.disabled = False
-                                submit_button.disabled = False
+                    elif adapter_status in ["pending", "training"]:
+                        if poll_count < max_polls - 1:
+                            time.sleep(poll_interval)
+                            continue
+                    break
+                
+                if adapter_status != "completed":
+                    error_msg = f"Knowledge base is still training (status: {adapter_status}). Please wait for training to complete."
+                    if adapter_status == "pending":
+                        error_msg = "Knowledge base is queued for training. Please wait a few minutes and try again."
+                    elif adapter_status == "training":
+                        error_msg = "Knowledge base is currently training. This may take several minutes. Please wait and try again."
+                    elif adapter_status == "failed":
+                        error_msg = "Knowledge base training failed. Please check the training status."
+                    
+                    def show_not_ready():
+                        loading_indicator.visible = False
+                        query_field.disabled = False
+                        submit_button.disabled = False
                         mode_dropdown.disabled = False
-                                response_text.value = error_msg
-                                response_container.visible = True
-                                self.page.update()
-                            
-                            show_not_ready()
-                            return
-                    except Exception as status_err:
-                        logger.warning(f"Could not check adapter status: {status_err}")
-                    
-                    # Call training manager's inference method
-                    response = self.training_manager.inference_with_adapter(
-                        adapter_id=knowledge_id,
-                        query=query,
-                        encryption_key_hex=encryption_key_hex
-                    )
-                    
-                    def update_ui():
-                        loading_indicator.visible = False
-                        query_field.disabled = False
-                        submit_button.disabled = False
-                mode_dropdown.disabled = False
-                        
-                        if response and "response" in response:
-                            response_text.value = response["response"]
-                            response_container.visible = True
-                    # Save to question history
-                    self._save_question_history(query, filename, response["response"], mode="cloud")
-                        else:
-                            response_text.value = "No response received"
-                            response_container.visible = True
-                        
-                        self.page.update()
-                    
-                    update_ui()
-                    
-                except Exception as ex:
-            logger.error(f"Cloud inference error: {ex}")
-                    def show_error():
-                        loading_indicator.visible = False
-                        query_field.disabled = False
-                        submit_button.disabled = False
-                mode_dropdown.disabled = False
-                        response_text.value = f"Error: {str(ex)}"
+                        response_text.value = error_msg
                         response_container.visible = True
                         self.page.update()
                     
-                    show_error()
+                    show_not_ready()
+                    return
+            except Exception as status_err:
+                logger.warning(f"Could not check adapter status: {status_err}")
+            
+            # Call training manager's inference method
+            response = self.training_manager.inference_with_adapter(
+                adapter_id=knowledge_id,
+                query=query,
+                encryption_key_hex=encryption_key_hex
+            )
+            
+            def update_ui():
+                loading_indicator.visible = False
+                query_field.disabled = False
+                submit_button.disabled = False
+                mode_dropdown.disabled = False
+                
+                if response and "response" in response:
+                    response_text.value = response["response"]
+                    response_container.visible = True
+                    # Save to question history
+                    self._save_question_history(query, filename, response["response"], mode="cloud")
+                else:
+                    response_text.value = "No response received"
+                    response_container.visible = True
+                
+                self.page.update()
+            
+            update_ui()
+            
+        except Exception as ex:
+            logger.error(f"Cloud inference error: {ex}")
+            def show_error():
+                loading_indicator.visible = False
+                query_field.disabled = False
+                submit_button.disabled = False
+                mode_dropdown.disabled = False
+                response_text.value = f"Error: {str(ex)}"
+                response_container.visible = True
+                self.page.update()
+            
+            show_error()
             
     def _run_local_inference(
         self, query: str, knowledge_id: str, encryption_key_hex: str, filename: str,
