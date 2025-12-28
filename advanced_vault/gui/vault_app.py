@@ -1393,14 +1393,24 @@ class VaultApp:
                             timeout=10
                         )
                         if response.status_code == 200:
-                            jobs = response.json()
+                            data = response.json()
+                            # Handle both list and dict responses
+                            if isinstance(data, list):
+                                jobs = data
+                            elif isinstance(data, dict):
+                                jobs = data.get("adapters", data.get("jobs", [data]))
+                            logger.info(f"Fetched {len(jobs)} training jobs")
                     except Exception as req_err:
                         logger.warning(f"Could not fetch training jobs: {req_err}")
                     
                     # Find this document's job
                     doc_job = None
                     for job in jobs:
-                        if doc_name in str(job.get("model_name", "")) or doc_name in str(job.get("adapter_id", "")):
+                        if not isinstance(job, dict):
+                            continue
+                        job_name = str(job.get("model_name", "") or job.get("name", ""))
+                        job_id = str(job.get("adapter_id", "") or job.get("id", ""))
+                        if doc_name in job_name or doc_name in job_id:
                             doc_job = job
                             break
                     
@@ -6423,17 +6433,20 @@ class VaultApp:
                         if encryption_key_hex is None:
                             encryption_key_hex = os.urandom(32).hex()
                         
-                        dataset_result = self.training_manager.encrypt_and_save_dataset(
+                        # Convert hex to bytes for save_dataset
+                        encryption_key_bytes = bytes.fromhex(encryption_key_hex)
+                        
+                        dataset_path = self.training_manager.save_dataset(
                             qa_pairs=qa_pairs,
                             filename=filename,
-                            encryption_key_hex=encryption_key_hex
+                            encryption_key=encryption_key_bytes
                         )
                         
-                        if dataset_result:
+                        if dataset_path:
                             # Upload and submit training
                             upload_result = self.training_manager.upload_dataset(
-                                dataset_path=dataset_result['path'],
-                                filename=Path(dataset_result['path']).name
+                                dataset_path=dataset_path,
+                                filename=Path(dataset_path).name
                             )
                             
                             if upload_result:
@@ -6590,12 +6603,34 @@ class VaultApp:
                 except Exception:
                     update_phase3()
                 
-                # Read encryption key from key file
-                key_file = Path(dataset_path).with_suffix('.key')
-                if not key_file.exists():
-                    raise ValueError("Encryption key file not found. Cannot resume without key.")
+                # Read encryption key from key file or vault entry
+                encryption_key_hex = None
                 
-                encryption_key_hex = key_file.read_text().strip()
+                # Try key file first
+                key_file = Path(dataset_path).with_suffix('.key')
+                if key_file.exists():
+                    encryption_key_hex = key_file.read_text().strip()
+                    logger.info("Found encryption key in key file")
+                else:
+                    # Try to get from vault entry tags
+                    logger.info("Key file not found, checking vault entry tags...")
+                    try:
+                        query_filter = QueryFilter()
+                        all_entries = self.vault.kv_store.search(query_filter)
+                        for entry in all_entries:
+                            if entry.service == filename or filename in entry.service:
+                                for tag in (entry.tags or []):
+                                    if tag.startswith("training_key:") or tag.startswith("encryption_key:"):
+                                        encryption_key_hex = tag.split(":", 1)[1]
+                                        logger.info(f"Found encryption key in vault tags")
+                                        break
+                                if encryption_key_hex:
+                                    break
+                    except Exception as tag_err:
+                        logger.warning(f"Could not check vault tags for key: {tag_err}")
+                
+                if not encryption_key_hex:
+                    raise ValueError("Encryption key not found. Please regenerate Q&A pairs.")
                 
                 # Upload dataset
                 dataset_url = self.training_manager._upload_dataset_to_supabase_storage(dataset_path)
