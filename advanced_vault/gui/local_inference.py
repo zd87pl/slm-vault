@@ -114,7 +114,31 @@ class LocalInferenceEngine:
             
             if self.backend == "mlx":
                 logger.info(f"Loading MLX model: {self.MLX_MODEL_NAME}")
-                self.model, self.tokenizer = mlx_load(self.MLX_MODEL_NAME)
+                
+                # Try loading - if safetensors missing, clear cache and retry
+                try:
+                    self.model, self.tokenizer = mlx_load(self.MLX_MODEL_NAME)
+                except Exception as mlx_err:
+                    if "No safetensors found" in str(mlx_err):
+                        logger.warning("MLX model cache corrupted, clearing and re-downloading...")
+                        if progress_callback:
+                            progress_callback("Cache corrupted, re-downloading...")
+                        
+                        # Clear the corrupted cache
+                        import shutil
+                        cache_path = Path.home() / ".cache" / "huggingface" / "hub"
+                        model_cache = cache_path / f"models--{self.MLX_MODEL_NAME.replace('/', '--')}"
+                        if model_cache.exists():
+                            shutil.rmtree(model_cache)
+                            logger.info(f"Cleared corrupted cache: {model_cache}")
+                        
+                        # Retry download
+                        if progress_callback:
+                            progress_callback("Downloading model (this may take a minute)...")
+                        self.model, self.tokenizer = mlx_load(self.MLX_MODEL_NAME)
+                    else:
+                        raise
+                
                 logger.info("✓ MLX model loaded")
                 
             elif self.backend == "torch":
