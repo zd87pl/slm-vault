@@ -49,46 +49,10 @@ class ModernSidebar:
         """Build the sidebar component."""
         nav_controls = []
         
-        # App branding at top
+        # Clean top spacing (branding is in window title)
         nav_controls.append(
             ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Row(
-                            [
-                                ft.Container(
-                                    content=ft.Text("🔐", size=16),
-                                    width=32,
-                                    height=32,
-                                    border_radius=8,
-                                    bgcolor=LightTheme.ACCENT_BLUE_LIGHT,
-                                    alignment=ft.alignment.center,
-                                ),
-                                ft.Container(width=8),
-                                ft.Column(
-                                    [
-                                        ft.Text(
-                                            "Enclave",
-                                            size=LightTheme.FONT_SIZE_LG,
-                                            weight=ft.FontWeight.W_600,
-                                            color=LightTheme.TEXT_PRIMARY,
-                                        ),
-                                        ft.Text(
-                                            "Secure Vault",
-                                            size=LightTheme.FONT_SIZE_XS,
-                                            color=LightTheme.TEXT_MUTED,
-                                        ),
-                                    ],
-                                    spacing=0,
-                                ),
-                            ],
-                            spacing=0,
-                        ),
-                    ],
-                    spacing=0,
-                ),
-                padding=ft.padding.all(LightTheme.PADDING_LG),
-                border=ft.border.only(bottom=ft.border.BorderSide(1, LightTheme.BORDER_COLOR)),
+                height=12,
             )
         )
         
