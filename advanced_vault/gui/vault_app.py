@@ -1040,8 +1040,10 @@ class VaultApp:
             if status_info.get("status") == "processing":
                 doc_items.append(self._create_processing_card(filename, status_info))
         
-        # Second: Ready documents (trained adapters)
+        # Second: Ready documents (trained adapters) - with click to query
         for adapter in trained_adapters:
+            # Capture adapter in closure
+            adapter_copy = adapter.copy()
             doc_items.append(
                 ft.Container(
                     content=ft.Row(
@@ -1061,7 +1063,9 @@ class VaultApp:
                     padding=ft.padding.symmetric(horizontal=12, vertical=8),
                     border_radius=8,
                     on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                    on_click=lambda e, a=adapter_copy: self._quick_ask(f"Tell me about {a['name']}", [a]),
                     ink=True,
+                    tooltip=f"Click to ask about {adapter['name']}",
                 )
             )
         
@@ -1074,25 +1078,28 @@ class VaultApp:
                         status = tag.split(":", 1)[1]
                         break
                 if status in ["pending", "training"]:
+                    status_text = "⏳ Queued" if status == "pending" else "☁️ Training..."
                     doc_items.append(
                         ft.Container(
                             content=ft.Row(
                                 [
-                                    ft.Icon(ft.Icons.CLOUD_SYNC_ROUNDED, size=14, color=LightTheme.ACCENT_WARNING),
+                                    ft.ProgressRing(width=14, height=14, stroke_width=2, color=LightTheme.ACCENT_WARNING) if status == "training" else ft.Icon(ft.Icons.HOURGLASS_EMPTY_ROUNDED, size=14, color=LightTheme.ACCENT_WARNING),
                                     ft.Text(
-                                        entry.service[:22] + ("..." if len(entry.service) > 25 else ""),
+                                        entry.service[:20] + ("..." if len(entry.service) > 20 else ""),
                                         size=12,
                                         color=LightTheme.TEXT_MUTED,
                                         overflow=ft.TextOverflow.ELLIPSIS,
                                         expand=True,
                                     ),
-                                    ft.Text("☁️", size=10),
+                                    ft.Text(status_text, size=9, color=LightTheme.TEXT_MUTED),
                                 ],
                                 spacing=8,
                             ),
                             padding=ft.padding.symmetric(horizontal=12, vertical=8),
                             border_radius=8,
-                            tooltip="Training on secure cloud...",
+                            tooltip=f"Training on secure cloud... (status: {status})",
+                            on_click=lambda e: self.show_training_view(),
+                            ink=True,
                         )
                     )
         
@@ -1184,10 +1191,66 @@ class VaultApp:
                         expand=True,
                     ),
                     
+                    ft.Divider(height=1, color=LightTheme.BORDER_COLOR),
+                    
+                    # Quick navigation
+                    ft.Container(
+                        content=ft.Column(
+                            [
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.KEY_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
+                                        ft.Text("Secrets", size=11, color=LightTheme.TEXT_SECONDARY),
+                                    ], spacing=8),
+                                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                    border_radius=6,
+                                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                                    on_click=lambda e: self.build_ui(),
+                                    ink=True,
+                                ),
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.FOLDER_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
+                                        ft.Text("Library", size=11, color=LightTheme.TEXT_SECONDARY),
+                                    ], spacing=8),
+                                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                    border_radius=6,
+                                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                                    on_click=lambda e: self.show_library_view(),
+                                    ink=True,
+                                ),
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.MODEL_TRAINING_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
+                                        ft.Text("Training Jobs", size=11, color=LightTheme.TEXT_SECONDARY),
+                                    ], spacing=8),
+                                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                    border_radius=6,
+                                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                                    on_click=lambda e: self.show_training_view(),
+                                    ink=True,
+                                ),
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.SETTINGS_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
+                                        ft.Text("Settings", size=11, color=LightTheme.TEXT_SECONDARY),
+                                    ], spacing=8),
+                                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                    border_radius=6,
+                                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                                    on_click=lambda e: self.show_settings(),
+                                    ink=True,
+                                ),
+                            ],
+                            spacing=2,
+                        ),
+                        padding=ft.padding.only(left=4, right=4, top=8, bottom=8),
+                    ),
+                    
                     # Privacy status at bottom
                     ft.Container(
-                                        content=ft.Column(
-                                            [
+                        content=ft.Column(
+                            [
                                 ft.Row([
                                     ft.Icon(ft.Icons.VERIFIED_USER_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
                                     ft.Text("E2E Encrypted", size=10, color=LightTheme.ACCENT_SUCCESS),
@@ -1201,17 +1264,17 @@ class VaultApp:
                                         ft.Icons.CLOUD_DONE_ROUNDED if backend_connected else ft.Icons.CLOUD_OFF_ROUNDED,
                                         size=14,
                                         color=LightTheme.ACCENT_SUCCESS if backend_connected else LightTheme.TEXT_MUTED,
-                                                ),
-                                                ft.Text(
+                                    ),
+                                    ft.Text(
                                         "Cloud Sync" if backend_connected else "Offline",
                                         size=10,
                                         color=LightTheme.ACCENT_SUCCESS if backend_connected else LightTheme.TEXT_MUTED,
                                     ),
                                 ], spacing=6),
-                                            ],
-                                            spacing=4,
-                                    ),
-                                    padding=16,
+                            ],
+                            spacing=4,
+                        ),
+                        padding=16,
                         bgcolor=LightTheme.ACCENT_SUCCESS + "08",
                         border=ft.border.only(top=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
                     ),
