@@ -305,6 +305,7 @@ Return this exact format (valid JSON array):
         import re
         
         # Clean response
+        original_response = response
         response = response.strip()
         if "<|im_end|>" in response:
             response = response.split("<|im_end|>")[0]
@@ -317,40 +318,50 @@ Return this exact format (valid JSON array):
         if not response.startswith('['):
             response = '[' + response
         
+        # Log what we received for debugging
+        logger.info(f"Raw response (first 300 chars): {response[:300]}")
+        
         try:
-            # Try to find and extract JSON array
-            if "```json" in response:
-                json_str = response.split("```json")[1].split("```")[0].strip()
-            elif "```" in response:
-                parts = response.split("```")
-                if len(parts) >= 2:
-                    json_str = parts[1].strip()
-                else:
-                    json_str = response
+            # Find the JSON array - look for matching brackets
+            start = response.find('[')
+            if start < 0:
+                raise ValueError("No JSON array found")
+            
+            # Find matching closing bracket by counting
+            bracket_count = 0
+            end = -1
+            for i, char in enumerate(response[start:], start):
+                if char == '[':
+                    bracket_count += 1
+                elif char == ']':
+                    bracket_count -= 1
+                    if bracket_count == 0:
+                        end = i + 1
+                        break
+            
+            if end < 0:
+                # No matching bracket, try to fix by adding one
+                json_str = response[start:] + ']'
             else:
-                # Find the JSON array boundaries
-                start = response.find('[')
-                end = response.rfind(']') + 1
-                if start >= 0 and end > start:
-                    json_str = response[start:end]
-                elif start >= 0:
-                    # No closing bracket - try to add one and parse
-                    json_str = response[start:] + ']'
-                else:
-                    # Log first 200 chars of response for debugging
-                    logger.warning(f"No JSON array found. Response starts with: {response[:200]}")
-                    raise ValueError("No JSON array found")
+                json_str = response[start:end]
             
-            # Try to fix common JSON issues
-            # Remove trailing commas before ]
+            # Clean up common JSON issues
+            # Remove trailing commas
             json_str = re.sub(r',\s*]', ']', json_str)
-            # Remove trailing commas before }
             json_str = re.sub(r',\s*}', '}', json_str)
+            # Fix unescaped newlines in strings (common issue)
+            json_str = re.sub(r'(?<!\\)\n', ' ', json_str)
+            # Remove any text after the array
             
-            qa_pairs = json.loads(json_str)
+            try:
+                qa_pairs = json.loads(json_str)
+            except json.JSONDecodeError as e:
+                # Try line-by-line parsing for individual objects
+                logger.info(f"Standard parse failed, trying object-by-object extraction...")
+                qa_pairs = self._extract_qa_objects(response)
             
             if not isinstance(qa_pairs, list):
-                raise ValueError(f"Expected list, got {type(qa_pairs)}")
+                qa_pairs = [qa_pairs] if isinstance(qa_pairs, dict) else []
             
             # Validate and format
             formatted_pairs = []
@@ -361,13 +372,35 @@ Return this exact format (valid JSON array):
                     if self._validate_qa_pair(question, answer):
                         formatted_pairs.append({"question": question, "answer": answer})
             
+            if formatted_pairs:
+                logger.info(f"Successfully parsed {len(formatted_pairs)} Q&A pairs")
+            
             return formatted_pairs
             
         except (json.JSONDecodeError, ValueError) as e:
-            # Log more info for debugging
             logger.warning(f"Parse failed: {e}")
-            logger.debug(f"Response (first 500 chars): {response[:500]}")
+            logger.warning(f"Response (first 500 chars): {response[:500]}")
             return []
+    
+    def _extract_qa_objects(self, text: str) -> List[Dict[str, str]]:
+        """Extract Q&A objects using regex when JSON parsing fails."""
+        import re
+        
+        pairs = []
+        # Find all {"question": "...", "answer": "..."} patterns
+        pattern = r'\{\s*"question"\s*:\s*"([^"]+)"\s*,\s*"answer"\s*:\s*"([^"]+)"\s*\}'
+        matches = re.findall(pattern, text, re.DOTALL)
+        
+        for question, answer in matches:
+            # Unescape any escaped quotes
+            question = question.replace('\\"', '"').replace('\\n', ' ')
+            answer = answer.replace('\\"', '"').replace('\\n', ' ')
+            pairs.append({"question": question, "answer": answer})
+        
+        if pairs:
+            logger.info(f"Regex extraction found {len(pairs)} Q&A pairs")
+        
+        return pairs
 
     def generate_qa_pairs_batch(self, chunks: List[str], num_pairs_per_chunk: int = 10) -> List[Dict[str, str]]:
         """
