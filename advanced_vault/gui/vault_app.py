@@ -6123,8 +6123,10 @@ class VaultApp:
         # Extract PDF data from entry
         tmp_path = None
         try:
+            logger.info(f"Extracting PDF for training: {service}")
             secret_value = self.vault.kv_store.get(service)
             if not secret_value:
+                logger.error(f"No secret value found for service: {service}")
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text(f"❌ Could not retrieve PDF data"),
                     bgcolor=LightTheme.ACCENT_ERROR,
@@ -6133,8 +6135,24 @@ class VaultApp:
                 self.page.update()
                 return
             
-            # Decode base64 PDF data
-            pdf_data = base64.b64decode(secret_value)
+            # Decode base64 PDF data (with padding fix)
+            try:
+                # Add padding if needed (base64 strings should be multiple of 4)
+                missing_padding = len(secret_value) % 4
+                if missing_padding:
+                    secret_value += '=' * (4 - missing_padding)
+                pdf_data = base64.b64decode(secret_value)
+            except Exception as decode_err:
+                logger.warning(f"Base64 decode failed, trying as raw data: {decode_err}")
+                # Maybe it's already raw bytes or a path
+                if isinstance(secret_value, bytes):
+                    pdf_data = secret_value
+                elif isinstance(secret_value, str) and os.path.exists(secret_value):
+                    # It might be a file path
+                    with open(secret_value, 'rb') as f:
+                        pdf_data = f.read()
+                else:
+                    raise ValueError(f"Cannot decode PDF data: {decode_err}")
             
             # Write to persistent location (not tempfile) so it exists during training workflow
             vault_data_dir = Path(self.vault_path) / "temp_pdfs"
