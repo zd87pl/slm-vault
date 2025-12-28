@@ -63,7 +63,15 @@ class LocalInferenceEngine:
     """
     
     MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
-    MLX_MODEL_NAME = "mlx-community/TinyLlama-1.1B-Chat-v1.0-4bit"
+    
+    # MLX models to try in order (some repos may be unavailable)
+    MLX_MODEL_CANDIDATES = [
+        "mlx-community/Llama-3.2-1B-Instruct-4bit",  # Newer, better quality
+        "mlx-community/Qwen2.5-1.5B-Instruct-4bit",  # Very good quality
+        "mlx-community/TinyLlama-1.1B-Chat-v1.0-8bit",  # 8bit version
+        "mlx-community/SmolLM2-1.7B-Instruct-4bit",  # Alternative small model
+    ]
+    MLX_MODEL_NAME = MLX_MODEL_CANDIDATES[0]  # Default
     
     def __init__(self, cache_dir: Optional[str] = None):
         """
@@ -113,35 +121,43 @@ class LocalInferenceEngine:
                 progress_callback("Loading TinyLlama model...")
             
             if self.backend == "mlx":
-                logger.info(f"Loading MLX model: {self.MLX_MODEL_NAME}")
+                # Try loading MLX models in order until one works
+                import shutil
+                last_error = None
                 
-                # Try loading - if safetensors missing, clear cache and retry
-                try:
-                    self.model, self.tokenizer = mlx_load(self.MLX_MODEL_NAME)
-                except Exception as mlx_err:
-                    if "No safetensors found" in str(mlx_err):
-                        logger.warning("MLX model cache corrupted, clearing and re-downloading...")
-                        if progress_callback:
-                            progress_callback("Cache corrupted, re-downloading...")
+                for model_name in self.MLX_MODEL_CANDIDATES:
+                    logger.info(f"Trying MLX model: {model_name}")
+                    if progress_callback:
+                        progress_callback(f"Loading {model_name.split('/')[-1]}...")
+                    
+                    try:
+                        self.model, self.tokenizer = mlx_load(model_name)
+                        self.MLX_MODEL_NAME = model_name  # Remember which one worked
+                        logger.info(f"✓ Successfully loaded: {model_name}")
+                        break
+                    except Exception as mlx_err:
+                        last_error = mlx_err
+                        logger.warning(f"Failed to load {model_name}: {mlx_err}")
                         
-                        # Clear the corrupted cache
-                        import shutil
-                        cache_path = Path.home() / ".cache" / "huggingface" / "hub"
-                        model_cache = cache_path / f"models--{self.MLX_MODEL_NAME.replace('/', '--')}"
-                        if model_cache.exists():
-                            shutil.rmtree(model_cache)
-                            logger.info(f"Cleared corrupted cache: {model_cache}")
-                        
-                        # Retry download
-                        if progress_callback:
-                            progress_callback("Downloading model (this may take a minute)...")
-                        self.model, self.tokenizer = mlx_load(self.MLX_MODEL_NAME)
-                    else:
-                        raise
+                        # Clear corrupted cache if needed
+                        if "No safetensors found" in str(mlx_err):
+                            cache_path = Path.home() / ".cache" / "huggingface" / "hub"
+                            model_cache = cache_path / f"models--{model_name.replace('/', '--')}"
+                            if model_cache.exists():
+                                shutil.rmtree(model_cache)
+                                logger.info(f"Cleared corrupted cache: {model_cache}")
+                        continue
                 
-                logger.info("✓ MLX model loaded")
-                
-            elif self.backend == "torch":
+                # If all MLX models failed, fall back to PyTorch
+                if self.model is None:
+                    logger.warning("All MLX models failed, falling back to PyTorch...")
+                    if progress_callback:
+                        progress_callback("MLX failed, trying PyTorch...")
+                    self.backend = "torch"
+                    # Fall through to torch loading below
+            
+            # PyTorch loading (either primary or fallback)
+            if self.backend == "torch" and self.model is None:
                 logger.info(f"Loading PyTorch model: {self.MODEL_NAME}")
                 
                 # Use CPU by default for local inference (more compatible)
