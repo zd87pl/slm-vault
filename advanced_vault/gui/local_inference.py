@@ -447,14 +447,27 @@ class LocalInferenceEngine:
         else:
             prompt = f"<|user|>\n{messages[0]['content']}</s>\n<|assistant|>\n"
         
-        response = mlx_generate(
-            self.model,
-            self.tokenizer,
-            prompt=prompt,
-            max_tokens=max_tokens,
-            temp=temperature,
-            verbose=False
-        )
+        # MLX-LM API: use temperature (newer versions) or temp (older versions)
+        try:
+            response = mlx_generate(
+                self.model,
+                self.tokenizer,
+                prompt=prompt,
+                max_tokens=max_tokens,
+                temperature=temperature,  # Newer MLX-LM API
+                verbose=False
+            )
+        except TypeError as e:
+            if "temp" in str(e) or "temperature" in str(e):
+                # Try older API
+                response = mlx_generate(
+                    self.model,
+                    self.tokenizer,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                )
+            else:
+                raise
         
         return response
     
@@ -533,14 +546,23 @@ explain that the user can upload PDFs to enhance your knowledge."""
             prompt = f"<|system|>\n{system_prompt}</s>\n<|user|>\n{query}</s>\n<|assistant|>\n"
         
         if self.backend == "mlx":
-            response = mlx_generate(
-                self.model,
-                self.tokenizer,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temp=temperature,
-                verbose=False
-            )
+            try:
+                response = mlx_generate(
+                    self.model,
+                    self.tokenizer,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                    temperature=temperature,  # Newer MLX-LM API
+                    verbose=False
+                )
+            except TypeError:
+                # Fallback without temperature parameter
+                response = mlx_generate(
+                    self.model,
+                    self.tokenizer,
+                    prompt=prompt,
+                    max_tokens=max_tokens,
+                )
         elif self.backend == "torch":
             import torch
             inputs = self.tokenizer(prompt, return_tensors="pt")
