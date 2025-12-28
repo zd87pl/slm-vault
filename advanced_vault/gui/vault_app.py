@@ -1405,7 +1405,83 @@ class VaultApp:
         
         def check_in_background():
             try:
-                # Try to get training status from backend
+                # First, get the adapter ID from vault entry tags
+                adapter_id_from_vault = None
+                try:
+                    query_filter = QueryFilter()
+                    all_entries = self.vault.kv_store.search(query_filter)
+                    for entry in all_entries:
+                        if entry.service == doc_name and entry.tags:
+                            for tag in entry.tags:
+                                if tag.startswith("training_job:"):
+                                    adapter_id_from_vault = tag.split(":", 1)[1]
+                                    logger.info(f"Found adapter ID in vault for {doc_name}: {adapter_id_from_vault}")
+                                    break
+                            if adapter_id_from_vault:
+                                break
+                except Exception as vault_err:
+                    logger.warning(f"Could not get adapter ID from vault: {vault_err}")
+                
+                # If we have a specific adapter ID, check its status directly
+                if adapter_id_from_vault and self.training_manager:
+                    try:
+                        status_result = self.training_manager.get_job_status(adapter_id_from_vault)
+                        status = status_result.get("status", "unknown").lower()
+                        logger.info(f"Direct adapter status for {adapter_id_from_vault}: {status}")
+                        
+                        if status == "completed":
+                            # Training completed! Update the vault entry
+                            self._update_document_status(doc_name, "completed", adapter_id_from_vault)
+                            
+                            def show_completed():
+                                self.page.snack_bar = ft.SnackBar(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
+                                        ft.Text(f"🎉 '{doc_name}' training completed! Ready to chat.", color="white"),
+                                    ], spacing=12),
+                                    bgcolor=LightTheme.ACCENT_SUCCESS,
+                                    duration=5000,
+                                )
+                                self.page.snack_bar.open = True
+                                self.show_landing_page()  # Refresh to show updated status
+                            show_completed()
+                            return
+                        elif status == "failed":
+                            self._update_document_status(doc_name, "failed", adapter_id_from_vault)
+                            def show_failed():
+                                self.page.snack_bar = ft.SnackBar(
+                                    content=ft.Text(f"❌ Training failed for '{doc_name}'", color="white"),
+                                    bgcolor=LightTheme.ACCENT_ERROR,
+                                )
+                                self.page.snack_bar.open = True
+                                self.page.update()
+                            show_failed()
+                            return
+                        elif status in ["pending", "training", "in_progress", "in_queue"]:
+                            # Still training
+                            def show_still_training():
+                                self.page.snack_bar = ft.SnackBar(
+                                    content=ft.Text(f"⏳ '{doc_name}' is still training. Check back in a few minutes.", color="white"),
+                                    bgcolor=LightTheme.ACCENT_WARNING,
+                                    duration=4000,
+                                )
+                                self.page.snack_bar.open = True
+                                self.page.update()
+                            show_still_training()
+                            return
+                        
+                    except Exception as status_err:
+                        error_str = str(status_err)
+                        logger.warning(f"Could not check adapter status directly: {status_err}")
+                        
+                        # Check for auth errors
+                        if "401" in error_str or "expired" in error_str.lower():
+                            def prompt_relogin():
+                                self._prompt_relogin("Your session has expired while checking training status.")
+                            prompt_relogin()
+                            return
+                
+                # Fallback: Try fetching from the general adapters API
                 if self.training_manager:
                     jobs = []
                     try:
@@ -1422,7 +1498,7 @@ class VaultApp:
                                 jobs = data
                             elif isinstance(data, dict):
                                 jobs = data.get("adapters", data.get("jobs", [data]))
-                            logger.info(f"Fetched {len(jobs)} training jobs")
+                            logger.info(f"Fetched {len(jobs)} training jobs from adapters API")
                         elif response.status_code == 401:
                             # Session expired - prompt re-login
                             logger.warning("Session expired (401), prompting re-login")
@@ -1440,12 +1516,12 @@ class VaultApp:
                             continue
                         job_name = str(job.get("model_name", "") or job.get("name", ""))
                         job_id = str(job.get("adapter_id", "") or job.get("id", ""))
-                        if doc_name in job_name or doc_name in job_id:
+                        if doc_name in job_name or doc_name in job_id or (adapter_id_from_vault and adapter_id_from_vault in job_id):
                             doc_job = job
                             break
                     
                     if doc_job:
-                        status = doc_job.get("status", "unknown")
+                        status = doc_job.get("status", "unknown").lower()
                         if status == "completed":
                             # Training completed! Update the vault entry
                             self._update_document_status(doc_name, "completed", doc_job.get("adapter_id"))
@@ -1474,7 +1550,7 @@ class VaultApp:
                             show_failed()
                             return
                 
-                # Still pending/training
+                # Still pending/training or status unknown
                 def show_pending():
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Text(f"⏳ '{doc_name}' is still training. Check back in a few minutes.", color="white"),
@@ -1502,6 +1578,9 @@ class VaultApp:
     def _update_document_status(self, doc_name: str, status: str, adapter_id: str = None):
         """Update a document's training status in the vault."""
         try:
+            import sqlite3
+            import json
+            
             query_filter = QueryFilter()
             all_entries = self.vault.kv_store.search(query_filter)
             
@@ -1510,16 +1589,33 @@ class VaultApp:
                     # Update tags
                     new_tags = [t for t in (entry.tags or []) if not t.startswith("training_status:")]
                     new_tags.append(f"training_status:{status}")
-                    if adapter_id and status == "completed":
+                    if adapter_id:
                         new_tags = [t for t in new_tags if not t.startswith("training_job:")]
                         new_tags.append(f"training_job:{adapter_id}")
                     
-                    # Update entry (this is a simplified update - actual implementation may vary)
-                    self.vault.kv_store.update_tags(entry.id, new_tags)
+                    # Preserve other important tags
+                    for tag in (entry.tags or []):
+                        if tag.startswith("training_key:") and tag not in new_tags:
+                            new_tags.append(tag)
+                        elif tag.startswith("data_type:") and tag not in new_tags:
+                            new_tags.append(tag)
+                        elif tag.startswith("source:") and tag not in new_tags:
+                            new_tags.append(tag)
+                    
+                    # Update tags directly in the database (without re-encrypting)
+                    db_path = self.vault.kv_store.db_path
+                    with sqlite3.connect(db_path) as conn:
+                        conn.execute("""
+                            UPDATE encrypted_entries
+                            SET tags = ?, updated_at = datetime('now')
+                            WHERE id = ?
+                        """, (json.dumps(new_tags), entry.id))
+                        conn.commit()
+                    
                     logger.info(f"Updated {doc_name} status to {status}")
                     break
         except Exception as e:
-            logger.error(f"Error updating document status: {e}")
+            logger.error(f"Error updating document status: {e}", exc_info=True)
     
     def _on_queued_doc_click(self, doc_name: str):
         """Handle click on a queued/training document."""
