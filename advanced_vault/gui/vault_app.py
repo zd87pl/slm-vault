@@ -1400,6 +1400,13 @@ class VaultApp:
                             elif isinstance(data, dict):
                                 jobs = data.get("adapters", data.get("jobs", [data]))
                             logger.info(f"Fetched {len(jobs)} training jobs")
+                        elif response.status_code == 401:
+                            # Session expired - prompt re-login
+                            logger.warning("Session expired (401), prompting re-login")
+                            def prompt_relogin():
+                                self._prompt_relogin("Your session has expired while checking training status.")
+                            prompt_relogin()
+                            return
                     except Exception as req_err:
                         logger.warning(f"Could not fetch training jobs: {req_err}")
                     
@@ -3396,6 +3403,48 @@ class VaultApp:
 
         # Show auth screen
         self.show_auth_screen()
+    
+    def _prompt_relogin(self, reason: str = "Session expired"):
+        """Show a dialog prompting the user to re-login."""
+        def do_logout(e):
+            dialog.open = False
+            self.page.update()
+            self.logout()
+        
+        dialog = ft.AlertDialog(
+            title=ft.Row([
+                ft.Icon(ft.Icons.WARNING_ROUNDED, color=LightTheme.ACCENT_WARNING, size=24),
+                ft.Text("Session Expired", size=18, weight=ft.FontWeight.W_600),
+            ], spacing=12),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(reason, size=14),
+                    ft.Container(height=12),
+                    ft.Text(
+                        "Your login session has expired. Please log out and log back in to continue.",
+                        size=13,
+                        color=LightTheme.TEXT_MUTED,
+                    ),
+                ], spacing=0),
+                width=350,
+            ),
+            bgcolor=LightTheme.BG_ELEVATED,
+            actions=[
+                ft.TextButton("Later", on_click=lambda e: self._close_dialog(dialog)),
+                ft.ElevatedButton(
+                    "Log Out & Re-Login",
+                    icon=ft.Icons.LOGOUT_ROUNDED,
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                    color="white",
+                    on_click=do_logout,
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
     
     def _force_logout_and_close_dialog(self, dialog):
         """Force logout and close any open dialog (used for session expiration errors)."""
@@ -6630,6 +6679,22 @@ class VaultApp:
                         logger.warning(f"Could not check vault tags for key: {tag_err}")
                 
                 if not encryption_key_hex:
+                    # Show helpful dialog instead of just error
+                    def show_regenerate_prompt():
+                        self.page.snack_bar = ft.SnackBar(
+                            content=ft.Column([
+                                ft.Text("⚠️ Encryption key not found for this dataset.", color="white", weight=ft.FontWeight.W_600),
+                                ft.Text("Click 'Regenerate' to create new Q&A pairs.", color="white", size=12),
+                            ], spacing=4, tight=True),
+                            bgcolor=LightTheme.ACCENT_WARNING,
+                            duration=6000,
+                            action="Regenerate",
+                            action_color="white",
+                            on_action=lambda e: self._offer_training_from_entry({"service": filename}),
+                        )
+                        self.page.snack_bar.open = True
+                        self.page.update()
+                    show_regenerate_prompt()
                     raise ValueError("Encryption key not found. Please regenerate Q&A pairs.")
                 
                 # Upload dataset
