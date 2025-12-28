@@ -38,6 +38,7 @@ from pdf_processor import PDFProcessor
 from qa_generator import QAGenerator
 from training_manager import TrainingManager
 from folder_manager import FolderManager
+from training_queue import TrainingQueue, QueueItem, QueueItemStatus, WatchedFolder
 from theme import ModernTheme
 from sleek_theme import SleekTheme
 from light_theme import LightTheme
@@ -1601,10 +1602,21 @@ class VaultApp:
                     supabase_client=supabase_client  # Pass client for token refresh
                 )
                 logger.info("Q&A generator and training manager initialized")
+                
+                # Initialize training queue for batch processing and folder watching
+                self.training_queue = TrainingQueue(
+                    vault_path=str(self.vault_path),
+                    on_item_updated=self._on_queue_item_updated,
+                    on_item_completed=self._on_queue_item_completed,
+                    on_item_failed=self._on_queue_item_failed,
+                )
+                self.training_queue.set_train_function(self._train_document_for_queue)
+                logger.info("Training queue initialized")
             except Exception as e:
                 logger.error(f"Failed to initialize training services: {e}")
                 self.qa_generator = None
                 self.training_manager = None
+                self.training_queue = None
                 self._component_status["qa"]["status"] = "error"
                 self._component_status["qa"]["message"] = f"Error: {str(e)}"
     
@@ -3089,6 +3101,8 @@ class VaultApp:
                 self.show_settings()
             elif index == 6:  # LangChain Policies
                 self.show_langchain_policies()
+            elif index == 7:  # Library (Training Queue)
+                self.show_library_view()
         
         self.page.update()
 
@@ -6480,6 +6494,890 @@ class VaultApp:
                 padding=24,
             )
         )
+        self.page.update()
+
+    # ==================== Training Queue Methods ====================
+    
+    def _on_queue_item_updated(self, item: QueueItem):
+        """Handle queue item updates (progress, status changes)."""
+        # Update UI if we're on the library view
+        if hasattr(self, 'current_view') and self.current_view == "library":
+            self.page.run_thread(self._refresh_library_view)
+    
+    def _on_queue_item_completed(self, item: QueueItem):
+        """Handle successful queue item completion."""
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Row([
+                ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="#FFFFFF"),
+                ft.Text(f"✓ Trained: {item.filename}"),
+            ], spacing=8),
+            bgcolor=LightTheme.ACCENT_SUCCESS,
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+    
+    def _on_queue_item_failed(self, item: QueueItem, error: str):
+        """Handle queue item failure."""
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Row([
+                ft.Icon(ft.Icons.ERROR_ROUNDED, color="#FFFFFF"),
+                ft.Text(f"Failed: {item.filename} - {error[:50]}"),
+            ], spacing=8),
+            bgcolor=LightTheme.ACCENT_ERROR,
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+    
+    def _train_document_for_queue(self, file_path: str, filename: str, progress_callback) -> tuple:
+        """
+        Train a document from the queue.
+        
+        Returns (adapter_id, encryption_key) on success.
+        Raises exception on failure.
+        """
+        progress_callback(5.0, "Reading PDF...")
+        
+        # Process PDF
+        if self.pdf_processor is None:
+            self._initialize_pdf_processor()
+        
+        result = self.pdf_processor.process_pdf(file_path)
+        text_chunks = result.get('text_chunks', [])
+        
+        if not text_chunks:
+            raise ValueError("No text extracted from PDF")
+        
+        progress_callback(15.0, "Generating Q&A pairs...")
+        
+        # Check if we should use synthetic Q&A (cloud) or local
+        runpod_api_key = os.getenv("RUNPOD_API_KEY")
+        qa_api_key = os.getenv("RUNPOD_QA_API_KEY")
+        qa_endpoint_id = os.getenv("RUNPOD_QA_ENDPOINT_ID")
+        
+        api_key = qa_api_key or runpod_api_key
+        
+        if api_key and qa_endpoint_id and self.qa_generator:
+            # Use cloud endpoint
+            progress_callback(20.0, "Generating Q&A (cloud)...")
+            qa_pairs, encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
+                pdf_path=file_path,
+                target_samples=100,
+                encryption_key_hex=None
+            )
+        else:
+            # Use local generation
+            progress_callback(20.0, "Generating Q&A (local)...")
+            if not self.qa_generator:
+                raise ValueError("QA generator not available")
+            qa_pairs = self.qa_generator.generate_qa_pairs(text_chunks, max_pairs=100)
+            encryption_key_hex = None
+        
+        if not qa_pairs or len(qa_pairs) == 0:
+            raise ValueError("Failed to generate Q&A pairs")
+        
+        progress_callback(50.0, f"Generated {len(qa_pairs)} Q&A pairs")
+        
+        # Encrypt and save dataset
+        progress_callback(55.0, "Encrypting dataset...")
+        
+        dataset_name = Path(filename).stem + "_" + datetime.now().strftime("%Y%m%d_%H%M%S")
+        encryption_key_hex = self.training_manager.encrypt_dataset(qa_pairs, dataset_name)
+        
+        progress_callback(60.0, "Uploading dataset...")
+        
+        # Upload dataset
+        local_path = self.training_manager.datasets_dir / f"{dataset_name}.encrypted"
+        signed_url = self.training_manager.upload_dataset(str(local_path))
+        
+        if not signed_url:
+            raise ValueError("Failed to upload dataset")
+        
+        progress_callback(70.0, "Submitting training job...")
+        
+        # Submit training job
+        adapter_id = self.training_manager.submit_training_job(
+            dataset_url=signed_url,
+            encryption_key_hex=encryption_key_hex,
+            adapter_name=dataset_name,
+        )
+        
+        if not adapter_id:
+            raise ValueError("Failed to submit training job")
+        
+        progress_callback(80.0, "Training submitted...")
+        
+        # Store entry in vault
+        entry_name = filename
+        entry_tags = [
+            "data_type:knowledge",
+            "source:pdf",
+            f"training_status:pending",
+            f"training_job:{adapter_id}",
+            f"training_key:{encryption_key_hex}",
+        ]
+        
+        self.vault.kv_store.store(
+            service=entry_name,
+            username=f"Trained from: {filename}",
+            password="[ENCRYPTED ADAPTER]",
+            tags=entry_tags,
+            description=f"Knowledge adapter trained from {filename}. Adapter ID: {adapter_id}",
+        )
+        
+        progress_callback(100.0, "Complete!")
+        
+        return adapter_id, encryption_key_hex
+    
+    def _refresh_library_view(self):
+        """Refresh the library view UI."""
+        if self.current_view == "library":
+            self.show_library_view()
+    
+    def show_library_view(self):
+        """Show the Knowledge Library with training queue and folder watching."""
+        self.current_view = "library"
+        self.secrets_list.controls.clear()
+        
+        # Check if training queue is available
+        if not hasattr(self, 'training_queue') or self.training_queue is None:
+            self.secrets_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.ERROR_OUTLINE_ROUNDED, size=48, color=LightTheme.ACCENT_ERROR),
+                        ft.Text("Training queue not available", size=16, color=LightTheme.TEXT_PRIMARY),
+                        ft.Text("Please sign in to use the Knowledge Library", size=12, color=LightTheme.TEXT_MUTED),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
+                    padding=40,
+                    alignment=ft.alignment.center,
+                )
+            )
+            self.page.update()
+            return
+        
+        # Get queue stats
+        stats = self.training_queue.get_stats()
+        queue_items = self.training_queue.get_all_items()
+        watched_folders = self.training_queue.get_watched_folders()
+        
+        # Create multi-file picker
+        if not hasattr(self, 'multi_file_picker') or self.multi_file_picker is None:
+            self.multi_file_picker = ft.FilePicker(
+                on_result=self._on_multi_files_selected
+            )
+            self.page.overlay.append(self.multi_file_picker)
+        
+        # Create folder picker
+        if not hasattr(self, 'folder_picker') or self.folder_picker is None:
+            self.folder_picker = ft.FilePicker(
+                on_result=self._on_folder_selected
+            )
+            self.page.overlay.append(self.folder_picker)
+        
+        # Header with actions
+        # Count trained adapters for unified query button
+        trained_count = len(self._get_all_trained_adapters())
+        
+        header = ft.Container(
+            content=ft.Column([
+                ft.Row([
+                    ft.Column([
+                        ft.Text(
+                            "📚 Knowledge Library",
+                            size=24,
+                            weight=ft.FontWeight.BOLD,
+                            color=LightTheme.TEXT_PRIMARY,
+                        ),
+                        ft.Text(
+                            "Train multiple documents to build your personal knowledge base",
+                            size=14,
+                            color=LightTheme.TEXT_SECONDARY,
+                        ),
+                    ], spacing=4),
+                    ft.Row([
+                        # Unified Ask button (if we have trained adapters)
+                        ft.ElevatedButton(
+                            f"🧠 Ask All ({trained_count})",
+                            icon=ft.Icons.PSYCHOLOGY_ROUNDED,
+                            on_click=self.show_unified_ask_dialog,
+                            style=ft.ButtonStyle(
+                                bgcolor=LightTheme.ACCENT_WARNING,
+                                color="white",
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                            ),
+                            visible=trained_count > 0,
+                        ),
+                        ft.ElevatedButton(
+                            "📁 Add Files",
+                            icon=ft.Icons.ADD_ROUNDED,
+                            on_click=lambda e: self.multi_file_picker.pick_files(
+                                allow_multiple=True,
+                                allowed_extensions=["pdf"],
+                            ),
+                            style=ft.ButtonStyle(
+                                bgcolor=LightTheme.ACCENT_PRIMARY,
+                                color="white",
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                            ),
+                        ),
+                        ft.ElevatedButton(
+                            "📂 Watch Folder",
+                            icon=ft.Icons.FOLDER_OPEN_ROUNDED,
+                            on_click=lambda e: self.folder_picker.get_directory_path(),
+                            style=ft.ButtonStyle(
+                                bgcolor=LightTheme.ACCENT_SUCCESS,
+                                color="white",
+                                shape=ft.RoundedRectangleBorder(radius=8),
+                            ),
+                        ),
+                    ], spacing=8),
+                ], alignment=ft.MainAxisAlignment.SPACE_BETWEEN),
+            ], spacing=0),
+            padding=20,
+        )
+        self.secrets_list.controls.append(header)
+        
+        # Stats bar
+        stats_bar = ft.Container(
+            content=ft.Row([
+                self._create_stat_chip(f"📥 {stats['pending']}", "Pending", LightTheme.ACCENT_WARNING),
+                self._create_stat_chip(f"⚙️ {stats['processing']}", "Processing", LightTheme.ACCENT_PRIMARY),
+                self._create_stat_chip(f"✅ {stats['completed']}", "Completed", LightTheme.ACCENT_SUCCESS),
+                self._create_stat_chip(f"❌ {stats['failed']}", "Failed", LightTheme.ACCENT_ERROR),
+                ft.Container(expand=True),
+                # Queue controls
+                ft.IconButton(
+                    ft.Icons.PLAY_ARROW_ROUNDED if not self.training_queue.is_processing else ft.Icons.PAUSE_ROUNDED,
+                    tooltip="Start Processing" if not self.training_queue.is_processing else "Pause Processing",
+                    on_click=self._toggle_queue_processing,
+                    icon_color=LightTheme.ACCENT_PRIMARY,
+                ),
+                ft.IconButton(
+                    ft.Icons.REFRESH_ROUNDED,
+                    tooltip="Refresh",
+                    on_click=lambda e: self.show_library_view(),
+                    icon_color=LightTheme.TEXT_SECONDARY,
+                ),
+            ], spacing=12),
+            padding=ft.padding.symmetric(horizontal=20, vertical=12),
+            bgcolor=LightTheme.BG_HOVER,
+        )
+        self.secrets_list.controls.append(stats_bar)
+        
+        # Watched Folders Section
+        if watched_folders:
+            folders_section = ft.Container(
+                content=ft.Column([
+                    ft.Row([
+                        ft.Icon(ft.Icons.FOLDER_COPY_ROUNDED, color=LightTheme.ACCENT_SUCCESS, size=20),
+                        ft.Text(
+                            f"Watched Folders ({len(watched_folders)})",
+                            size=16,
+                            weight=ft.FontWeight.W_600,
+                            color=LightTheme.TEXT_PRIMARY,
+                        ),
+                    ], spacing=8),
+                    ft.Container(height=8),
+                    ft.Column([
+                        self._create_folder_card(folder) for folder in watched_folders
+                    ], spacing=8),
+                ], spacing=0),
+                padding=20,
+                margin=ft.margin.only(left=20, right=20, top=10),
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=12,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            )
+            self.secrets_list.controls.append(folders_section)
+        
+        # Queue Section
+        queue_section_title = ft.Container(
+            content=ft.Row([
+                ft.Icon(ft.Icons.QUEUE_ROUNDED, color=LightTheme.ACCENT_PRIMARY, size=20),
+                ft.Text(
+                    f"Training Queue ({len(queue_items)})",
+                    size=16,
+                    weight=ft.FontWeight.W_600,
+                    color=LightTheme.TEXT_PRIMARY,
+                ),
+                ft.Container(expand=True),
+                ft.TextButton(
+                    "Clear Completed",
+                    on_click=self._clear_completed_items,
+                    style=ft.ButtonStyle(color=LightTheme.TEXT_MUTED),
+                ) if stats['completed'] > 0 else ft.Container(),
+            ], spacing=8),
+            padding=ft.padding.only(left=20, right=20, top=20, bottom=10),
+        )
+        self.secrets_list.controls.append(queue_section_title)
+        
+        # Queue items
+        if queue_items:
+            for item in queue_items:
+                self.secrets_list.controls.append(self._create_queue_item_card(item))
+        else:
+            # Empty state
+            empty_state = ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.INBOX_ROUNDED, size=48, color=LightTheme.TEXT_MUTED),
+                    ft.Container(height=8),
+                    ft.Text("No documents in queue", size=16, color=LightTheme.TEXT_SECONDARY),
+                    ft.Text(
+                        "Add PDFs or watch a folder to start building your knowledge base",
+                        size=12,
+                        color=LightTheme.TEXT_MUTED,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                padding=40,
+                margin=ft.margin.symmetric(horizontal=20),
+                bgcolor=LightTheme.BG_HOVER,
+                border_radius=12,
+                alignment=ft.alignment.center,
+            )
+            self.secrets_list.controls.append(empty_state)
+        
+        self.page.update()
+    
+    def _create_stat_chip(self, value: str, label: str, color: str) -> ft.Container:
+        """Create a statistics chip."""
+        return ft.Container(
+            content=ft.Column([
+                ft.Text(value, size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                ft.Text(label, size=10, color=LightTheme.TEXT_MUTED),
+            ], spacing=0, horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=ft.padding.symmetric(horizontal=12, vertical=8),
+            bgcolor=color + "15",
+            border_radius=8,
+        )
+    
+    def _create_folder_card(self, folder: WatchedFolder) -> ft.Container:
+        """Create a card for a watched folder."""
+        file_count = len(folder.known_files)
+        
+        return ft.Container(
+            content=ft.Row([
+                ft.Icon(
+                    ft.Icons.FOLDER_ROUNDED,
+                    color=LightTheme.ACCENT_SUCCESS if folder.enabled else LightTheme.TEXT_MUTED,
+                    size=24,
+                ),
+                ft.Column([
+                    ft.Text(
+                        Path(folder.path).name,
+                        size=14,
+                        weight=ft.FontWeight.W_500,
+                        color=LightTheme.TEXT_PRIMARY,
+                    ),
+                    ft.Text(
+                        f"{folder.path} • {file_count} files",
+                        size=11,
+                        color=LightTheme.TEXT_MUTED,
+                    ),
+                ], spacing=2, expand=True),
+                ft.Switch(
+                    value=folder.enabled,
+                    on_change=lambda e, p=folder.path: self._toggle_folder_watch(p, e.control.value),
+                    active_color=LightTheme.ACCENT_SUCCESS,
+                ),
+                ft.IconButton(
+                    ft.Icons.SYNC_ROUNDED,
+                    tooltip="Scan Now",
+                    on_click=lambda e, p=folder.path: self._scan_folder_now(p),
+                    icon_color=LightTheme.TEXT_SECONDARY,
+                    icon_size=18,
+                ),
+                ft.IconButton(
+                    ft.Icons.DELETE_OUTLINE_ROUNDED,
+                    tooltip="Remove",
+                    on_click=lambda e, p=folder.path: self._remove_watched_folder(p),
+                    icon_color=LightTheme.ACCENT_ERROR,
+                    icon_size=18,
+                ),
+            ], spacing=12),
+            padding=12,
+            bgcolor=LightTheme.BG_PRIMARY,
+            border_radius=8,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+        )
+    
+    def _create_queue_item_card(self, item: QueueItem) -> ft.Container:
+        """Create a card for a queue item."""
+        # Status-based styling
+        status_config = {
+            QueueItemStatus.PENDING: {"icon": ft.Icons.SCHEDULE_ROUNDED, "color": LightTheme.ACCENT_WARNING, "label": "Pending"},
+            QueueItemStatus.PROCESSING: {"icon": ft.Icons.SYNC_ROUNDED, "color": LightTheme.ACCENT_PRIMARY, "label": "Processing"},
+            QueueItemStatus.COMPLETED: {"icon": ft.Icons.CHECK_CIRCLE_ROUNDED, "color": LightTheme.ACCENT_SUCCESS, "label": "Completed"},
+            QueueItemStatus.FAILED: {"icon": ft.Icons.ERROR_ROUNDED, "color": LightTheme.ACCENT_ERROR, "label": "Failed"},
+            QueueItemStatus.CANCELLED: {"icon": ft.Icons.CANCEL_ROUNDED, "color": LightTheme.TEXT_MUTED, "label": "Cancelled"},
+        }
+        
+        config = status_config.get(item.status, status_config[QueueItemStatus.PENDING])
+        
+        # Progress bar for processing items
+        progress_bar = None
+        if item.status == QueueItemStatus.PROCESSING:
+            progress_bar = ft.ProgressBar(
+                value=item.progress / 100.0,
+                color=LightTheme.ACCENT_PRIMARY,
+                bgcolor=LightTheme.BG_HOVER,
+                height=4,
+            )
+        
+        # Action buttons
+        actions = []
+        if item.status == QueueItemStatus.PENDING:
+            actions.append(
+                ft.IconButton(
+                    ft.Icons.DELETE_OUTLINE_ROUNDED,
+                    tooltip="Remove",
+                    on_click=lambda e, i=item.id: self._remove_queue_item(i),
+                    icon_color=LightTheme.ACCENT_ERROR,
+                    icon_size=18,
+                )
+            )
+        elif item.status == QueueItemStatus.FAILED:
+            actions.extend([
+                ft.IconButton(
+                    ft.Icons.REFRESH_ROUNDED,
+                    tooltip="Retry",
+                    on_click=lambda e, i=item.id: self._retry_queue_item(i),
+                    icon_color=LightTheme.ACCENT_PRIMARY,
+                    icon_size=18,
+                ),
+                ft.IconButton(
+                    ft.Icons.DELETE_OUTLINE_ROUNDED,
+                    tooltip="Remove",
+                    on_click=lambda e, i=item.id: self._remove_queue_item(i),
+                    icon_color=LightTheme.ACCENT_ERROR,
+                    icon_size=18,
+                ),
+            ])
+        elif item.status == QueueItemStatus.COMPLETED and item.adapter_id:
+            actions.append(
+                ft.IconButton(
+                    ft.Icons.CHAT_ROUNDED,
+                    tooltip="Ask",
+                    on_click=lambda e, a=item.adapter_id, k=item.encryption_key, f=item.filename: self._open_ask_dialog(a, k, f),
+                    icon_color=LightTheme.ACCENT_SUCCESS,
+                    icon_size=18,
+                )
+            )
+        
+        card_content = ft.Column([
+            ft.Row([
+                ft.Icon(config["icon"], color=config["color"], size=20),
+                ft.Column([
+                    ft.Text(
+                        item.filename,
+                        size=14,
+                        weight=ft.FontWeight.W_500,
+                        color=LightTheme.TEXT_PRIMARY,
+                    ),
+                    ft.Text(
+                        item.progress_message if item.status == QueueItemStatus.PROCESSING else 
+                        (item.error[:50] + "..." if item.error and len(item.error) > 50 else item.error) if item.status == QueueItemStatus.FAILED else
+                        f"Added: {item.added_at.strftime('%H:%M')}" if item.status == QueueItemStatus.PENDING else
+                        f"Completed: {item.completed_at.strftime('%H:%M') if item.completed_at else 'N/A'}",
+                        size=11,
+                        color=LightTheme.ACCENT_ERROR if item.status == QueueItemStatus.FAILED else LightTheme.TEXT_MUTED,
+                    ),
+                ], spacing=2, expand=True),
+                ft.Container(
+                    content=ft.Text(config["label"], size=10, color=config["color"]),
+                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                    bgcolor=config["color"] + "15",
+                    border_radius=4,
+                ),
+                *actions,
+            ], spacing=12),
+        ], spacing=4)
+        
+        if progress_bar:
+            card_content.controls.append(progress_bar)
+        
+        return ft.Container(
+            content=card_content,
+            padding=12,
+            margin=ft.margin.only(left=20, right=20, bottom=8),
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=8,
+            border=ft.border.all(1, config["color"] + "30" if item.status in [QueueItemStatus.PROCESSING, QueueItemStatus.FAILED] else LightTheme.BORDER_COLOR),
+        )
+    
+    def _on_multi_files_selected(self, e: ft.FilePickerResultEvent):
+        """Handle multiple file selection."""
+        if not e.files:
+            return
+        
+        added_count = 0
+        for file in e.files:
+            if file.path:
+                item = self.training_queue.add_file(file.path)
+                if item:
+                    added_count += 1
+        
+        if added_count > 0:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"📥 Added {added_count} file(s) to queue"),
+                bgcolor=LightTheme.ACCENT_SUCCESS,
+            )
+            self.page.snack_bar.open = True
+        
+        self.show_library_view()
+    
+    def _on_folder_selected(self, e: ft.FilePickerResultEvent):
+        """Handle folder selection for watching."""
+        if not e.path:
+            return
+        
+        try:
+            folder = self.training_queue.add_watched_folder(e.path)
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"📂 Watching: {Path(e.path).name} ({len(folder.known_files)} files)"),
+                bgcolor=LightTheme.ACCENT_SUCCESS,
+            )
+            self.page.snack_bar.open = True
+            
+            # Start folder watcher if not running
+            self.training_queue.start_folder_watcher()
+        except Exception as ex:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"❌ Error: {str(ex)}"),
+                bgcolor=LightTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+        
+        self.show_library_view()
+    
+    def _toggle_queue_processing(self, e):
+        """Toggle queue processing on/off."""
+        if self.training_queue.is_processing:
+            self.training_queue.pause_processing()
+        else:
+            if self.training_queue.is_paused:
+                self.training_queue.resume_processing()
+            else:
+                self.training_queue.start_processing()
+        
+        self.show_library_view()
+    
+    def _toggle_folder_watch(self, folder_path: str, enabled: bool):
+        """Toggle folder watching."""
+        self.training_queue.toggle_folder(folder_path, enabled)
+    
+    def _scan_folder_now(self, folder_path: str):
+        """Manually scan a folder for new files."""
+        new_files = self.training_queue.scan_folder_now(folder_path)
+        
+        if new_files:
+            # Add new files to queue
+            for file_path in new_files:
+                self.training_queue.add_file(file_path)
+            
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"📥 Found {len(new_files)} new file(s)"),
+                bgcolor=LightTheme.ACCENT_SUCCESS,
+            )
+        else:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("No new files found"),
+                bgcolor=LightTheme.BG_ELEVATED,
+            )
+        
+        self.page.snack_bar.open = True
+        self.show_library_view()
+    
+    def _remove_watched_folder(self, folder_path: str):
+        """Remove a watched folder."""
+        self.training_queue.remove_watched_folder(folder_path)
+        self.show_library_view()
+    
+    def _remove_queue_item(self, item_id: str):
+        """Remove an item from the queue."""
+        self.training_queue.remove_item(item_id)
+        self.show_library_view()
+    
+    def _retry_queue_item(self, item_id: str):
+        """Retry a failed queue item."""
+        self.training_queue.retry_failed(item_id)
+        self.show_library_view()
+    
+    def _clear_completed_items(self, e):
+        """Clear all completed items."""
+        self.training_queue.clear_completed()
+        self.show_library_view()
+
+    # ==================== Unified Knowledge Pool ====================
+    
+    def _get_all_trained_adapters(self) -> List[Dict]:
+        """Get all completed knowledge adapters for unified queries."""
+        from advanced_vault.encrypted_kv import QueryFilter
+        
+        adapters = []
+        try:
+            result = self.vault.kv_store.search(QueryFilter())
+            
+            for entry in result:
+                tags = entry.tags or []
+                training_status = None
+                training_job_id = None
+                training_key = None
+                
+                for tag in tags:
+                    if tag.startswith("training_status:"):
+                        training_status = tag.split(":", 1)[1]
+                    elif tag.startswith("training_job:"):
+                        training_job_id = tag.split(":", 1)[1]
+                    elif tag.startswith("training_key:"):
+                        training_key = tag.split(":", 1)[1]
+                
+                if training_status == "completed" and training_job_id and training_key:
+                    adapters.append({
+                        "name": entry.service,
+                        "adapter_id": training_job_id,
+                        "encryption_key": training_key,
+                    })
+        except Exception as e:
+            logger.warning(f"Error loading trained adapters: {e}")
+        
+        return adapters
+    
+    def show_unified_ask_dialog(self, e=None):
+        """Show dialog for asking questions across ALL trained knowledge bases."""
+        adapters = self._get_all_trained_adapters()
+        
+        if not adapters:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("No trained knowledge bases available. Train some documents first!"),
+                bgcolor=LightTheme.ACCENT_WARNING,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        # Query input field
+        query_field = ft.TextField(
+            label="Ask across all your documents",
+            hint_text="e.g., What are the key points from my documents?",
+            multiline=True,
+            min_lines=2,
+            max_lines=4,
+            border_radius=8,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
+            expand=True,
+        )
+        
+        # Adapter selection checkboxes
+        adapter_checks = []
+        for adapter in adapters:
+            cb = ft.Checkbox(
+                label=adapter["name"],
+                value=True,
+                data=adapter,
+            )
+            adapter_checks.append(cb)
+        
+        # Response area - now shows multiple responses
+        responses_column = ft.Column([], spacing=12, scroll=ft.ScrollMode.AUTO)
+        
+        responses_container = ft.Container(
+            content=responses_column,
+            height=300,
+            visible=False,
+        )
+        
+        # Loading indicator
+        loading_indicator = ft.Container(
+            content=ft.Column([
+                ft.ProgressRing(width=40, height=40, stroke_width=3),
+                ft.Container(height=8),
+                ft.Text("Asking your knowledge bases...", size=12, color=LightTheme.TEXT_SECONDARY),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER),
+            padding=24,
+            visible=False,
+            alignment=ft.alignment.center,
+        )
+        
+        def ask_unified_query(e):
+            """Query all selected adapters."""
+            query = query_field.value.strip()
+            if not query:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Please enter a question"),
+                    bgcolor=LightTheme.ACCENT_WARNING,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Get selected adapters
+            selected_adapters = [cb.data for cb in adapter_checks if cb.value]
+            
+            if not selected_adapters:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Please select at least one knowledge base"),
+                    bgcolor=LightTheme.ACCENT_WARNING,
+                )
+                self.page.snack_bar.open = True
+                self.page.update()
+                return
+            
+            # Show loading
+            loading_indicator.visible = True
+            responses_container.visible = False
+            query_field.disabled = True
+            submit_button.disabled = True
+            self.page.update()
+            
+            def run_unified_inference():
+                results = []
+                
+                for adapter in selected_adapters:
+                    try:
+                        response = self.training_manager.inference_with_adapter(
+                            adapter_id=adapter["adapter_id"],
+                            query=query,
+                            encryption_key_hex=adapter["encryption_key"]
+                        )
+                        
+                        if response and "response" in response:
+                            results.append({
+                                "name": adapter["name"],
+                                "response": response["response"],
+                                "success": True,
+                            })
+                        else:
+                            results.append({
+                                "name": adapter["name"],
+                                "response": "No response received",
+                                "success": False,
+                            })
+                    except Exception as ex:
+                        results.append({
+                            "name": adapter["name"],
+                            "response": f"Error: {str(ex)}",
+                            "success": False,
+                        })
+                
+                def update_ui():
+                    loading_indicator.visible = False
+                    query_field.disabled = False
+                    submit_button.disabled = False
+                    
+                    # Build response cards
+                    responses_column.controls.clear()
+                    
+                    for result in results:
+                        card = ft.Container(
+                            content=ft.Column([
+                                ft.Row([
+                                    ft.Icon(
+                                        ft.Icons.CHECK_CIRCLE_ROUNDED if result["success"] else ft.Icons.ERROR_ROUNDED,
+                                        color=LightTheme.ACCENT_SUCCESS if result["success"] else LightTheme.ACCENT_ERROR,
+                                        size=16,
+                                    ),
+                                    ft.Text(
+                                        result["name"],
+                                        size=12,
+                                        weight=ft.FontWeight.W_600,
+                                        color=LightTheme.TEXT_PRIMARY,
+                                    ),
+                                ], spacing=8),
+                                ft.Container(height=4),
+                                ft.Text(
+                                    result["response"],
+                                    size=13,
+                                    color=LightTheme.TEXT_SECONDARY,
+                                    selectable=True,
+                                ),
+                            ], spacing=0),
+                            padding=12,
+                            bgcolor=LightTheme.BG_ELEVATED,
+                            border_radius=8,
+                            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        )
+                        responses_column.controls.append(card)
+                    
+                    responses_container.visible = True
+                    self.page.update()
+                
+                update_ui()
+            
+            thread = threading.Thread(target=run_unified_inference, daemon=True)
+            thread.start()
+        
+        submit_button = ft.ElevatedButton(
+            "Ask All",
+            icon=ft.Icons.SEND_ROUNDED,
+            on_click=ask_unified_query,
+            style=ft.ButtonStyle(
+                bgcolor=LightTheme.ACCENT_PRIMARY,
+                color="white",
+            ),
+        )
+        
+        # Create dialog
+        unified_dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Row([
+                ft.Icon(ft.Icons.PSYCHOLOGY_ROUNDED, color=LightTheme.ACCENT_PRIMARY, size=24),
+                ft.Container(width=8),
+                ft.Text(
+                    "Ask Your Knowledge",
+                    size=18,
+                    weight=ft.FontWeight.BOLD,
+                    color=LightTheme.TEXT_PRIMARY,
+                ),
+            ], spacing=0),
+            content=ft.Container(
+                content=ft.Column([
+                    ft.Text(
+                        f"Query {len(adapters)} trained knowledge base(s) at once:",
+                        size=13,
+                        color=LightTheme.TEXT_SECONDARY,
+                    ),
+                    ft.Container(height=12),
+                    # Adapter selection
+                    ft.Container(
+                        content=ft.Column([
+                            ft.Text("Select knowledge bases:", size=12, color=LightTheme.TEXT_MUTED),
+                            ft.Container(height=4),
+                            ft.Column(adapter_checks, spacing=4),
+                        ], spacing=0),
+                        padding=12,
+                        bgcolor=LightTheme.BG_HOVER,
+                        border_radius=8,
+                    ),
+                    ft.Container(height=16),
+                    ft.Row([
+                        query_field,
+                        submit_button,
+                    ], spacing=12),
+                    ft.Container(height=12),
+                    loading_indicator,
+                    responses_container,
+                ], spacing=0, scroll=ft.ScrollMode.AUTO),
+                width=600,
+                height=500,
+            ),
+            actions=[
+                ft.TextButton(
+                    "Close",
+                    on_click=lambda e: self._close_dialog(unified_dialog),
+                ),
+            ],
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+        
+        self.page.overlay.append(unified_dialog)
+        unified_dialog.open = True
+        self.page.update()
+    
+    def _close_dialog(self, dialog):
+        """Close a dialog safely."""
+        dialog.open = False
         self.page.update()
 
 
