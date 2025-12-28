@@ -562,7 +562,10 @@ JSON OUTPUT:
     
     def encrypt_results(self, data: List[Dict], encryption_key: bytes) -> str:
         """
-        Encrypt generated dataset using XChaCha20-Poly1305 or ChaCha20-Poly1305.
+        Encrypt generated dataset using ChaCha20-Poly1305.
+        
+        IMPORTANT: Always uses 12-byte nonce for cross-library compatibility.
+        Both PyCryptodome and cryptography support 12-byte nonces.
         
         Args:
             data: List of Q&A pairs
@@ -574,15 +577,14 @@ JSON OUTPUT:
         # Serialize data
         plaintext = json.dumps(data).encode('utf-8')
         
-        # Encrypt - nonce size depends on crypto backend
+        # Always use 12-byte nonce for compatibility with cryptography library
+        # (PyCryptodome also supports 12-byte nonces for standard ChaCha20-Poly1305)
+        nonce = secrets.token_bytes(12)
+        
         if CRYPTO_BACKEND == "pycryptodome":
-            # XChaCha20-Poly1305 uses 24-byte nonce
-            nonce = secrets.token_bytes(24)
             cipher = ChaCha20_Poly1305.new(key=encryption_key, nonce=nonce)
             ciphertext, tag = cipher.encrypt_and_digest(plaintext)
         else:
-            # cryptography's ChaCha20Poly1305 uses 12-byte nonce
-            nonce = secrets.token_bytes(12)
             cipher = ChaCha20Poly1305(encryption_key)
             ciphertext_with_tag = cipher.encrypt(nonce, plaintext, None)
             ciphertext = ciphertext_with_tag[:-16]
