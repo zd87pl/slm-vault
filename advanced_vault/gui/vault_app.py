@@ -916,6 +916,16 @@ class VaultApp:
         
         self.page.clean()
         
+        # Clear any floating buttons from overlay (they're for non-chat views)
+        self.page.overlay = [o for o in self.page.overlay if not isinstance(o, ft.Container) or not hasattr(o, 'content') or not isinstance(getattr(o, 'content', None), ft.FloatingActionButton)]
+        
+        # Initialize PDF file picker if needed (for the + button in chat input)
+        if not hasattr(self, 'pdf_file_picker') or self.pdf_file_picker is None:
+            self.pdf_file_picker = ft.FilePicker(
+                on_result=self.on_pdf_selected
+            )
+            self.page.overlay.append(self.pdf_file_picker)
+        
         # Get vault statistics
         try:
             query_filter = QueryFilter()
@@ -2392,13 +2402,16 @@ class VaultApp:
             )
         )
         
-        # Add floating chat button for quick access to AI assistant
+        # Add floating chat button for quick access to AI assistant (only on non-chat views)
+        # First, clear any existing floating buttons to prevent stacking
+        self.page.overlay = [o for o in self.page.overlay if not isinstance(o, ft.Container) or not hasattr(o, 'content') or not isinstance(getattr(o, 'content', None), ft.FloatingActionButton)]
+        
         floating_chat_button = ft.Container(
             content=ft.FloatingActionButton(
                 icon=ft.Icons.AUTO_AWESOME_ROUNDED,
                 bgcolor=LightTheme.ACCENT_PRIMARY,
                 foreground_color="white",
-                tooltip="💬 Ask AI",
+                tooltip="💬 Chat with AI",
                 on_click=lambda e: self.show_landing_page(),
                 mini=False,
             ),
@@ -2407,9 +2420,7 @@ class VaultApp:
             animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
         )
         
-        # Add to page overlay for floating effect
-        if floating_chat_button not in self.page.overlay:
-            self.page.overlay.append(floating_chat_button)
+        self.page.overlay.append(floating_chat_button)
 
         # Load initial data
         self.load_secrets()
