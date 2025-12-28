@@ -2391,6 +2391,25 @@ class VaultApp:
                 expand=True,
             )
         )
+        
+        # Add floating chat button for quick access to AI assistant
+        floating_chat_button = ft.Container(
+            content=ft.FloatingActionButton(
+                icon=ft.Icons.AUTO_AWESOME_ROUNDED,
+                bgcolor=LightTheme.ACCENT_PRIMARY,
+                foreground_color="white",
+                tooltip="💬 Ask AI",
+                on_click=lambda e: self.show_landing_page(),
+                mini=False,
+            ),
+            right=24,
+            bottom=24,
+            animate=ft.Animation(200, ft.AnimationCurve.EASE_OUT),
+        )
+        
+        # Add to page overlay for floating effect
+        if floating_chat_button not in self.page.overlay:
+            self.page.overlay.append(floating_chat_button)
 
         # Load initial data
         self.load_secrets()
