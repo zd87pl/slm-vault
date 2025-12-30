@@ -1262,14 +1262,23 @@ class VaultApp:
         self._load_adapter_locally(adapter)
     
     def _load_adapter_locally(self, adapter: Dict):
-        """Load an adapter for local inference."""
+        """Load an adapter for local inference - downloads and applies adapter weights."""
         doc_name = adapter.get("name", "Unknown")
         adapter_id = adapter.get("adapter_id")
-        encryption_key = adapter.get("encryption_key")
+        encryption_key_hex = adapter.get("encryption_key")
         
         if not adapter_id:
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text("❌ No adapter ID found", color="white"),
+                bgcolor=LightTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+        
+        if not encryption_key_hex:
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("❌ No encryption key found - cannot decrypt adapter", color="white"),
                 bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
@@ -1283,7 +1292,7 @@ class VaultApp:
                 ft.Text(f"Loading adapter for '{doc_name}'...", color="white"),
             ], spacing=12),
             bgcolor=LightTheme.ACCENT_PRIMARY,
-            duration=10000,
+            duration=30000,  # Longer timeout for download
         )
         self.page.snack_bar.open = True
         self.page.update()
@@ -1293,9 +1302,25 @@ class VaultApp:
                 from local_inference import get_local_engine
                 engine = get_local_engine()
                 
-                # Load model if needed
+                # Step 1: Load base model if needed
+                logger.info(f"Step 1: Loading base model...")
                 if not engine.model:
-                    engine.load_model()
+                    engine.load_model(progress_callback=lambda msg: logger.info(f"Model: {msg}"))
+                
+                # Step 2: Download encrypted adapter from backend
+                logger.info(f"Step 2: Downloading adapter {adapter_id}...")
+                adapter_path = self._download_adapter_for_local(adapter_id)
+                
+                if not adapter_path:
+                    raise RuntimeError("⏳ Adapter not ready yet - training is still in progress on the cloud. Check back in 2-5 minutes.")
+                
+                logger.info(f"Step 3: Decrypting adapter...")
+                # Step 3: Decrypt the adapter
+                adapter_weights = engine.decrypt_adapter(adapter_path, encryption_key_hex)
+                
+                # Step 4: Apply adapter weights to the model
+                logger.info(f"Step 4: Applying adapter weights...")
+                engine.apply_adapter_weights(adapter_weights)
                 
                 # Mark this adapter as loaded
                 self._loaded_local_adapter = adapter_id
@@ -1304,12 +1329,14 @@ class VaultApp:
                 # Switch to local mode
                 self.inference_mode = "local"
                 
+                logger.info(f"✓ Adapter {adapter_id} loaded successfully!")
+                
                 # Update UI
                 def show_success():
                     self.page.snack_bar = ft.SnackBar(
                         content=ft.Row([
                             ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color="white", size=20),
-                            ft.Text(f"✓ Ready! '{doc_name}' loaded for local inference", color="white"),
+                            ft.Text(f"✓ Ready! '{doc_name}' loaded - AI now knows this document!", color="white"),
                         ], spacing=12),
                         bgcolor=LightTheme.ACCENT_SUCCESS,
                         duration=4000,
