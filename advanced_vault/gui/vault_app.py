@@ -6674,15 +6674,14 @@ class VaultApp:
                         
                         if dataset_path:
                             # Upload and submit training
-                            upload_result = self.training_manager.upload_dataset(
-                                dataset_path=dataset_path,
-                                filename=Path(dataset_path).name
+                            dataset_url = self.training_manager._upload_dataset_to_supabase_storage(
+                                dataset_path=dataset_path
                             )
                             
-                            if upload_result:
+                            if dataset_url:
                                 # Submit training job
                                 training_result = self.training_manager.submit_training_job(
-                                    dataset_url=upload_result['url'],
+                                    dataset_url=dataset_url,
                                     encryption_key_hex=encryption_key_hex,
                                     filename=filename
                                 )
@@ -9462,7 +9461,7 @@ class VaultApp:
         
         # Upload dataset
         local_path = self.training_manager.datasets_dir / f"{dataset_name}.encrypted"
-        signed_url = self.training_manager.upload_dataset(str(local_path))
+        signed_url = self.training_manager._upload_dataset_to_supabase_storage(str(local_path))
         
         if not signed_url:
             raise ValueError("Failed to upload dataset")
