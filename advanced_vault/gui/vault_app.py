@@ -1566,7 +1566,7 @@ class VaultApp:
         threading.Thread(target=check_in_background, daemon=True).start()
     
     def _update_document_status(self, doc_name: str, status: str, adapter_id: str = None):
-        """Update a document's training status in the vault."""
+        """Update a document's training status in the vault (updates ALL matching entries)."""
         try:
             import sqlite3
             import json
@@ -1574,6 +1574,7 @@ class VaultApp:
             query_filter = QueryFilter()
             all_entries = self.vault.kv_store.search(query_filter)
             
+            updated_count = 0
             for entry in all_entries:
                 if entry.service == doc_name:
                     # Update tags
@@ -1602,8 +1603,14 @@ class VaultApp:
                         """, (json.dumps(new_tags), entry.id))
                         conn.commit()
                     
-                    logger.info(f"Updated {doc_name} status to {status}")
-                    break
+                    updated_count += 1
+                    logger.info(f"Updated entry {entry.id} for {doc_name} to status: {status}")
+            
+            if updated_count > 0:
+                logger.info(f"Updated {updated_count} entries for {doc_name} to status: {status}")
+            else:
+                logger.warning(f"No entries found to update for {doc_name}")
+                
         except Exception as e:
             logger.error(f"Error updating document status: {e}", exc_info=True)
     
@@ -8397,15 +8404,26 @@ class VaultApp:
         # Check if entry already exists
         existing_entry = None
         try:
-            filter = QueryFilter(service=filename, limit=10)
+            # Search for ANY entry with this filename
+            filter = QueryFilter()
             results = self.vault.kv_store.search(filter)
             
-            # Find existing knowledge entry for this filename
+            # Find existing entry for this filename (any knowledge-related entry)
             for entry in results:
                 if entry.service == filename:
-                    # Check if it's a knowledge entry (has data_type:knowledge tag)
-                    if any(t.startswith("data_type:knowledge") for t in (entry.tags or [])):
+                    entry_tags = entry.tags or []
+                    # Check if it's a knowledge/document entry (various tag formats)
+                    is_knowledge = any(
+                        t.startswith("data_type:knowledge") or
+                        t == "knowledge" or
+                        t == "document" or
+                        t == "pdf" or
+                        t.startswith("training_")
+                        for t in entry_tags
+                    )
+                    if is_knowledge:
                         existing_entry = entry
+                        logger.info(f"Found existing knowledge entry for {filename}: {entry.id}")
                         break
         except Exception as e:
             logger.warning(f"Could not search for existing entry: {e}")
