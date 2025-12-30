@@ -44,11 +44,11 @@ FALLBACK_ENCRYPTED_PATH = "/workspace/encrypted"
 
 if os.path.isdir(VOLUME_PATH) and os.access(VOLUME_PATH, os.W_OK):
     ENCRYPTED_STORAGE_PATH = os.path.join(VOLUME_PATH, "encrypted")
-    os.makedirs(ENCRYPTED_STORAGE_PATH, exist_ok=True)
+    os.makedirs(ENCRYPTED_STORAGE_PATH, exist_ok=True, mode=0o755)  # rwxr-xr-x - readable by all users
     logger.info(f"✓ Using persistent network volume for adapters: {ENCRYPTED_STORAGE_PATH}")
 else:
     ENCRYPTED_STORAGE_PATH = FALLBACK_ENCRYPTED_PATH
-    os.makedirs(ENCRYPTED_STORAGE_PATH, exist_ok=True)
+    os.makedirs(ENCRYPTED_STORAGE_PATH, exist_ok=True, mode=0o755)  # rwxr-xr-x - readable by all users
     logger.warning(f"⚠ No network volume - adapters will be LOST when worker terminates! Using: {ENCRYPTED_STORAGE_PATH}")
 
 
@@ -498,8 +498,9 @@ def encrypt_dora_adapter(config: Dict[str, Any], user_id: str) -> Dict[str, Any]
         output_path = output_path.replace('/workspace/encrypted/', f'{ENCRYPTED_STORAGE_PATH}/')
         logger.info(f"✓ Corrected to persistent path: {output_path}")
     
-    # Ensure directory exists
+    # Ensure directory exists with world-readable permissions (755) so inference endpoint can access
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(Path(output_path).parent, 0o755)  # rwxr-xr-x - readable by all users
     enable_compression = config.get('enable_compression', True)
     
     logger.info(f"Using PERSISTENT encrypted storage path: {output_path}")
@@ -721,8 +722,15 @@ def _encrypt_merged_delta(config: Dict[str, Any], user_id: str, merged_path: str
     }
     
     # Save to file
+    # Ensure directory has world-readable permissions (755) so inference endpoint can access
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    os.chmod(Path(output_path).parent, 0o755)  # rwxr-xr-x - readable by all users
+    
     with open(output_path, 'w') as f:
         json.dump(encrypted_package, f, indent=2)
+    
+    # Set file permissions to world-readable (644) so inference endpoint can read
+    os.chmod(output_path, 0o644)  # rw-r--r-- - readable by all users
     
     logger.info(f"Encrypted delta saved to {output_path}")
     
