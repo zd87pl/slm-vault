@@ -1053,6 +1053,39 @@ class VaultApp:
             self.chat_input.focus()
             self.page.update()
     
+    def _get_loaded_adapter_display(self, adapters: list) -> str:
+        """Get display text for the loaded adapter indicator."""
+        if hasattr(self, '_loaded_local_adapter') and self._loaded_local_adapter:
+            # Find adapter name
+            for a in adapters:
+                if a.get("adapter_id") == self._loaded_local_adapter:
+                    name = a.get("name", "Document")
+                    # Truncate if too long
+                    if len(name) > 20:
+                        name = name[:17] + "..."
+                    return f"🧠 {name}"
+            return "🧠 Adapter Loaded"
+        elif len(adapters) == 0:
+            return "💬 Base AI"
+        elif len(adapters) == 1:
+            return f"📄 {adapters[0].get('name', 'Document')[:15]}..."
+        else:
+            return f"📚 {len(adapters)} documents"
+    
+    def _get_loaded_adapter_tooltip(self, adapters: list) -> str:
+        """Get tooltip for the loaded adapter indicator."""
+        if hasattr(self, '_loaded_local_adapter') and self._loaded_local_adapter:
+            for a in adapters:
+                if a.get("adapter_id") == self._loaded_local_adapter:
+                    return f"✓ '{a.get('name')}' loaded for local inference - AI knows this document!"
+            return "Adapter loaded for local inference"
+        elif len(adapters) == 0:
+            return "Using base AI model (no documents trained). Upload a PDF to enhance AI knowledge!"
+        elif len(adapters) == 1:
+            return f"Click 'Load for Local Inference' from the ⋮ menu to chat about this document"
+        else:
+            return f"Click to select which document to ask about"
+    
     def _select_adapter(self, adapter: Dict):
         """Select an adapter for subsequent queries."""
         self.selected_adapter_id = adapter.get("adapter_id")
@@ -2364,29 +2397,33 @@ class VaultApp:
                     # Controls row: ALWAYS visible - Inference mode + Document selector
                     ft.Row(
                         [
-                            # Document/Adapter selector or "Chat with AI"
+                            # Document/Adapter selector with loaded status
                             ft.Container(
                                 content=ft.Row(
                                     [
+                                        # Show loaded adapter status prominently
                                         ft.Icon(
-                                            ft.Icons.SMART_TOY_ROUNDED if adapter_count == 0 else ft.Icons.DESCRIPTION_ROUNDED, 
+                                            ft.Icons.MEMORY_ROUNDED if hasattr(self, '_loaded_local_adapter') and self._loaded_local_adapter else (
+                                                ft.Icons.SMART_TOY_ROUNDED if adapter_count == 0 else ft.Icons.DESCRIPTION_ROUNDED
+                                            ),
                                             size=12, 
-                                            color=LightTheme.ACCENT_PRIMARY
+                                            color=LightTheme.ACCENT_SUCCESS if hasattr(self, '_loaded_local_adapter') and self._loaded_local_adapter else LightTheme.ACCENT_PRIMARY
                                         ),
                                         ft.Text(
-                                            f"Asking {adapter_count} document{'s' if adapter_count != 1 else ''}" if adapter_count > 0 else "Chat with AI",
+                                            self._get_loaded_adapter_display(trained_adapters),
                                             size=11,
-                                            color=LightTheme.ACCENT_PRIMARY,
+                                            color=LightTheme.ACCENT_SUCCESS if hasattr(self, '_loaded_local_adapter') and self._loaded_local_adapter else LightTheme.ACCENT_PRIMARY,
+                                            weight=ft.FontWeight.W_600 if hasattr(self, '_loaded_local_adapter') and self._loaded_local_adapter else ft.FontWeight.W_400,
                                         ),
                                         ft.Icon(ft.Icons.ARROW_DROP_DOWN_ROUNDED, size=16, color=LightTheme.TEXT_MUTED) if adapter_count > 1 else ft.Container(),
                                     ],
                                     spacing=4,
                                 ),
                                 padding=ft.padding.symmetric(horizontal=10, vertical=4),
-                                bgcolor=LightTheme.ACCENT_PRIMARY + "10",
+                                bgcolor=(LightTheme.ACCENT_SUCCESS + "15") if hasattr(self, '_loaded_local_adapter') and self._loaded_local_adapter else (LightTheme.ACCENT_PRIMARY + "10"),
                                 border_radius=12,
                                 on_click=lambda e: self._show_adapter_selector(trained_adapters) if adapter_count > 1 else None,
-                                tooltip="Click to select specific document" if adapter_count > 1 else "Using base AI model",
+                                tooltip=self._get_loaded_adapter_tooltip(trained_adapters),
                             ),
                             ft.Container(expand=True),
                             # Inference mode toggle - ALWAYS visible
