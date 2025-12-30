@@ -169,6 +169,10 @@ class VaultApp:
         self._training_refresh_timer = None
         self._training_refresh_active = False
         
+        # Landing page status polling timer (for pending/training documents)
+        self._landing_status_timer = None
+        self._landing_status_polling_active = False
+        
         # Non-blocking document processing state
         # Tracks documents being processed in background
         # Key: filename, Value: {status, step, progress, message, error}
@@ -2568,6 +2572,122 @@ class VaultApp:
             )
         )
         self.page.update()
+        
+        # Start automatic status polling for pending/training documents
+        self._start_landing_status_polling()
+    
+    def _stop_landing_status_polling(self):
+        """Stop automatic status polling for landing page."""
+        self._landing_status_polling_active = False
+        if self._landing_status_timer:
+            self._landing_status_timer.cancel()
+            self._landing_status_timer = None
+    
+    def _start_landing_status_polling(self):
+        """Start automatic status polling for pending/training documents on landing page."""
+        # Stop any existing polling first
+        self._stop_landing_status_polling()
+        
+        def poll_status():
+            """Poll status for pending/training documents."""
+            if not self._landing_status_polling_active or self.current_view != "landing":
+                return
+            
+            try:
+                # Find documents with pending/training status
+                query_filter = QueryFilter()
+                all_entries = self.vault.kv_store.search(query_filter)
+                
+                pending_docs = []
+                for entry in all_entries:
+                    if entry.tags:
+                        status = None
+                        adapter_id = None
+                        for tag in entry.tags:
+                            if tag.startswith("training_status:"):
+                                status = tag.split(":", 1)[1]
+                            elif tag.startswith("training_job:"):
+                                adapter_id = tag.split(":", 1)[1]
+                        
+                        if status in ["pending", "training"] and adapter_id:
+                            pending_docs.append({
+                                "name": entry.service,
+                                "adapter_id": adapter_id,
+                                "status": status
+                            })
+                
+                if not pending_docs:
+                    # No pending documents, stop polling
+                    self._landing_status_polling_active = False
+                    return
+                
+                # Check status for each pending document
+                updated_count = 0
+                for doc in pending_docs:
+                    try:
+                        if not self.training_manager:
+                            continue
+                        
+                        status_result = self.training_manager.get_job_status(doc["adapter_id"])
+                        new_status = status_result.get("status", "unknown").lower()
+                        
+                        if new_status == "completed" and doc["status"] != "completed":
+                            # Status changed to completed! Update vault
+                            logger.info(f"Status changed to completed for {doc['name']}")
+                            self._update_document_status(doc["name"], "completed", doc["adapter_id"])
+                            updated_count += 1
+                        elif new_status == "failed" and doc["status"] != "failed":
+                            # Status changed to failed
+                            logger.info(f"Status changed to failed for {doc['name']}")
+                            self._update_document_status(doc["name"], "failed", doc["adapter_id"])
+                            updated_count += 1
+                    except Exception as e:
+                        logger.debug(f"Error checking status for {doc['name']}: {e}")
+                
+                # If any status changed, refresh the landing page
+                if updated_count > 0:
+                    logger.info(f"Refreshing landing page after {updated_count} status updates")
+                    self.show_landing_page()
+                    return
+                
+                # Schedule next poll (every 10 seconds)
+                self._landing_status_timer = threading.Timer(10.0, poll_status)
+                self._landing_status_timer.daemon = True
+                self._landing_status_timer.start()
+                
+            except Exception as e:
+                logger.debug(f"Error in landing status polling: {e}")
+                # Retry in 15 seconds on error
+                self._landing_status_timer = threading.Timer(15.0, poll_status)
+                self._landing_status_timer.daemon = True
+                self._landing_status_timer.start()
+        
+        # Start polling if there are pending documents
+        try:
+            query_filter = QueryFilter()
+            all_entries = self.vault.kv_store.search(query_filter)
+            
+            has_pending = False
+            for entry in all_entries:
+                if entry.tags:
+                    for tag in entry.tags:
+                        if tag.startswith("training_status:"):
+                            status = tag.split(":", 1)[1]
+                            if status in ["pending", "training"]:
+                                has_pending = True
+                                break
+                    if has_pending:
+                        break
+            
+            if has_pending:
+                self._landing_status_polling_active = True
+                # Start first poll after 5 seconds
+                self._landing_status_timer = threading.Timer(5.0, poll_status)
+                self._landing_status_timer.daemon = True
+                self._landing_status_timer.start()
+                logger.info("Started automatic status polling for landing page")
+        except Exception as e:
+            logger.debug(f"Could not start landing status polling: {e}")
     
     def _set_example_question(self, input_field: ft.TextField, question: str):
         """Set example question in the input field."""
@@ -8583,6 +8703,7 @@ class VaultApp:
     def show_training_view(self):
         """Show training jobs view."""
         self.current_view = "training"
+        self._stop_landing_status_polling()  # Stop landing page polling
         
         # Ensure main UI layout exists (secrets_list is created by build_ui)
         if not hasattr(self, 'secrets_list') or self.secrets_list is None:
@@ -8900,6 +9021,7 @@ class VaultApp:
 
     def show_settings(self):
         """Show settings with MCP setup."""
+        self._stop_landing_status_polling()  # Stop landing page polling
         # Prevent infinite loops
         if self._refreshing_settings:
             return
@@ -9508,6 +9630,7 @@ class VaultApp:
     def show_library_view(self):
         """Show the Knowledge Library with training queue and folder watching."""
         self.current_view = "library"
+        self._stop_landing_status_polling()  # Stop landing page polling
         
         # Ensure main UI layout exists (secrets_list is created by build_ui)
         if not hasattr(self, 'secrets_list') or self.secrets_list is None:

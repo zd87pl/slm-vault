@@ -486,8 +486,18 @@ def encrypt_dora_adapter(config: Dict[str, Any], user_id: str) -> Dict[str, Any]
     key_input = config.get('encryption_key', 'generate')
     adapter_id = config.get('adapter_id', 'default')
     # Use PERSISTENT storage path (network volume or fallback)
-    default_output_path = f'{ENCRYPTED_STORAGE_PATH}/{user_id}/{adapter_id}.json'
-    output_path = config.get('output_path', default_output_path)
+    # Check both 'output_path' and 'encrypted_output_path' for compatibility
+    output_path = config.get('output_path') or config.get('encrypted_output_path')
+    if not output_path:
+        # Fallback to ENCRYPTED_STORAGE_PATH (which should be /runpod-volume/encrypted)
+        output_path = f'{ENCRYPTED_STORAGE_PATH}/{user_id}/{adapter_id}.json'
+    
+    # CRITICAL: If output_path is still pointing to /workspace/, force it to use persistent volume
+    if output_path.startswith('/workspace/encrypted/'):
+        logger.warning(f"⚠ Overriding ephemeral path to persistent volume: {output_path}")
+        output_path = output_path.replace('/workspace/encrypted/', f'{ENCRYPTED_STORAGE_PATH}/')
+        logger.info(f"✓ Corrected to persistent path: {output_path}")
+    
     # Ensure directory exists
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     enable_compression = config.get('enable_compression', True)
@@ -582,8 +592,18 @@ def _encrypt_merged_delta(config: Dict[str, Any], user_id: str, merged_path: str
     key_input = config.get('encryption_key', 'generate')
     adapter_id = config.get('adapter_id', 'default')
     # Use PERSISTENT storage path (network volume or fallback)
-    default_output_path = f'{ENCRYPTED_STORAGE_PATH}/{user_id}/{adapter_id}_delta.json'
-    output_path = config.get('output_path', default_output_path)
+    # Check both 'output_path' and 'encrypted_output_path' for compatibility
+    output_path = config.get('output_path') or config.get('encrypted_output_path')
+    if not output_path:
+        # Fallback to ENCRYPTED_STORAGE_PATH (which should be /runpod-volume/encrypted)
+        output_path = f'{ENCRYPTED_STORAGE_PATH}/{user_id}/{adapter_id}_delta.json'
+    
+    # CRITICAL: If output_path is still pointing to /workspace/, force it to use persistent volume
+    if output_path.startswith('/workspace/encrypted/'):
+        logger.warning(f"⚠ Overriding ephemeral path to persistent volume: {output_path}")
+        output_path = output_path.replace('/workspace/encrypted/', f'{ENCRYPTED_STORAGE_PATH}/')
+        logger.info(f"✓ Corrected to persistent path: {output_path}")
+    
     enable_compression = config.get('enable_compression', True)
     
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -751,12 +771,25 @@ def train_and_encrypt(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     merged_path = training_result.get('merged_path')
     encrypt_merged_delta = config.get('encrypt_merged_delta', False) and merged_path is not None
     
+    # Determine output path - prioritize encrypted_output_path from config, then use persistent volume
+    adapter_id = config.get('adapter_id', 'default')
+    output_path = config.get('encrypted_output_path')
+    if not output_path:
+        # Use persistent storage path (network volume or fallback)
+        output_path = f'{ENCRYPTED_STORAGE_PATH}/{user_id}/{adapter_id}.json'
+    
+    # CRITICAL: Force use of persistent volume, never ephemeral /workspace/
+    if output_path.startswith('/workspace/encrypted/'):
+        logger.warning(f"⚠ Overriding ephemeral path in train_and_encrypt: {output_path}")
+        output_path = output_path.replace('/workspace/encrypted/', f'{ENCRYPTED_STORAGE_PATH}/')
+        logger.info(f"✓ Corrected to persistent path: {output_path}")
+    
     encryption_config = {
         'adapter_path': adapter_path,
         'encryption_key': config.get('encryption_key', 'generate'),
-        'adapter_id': config.get('adapter_id', 'default'),
+        'adapter_id': adapter_id,
         # Use PERSISTENT storage path (network volume or fallback)
-        'output_path': config.get('encrypted_output_path', f'{ENCRYPTED_STORAGE_PATH}/{user_id}/{config.get("adapter_id", "default")}.json'),
+        'output_path': output_path,
         'enable_compression': config.get('enable_compression', True),
         'merged_path': merged_path,
         'encrypt_merged_delta': encrypt_merged_delta
