@@ -102,7 +102,8 @@ async def submit_training_job(
             "encryption_key": data.encryption_key_hex,  # Required for decrypting encrypted dataset
             "model_name": data.model_name,
             "output_dir": f"/workspace/adapters/{user_id}/{adapter_id}/",
-            "encrypted_output_path": f"/workspace/encrypted/{user_id}/{adapter_id}.json",
+            # Use persistent network volume path (rp_handler.py will use this or fallback)
+            "encrypted_output_path": f"/runpod-volume/encrypted/{user_id}/{adapter_id}.json",
             "rank": data.rank,
             "alpha": data.alpha,
             "epochs": data.epochs,
@@ -564,7 +565,11 @@ async def run_inference(
             )
         
         # Prepare inference config for RunPod
-        encrypted_adapter_path = f"/workspace/encrypted/{user_id}/{adapter_id}.json"
+        # IMPORTANT: Use same path as rp_handler.py (persistent volume or fallback)
+        # RunPod Network Volume: /runpod-volume/encrypted/{user_id}/{adapter_id}.json
+        # Fallback: /workspace/encrypted/{user_id}/{adapter_id}.json
+        # The handler auto-detects which is available
+        encrypted_adapter_path = f"/runpod-volume/encrypted/{user_id}/{adapter_id}.json"
         
         inference_config = {
             "task": "inference",

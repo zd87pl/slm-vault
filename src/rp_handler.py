@@ -35,6 +35,22 @@ from dora_crypto import EncryptedDoRAManager, generate_secure_password
 from ephemeral_inference import EphemeralDoRAInference
 from utils import log_memory_stats
 
+# --- PERSISTENT STORAGE CONFIGURATION ---
+# Use RunPod Network Volume for adapter storage (persists between jobs)
+# This is CRITICAL - without persistent storage, encrypted adapters are lost
+# when serverless workers terminate!
+VOLUME_PATH = "/runpod-volume"
+FALLBACK_ENCRYPTED_PATH = "/workspace/encrypted"
+
+if os.path.isdir(VOLUME_PATH) and os.access(VOLUME_PATH, os.W_OK):
+    ENCRYPTED_STORAGE_PATH = os.path.join(VOLUME_PATH, "encrypted")
+    os.makedirs(ENCRYPTED_STORAGE_PATH, exist_ok=True)
+    logger.info(f"✓ Using persistent network volume for adapters: {ENCRYPTED_STORAGE_PATH}")
+else:
+    ENCRYPTED_STORAGE_PATH = FALLBACK_ENCRYPTED_PATH
+    os.makedirs(ENCRYPTED_STORAGE_PATH, exist_ok=True)
+    logger.warning(f"⚠ No network volume - adapters will be LOST when worker terminates! Using: {ENCRYPTED_STORAGE_PATH}")
+
 
 def handler(event):
     """
@@ -469,13 +485,14 @@ def encrypt_dora_adapter(config: Dict[str, Any], user_id: str) -> Dict[str, Any]
     
     key_input = config.get('encryption_key', 'generate')
     adapter_id = config.get('adapter_id', 'default')
-    # Use user-specific storage path
-    output_path = config.get('output_path', f'/workspace/encrypted/{user_id}/{adapter_id}.json')
+    # Use PERSISTENT storage path (network volume or fallback)
+    default_output_path = f'{ENCRYPTED_STORAGE_PATH}/{user_id}/{adapter_id}.json'
+    output_path = config.get('output_path', default_output_path)
     # Ensure directory exists
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     enable_compression = config.get('enable_compression', True)
     
-    logger.info(f"Using user-specific encrypted storage path: {output_path}")
+    logger.info(f"Using PERSISTENT encrypted storage path: {output_path}")
 
     # Generate or parse encryption key
     if key_input == 'generate':
@@ -564,7 +581,9 @@ def _encrypt_merged_delta(config: Dict[str, Any], user_id: str, merged_path: str
     
     key_input = config.get('encryption_key', 'generate')
     adapter_id = config.get('adapter_id', 'default')
-    output_path = config.get('output_path', f'/workspace/encrypted/{user_id}/{adapter_id}_delta.json')
+    # Use PERSISTENT storage path (network volume or fallback)
+    default_output_path = f'{ENCRYPTED_STORAGE_PATH}/{user_id}/{adapter_id}_delta.json'
+    output_path = config.get('output_path', default_output_path)
     enable_compression = config.get('enable_compression', True)
     
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -736,7 +755,8 @@ def train_and_encrypt(config: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         'adapter_path': adapter_path,
         'encryption_key': config.get('encryption_key', 'generate'),
         'adapter_id': config.get('adapter_id', 'default'),
-        'output_path': config.get('encrypted_output_path', f'/workspace/encrypted/{user_id}/{config.get("adapter_id", "default")}.json'),
+        # Use PERSISTENT storage path (network volume or fallback)
+        'output_path': config.get('encrypted_output_path', f'{ENCRYPTED_STORAGE_PATH}/{user_id}/{config.get("adapter_id", "default")}.json'),
         'enable_compression': config.get('enable_compression', True),
         'merged_path': merged_path,
         'encrypt_merged_delta': encrypt_merged_delta
@@ -809,6 +829,31 @@ def inference_with_encrypted_dora(config: Dict[str, Any], user_id: str) -> Dict[
     # Check if using encrypted adapter or basic inference
     if encrypted_path and encryption_key_hex:
         logger.info("Starting inference with encrypted adapter...")
+        
+        # Check if adapter exists at the given path, fallback to alternate locations
+        if not os.path.exists(encrypted_path):
+            logger.warning(f"Adapter not found at: {encrypted_path}")
+            
+            # Try alternate paths (volume vs workspace)
+            alternate_paths = []
+            if encrypted_path.startswith('/runpod-volume/'):
+                # Try workspace fallback
+                alternate = encrypted_path.replace('/runpod-volume/', '/workspace/')
+                alternate_paths.append(alternate)
+            elif encrypted_path.startswith('/workspace/'):
+                # Try volume
+                alternate = encrypted_path.replace('/workspace/', '/runpod-volume/')
+                alternate_paths.append(alternate)
+            
+            for alt_path in alternate_paths:
+                if os.path.exists(alt_path):
+                    logger.info(f"Found adapter at alternate location: {alt_path}")
+                    encrypted_path = alt_path
+                    break
+            else:
+                # Still not found
+                raise FileNotFoundError(f"Adapter not found at {encrypted_path} or alternates: {alternate_paths}")
+        
         encryption_key = bytes.fromhex(encryption_key_hex)
 
         # Initialize inference engine
