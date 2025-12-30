@@ -77,11 +77,29 @@ class EncryptedEntry:
     @classmethod
     def from_dict(cls, data: dict) -> "EncryptedEntry":
         """Deserialize from dictionary."""
+        # Parse tags - handle both JSON array and comma-separated formats
+        tags_raw = data.get("tags", "")
+        if not tags_raw:
+            tags = []
+        elif tags_raw.startswith("["):
+            # JSON array format
+            import json
+            try:
+                tags = json.loads(tags_raw)
+                # Ensure all items are strings
+                tags = [str(t) for t in tags if t]
+            except (json.JSONDecodeError, TypeError):
+                # Fallback to comma-separated
+                tags = tags_raw.split(",")
+        else:
+            # Comma-separated format
+            tags = tags_raw.split(",")
+        
         return cls(
             id=data["id"],
             entry_type=EntryType(data["entry_type"]),
             service=data["service"],
-            tags=data["tags"].split(",") if data["tags"] else [],
+            tags=tags,
             description=data.get("description"),
             folder=data.get("folder"),  # Folder name (optional)
             encrypted_data=bytes.fromhex(data["encrypted_data"]),

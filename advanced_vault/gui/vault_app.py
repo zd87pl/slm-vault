@@ -1594,13 +1594,14 @@ class VaultApp:
                             new_tags.append(tag)
                     
                     # Update tags directly in the database (without re-encrypting)
+                    # Use comma-separated format to match to_dict() format
                     db_path = self.vault.kv_store.db_path
                     with sqlite3.connect(db_path) as conn:
                         conn.execute("""
                             UPDATE encrypted_entries
                             SET tags = ?, updated_at = datetime('now')
                             WHERE id = ?
-                        """, (json.dumps(new_tags), entry.id))
+                        """, (",".join(new_tags), entry.id))
                         conn.commit()
                     
                     updated_count += 1
