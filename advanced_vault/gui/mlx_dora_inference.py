@@ -505,83 +505,101 @@ class MLXDoRAInference:
         """
         Recursively iterate over named modules in MLX model.
 
-        FIX Bug #1: Use correct MLX API instead of PyTorch-style children()
+        Returns unique (name, module) pairs for all modules in the tree.
+        Uses a set to track visited modules and avoid duplicates.
         """
         results = []
+        visited = set()  # Track visited module ids to avoid duplicates
 
-        if prefix:
-            results.append((prefix, module))
+        def _recurse(mod: nn.Module, pref: str):
+            mod_id = id(mod)
+            if mod_id in visited:
+                return
+            visited.add(mod_id)
 
-        # MLX modules store children as attributes
-        # We need to check for common model structure patterns
+            # Add current module if it has a prefix (not root)
+            if pref:
+                results.append((pref, mod))
 
-        # Check for 'model' attribute (wrapper models)
-        if hasattr(module, 'model') and isinstance(module.model, nn.Module):
-            child_prefix = f"{prefix}.model" if prefix else "model"
-            results.extend(self._iter_named_modules(module.model, child_prefix))
+            # Check for 'model' attribute (wrapper models)
+            if hasattr(mod, 'model') and isinstance(mod.model, nn.Module):
+                child_prefix = f"{pref}.model" if pref else "model"
+                _recurse(mod.model, child_prefix)
 
-        # Check for 'layers' list (transformer blocks)
-        if hasattr(module, 'layers') and isinstance(module.layers, list):
-            for i, layer in enumerate(module.layers):
-                if isinstance(layer, nn.Module):
-                    layer_prefix = f"{prefix}.layers.{i}" if prefix else f"layers.{i}"
-                    results.append((layer_prefix, layer))
-                    results.extend(self._iter_named_modules(layer, layer_prefix))
+            # Check for 'layers' list (transformer blocks)
+            if hasattr(mod, 'layers') and isinstance(mod.layers, list):
+                for i, layer in enumerate(mod.layers):
+                    if isinstance(layer, nn.Module):
+                        layer_prefix = f"{pref}.layers.{i}" if pref else f"layers.{i}"
+                        _recurse(layer, layer_prefix)
 
-        # Check common transformer attributes
-        common_attrs = [
-            'self_attn', 'attention', 'attn',  # Attention modules
-            'mlp', 'feed_forward', 'ffn',       # MLP modules
-            'q_proj', 'k_proj', 'v_proj', 'o_proj',  # Attention projections
-            'gate_proj', 'up_proj', 'down_proj',     # MLP projections
-            'embed_tokens', 'lm_head', 'norm',       # Other common modules
-            'input_layernorm', 'post_attention_layernorm',
-        ]
+            # Check common transformer attributes
+            common_attrs = [
+                'self_attn', 'attention', 'attn',  # Attention modules
+                'mlp', 'feed_forward', 'ffn',       # MLP modules
+                'q_proj', 'k_proj', 'v_proj', 'o_proj',  # Attention projections
+                'gate_proj', 'up_proj', 'down_proj',     # MLP projections
+                'embed_tokens', 'lm_head', 'norm',       # Other common modules
+                'input_layernorm', 'post_attention_layernorm',
+            ]
 
-        for attr_name in common_attrs:
-            if hasattr(module, attr_name):
-                child = getattr(module, attr_name)
-                if isinstance(child, nn.Module):
-                    child_prefix = f"{prefix}.{attr_name}" if prefix else attr_name
-                    results.append((child_prefix, child))
-                    # Recursively search (but not for Linear layers to avoid infinite recursion)
-                    if not isinstance(child, nn.Linear):
-                        results.extend(self._iter_named_modules(child, child_prefix))
+            for attr_name in common_attrs:
+                if hasattr(mod, attr_name):
+                    child = getattr(mod, attr_name)
+                    if isinstance(child, nn.Module):
+                        child_prefix = f"{pref}.{attr_name}" if pref else attr_name
+                        _recurse(child, child_prefix)
 
+        _recurse(module, prefix)
         return results
 
     def _replace_module(self, full_name: str, new_module: nn.Module):
         """
         Replace a module at the given path in the model tree.
 
-        FIX Bug #3: Handle list indices correctly
+        Handles paths like:
+        - "model.layers.0.self_attn.q_proj"
+        - "layers.0.mlp.gate_proj"
         """
         parts = full_name.split('.')
         parent = self.model
 
-        # Navigate to parent
-        for i, part in enumerate(parts[:-1]):
-            next_part = parts[i + 1] if i + 1 < len(parts) else None
+        # Navigate to parent of the target module
+        i = 0
+        while i < len(parts) - 1:
+            part = parts[i]
 
-            if part == 'layers' and next_part and next_part.isdigit():
-                # Skip 'layers' part, handle index in next iteration
-                continue
-            elif part.isdigit():
-                # This is a list index
-                parent = parent.layers[int(part)]
+            if part == 'layers':
+                # Next part should be the index
+                if i + 1 < len(parts) and parts[i + 1].isdigit():
+                    idx = int(parts[i + 1])
+                    if not hasattr(parent, 'layers'):
+                        raise AttributeError(f"No 'layers' attribute at path position {i}")
+                    parent = parent.layers[idx]
+                    i += 2  # Skip both 'layers' and the index
+                    continue
+                else:
+                    # 'layers' without numeric index - treat as attribute
+                    if hasattr(parent, part):
+                        parent = getattr(parent, part)
+                    else:
+                        raise AttributeError(f"Cannot find '{part}' in path '{full_name}'")
             elif hasattr(parent, part):
                 parent = getattr(parent, part)
-            elif hasattr(parent, 'model') and hasattr(parent.model, part):
-                parent = getattr(parent.model, part)
             else:
                 raise AttributeError(f"Cannot find '{part}' in path '{full_name}'")
+
+            i += 1
 
         # Set the final attribute
         final_name = parts[-1]
 
         if final_name.isdigit():
-            # FIX Bug #3: Handle list assignment
-            parent.layers[int(final_name)] = new_module
+            # Handle list assignment (rare case where final part is an index)
+            if hasattr(parent, 'layers'):
+                parent.layers[int(final_name)] = new_module
+            else:
+                raise AttributeError(f"Cannot assign to index '{final_name}' - parent has no 'layers'")
         else:
             setattr(parent, final_name, new_module)
 

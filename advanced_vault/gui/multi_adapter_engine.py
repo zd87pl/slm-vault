@@ -278,8 +278,8 @@ class MultiAdapterEngine:
         config = self._registered_adapters[name]
 
         try:
-            # Decrypt adapter
-            decrypted = self._base_engine.decrypt_adapter(
+            # Decrypt adapter using in-memory decryption
+            decrypted = self._decrypt_adapter_data(
                 config.encrypted_data,
                 config.encryption_key
             )
@@ -299,6 +299,108 @@ class MultiAdapterEngine:
         except Exception as e:
             logger.error(f"Failed to load adapter {name}: {e}")
             return None
+
+    def _decrypt_adapter_data(
+        self,
+        encrypted_data: bytes,
+        encryption_key: bytes
+    ) -> Dict[str, Any]:
+        """
+        Decrypt adapter data in memory.
+
+        Args:
+            encrypted_data: Raw encrypted safetensors bytes OR JSON package bytes
+            encryption_key: 32-byte encryption key
+
+        Returns:
+            Dictionary of weight tensors
+        """
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+            from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+            from cryptography.hazmat.primitives import hashes
+        except ImportError:
+            raise RuntimeError("cryptography library not available")
+
+        import json
+        from base64 import b64decode
+
+        # Try to parse as JSON package first (encrypted adapter format)
+        try:
+            package = json.loads(encrypted_data)
+            salt = b64decode(package['salt'])
+            nonce = b64decode(package['nonce'])
+            ciphertext = b64decode(package['ciphertext'])
+            tag = b64decode(package['tag'])
+            metadata = package.get('metadata', {})
+
+            # Derive decryption key using HKDF
+            hkdf = HKDF(
+                algorithm=hashes.SHA256(),
+                length=32,
+                salt=salt,
+                info=b"dora-encryption-key-v2",
+            )
+            decryption_key = hkdf.derive(encryption_key)
+
+            # Decrypt
+            cipher = ChaCha20Poly1305(decryption_key)
+            aad = json.dumps(metadata, sort_keys=True).encode('utf-8')
+            decrypted_data = cipher.decrypt(nonce, ciphertext + tag, aad)
+
+            # Decompress if needed
+            if metadata.get('compressed', False):
+                import zstandard as zstd
+                decompressor = zstd.ZstdDecompressor()
+                decrypted_data = decompressor.decompress(decrypted_data)
+
+        except (json.JSONDecodeError, KeyError):
+            # Not JSON format - assume raw encrypted safetensors with simple encryption
+            # Format: nonce (12 bytes) + ciphertext
+            if len(encrypted_data) < 12:
+                raise ValueError("Encrypted data too short")
+
+            nonce = encrypted_data[:12]
+            ciphertext = encrypted_data[12:]
+
+            cipher = ChaCha20Poly1305(encryption_key)
+            decrypted_data = cipher.decrypt(nonce, ciphertext, None)
+
+        # Parse safetensors
+        return self._parse_safetensors(decrypted_data)
+
+    def _parse_safetensors(self, data: bytes) -> Dict[str, Any]:
+        """Parse safetensors bytes to weight dictionary."""
+        if not MLX_AVAILABLE:
+            raise RuntimeError("MLX not available")
+
+        try:
+            from safetensors.numpy import load as load_numpy
+            import numpy as np
+
+            np_weights = load_numpy(data)
+            weights = {}
+            for key, np_tensor in np_weights.items():
+                weights[key] = mx.array(np_tensor)
+            return weights
+        except ImportError:
+            # Fallback to temp file
+            import tempfile
+            import os
+            from safetensors import safe_open
+
+            with tempfile.NamedTemporaryFile(suffix='.safetensors', delete=False) as f:
+                f.write(data)
+                temp_path = f.name
+
+            try:
+                weights = {}
+                with safe_open(temp_path, framework="numpy") as f:
+                    for key in f.keys():
+                        weights[key] = mx.array(f.get_tensor(key))
+                return weights
+            finally:
+                os.unlink(temp_path)
 
     def save_profile(
         self,
@@ -492,6 +594,8 @@ class MultiAdapterEngine:
             magnitude_sum = None
             total_weight = 0.0
             scaling = 1.0
+            reference_shape_a = None
+            reference_shape_b = None
 
             for adapter_name, adapter_weights in all_weights.items():
                 if layer_name not in adapter_weights:
@@ -501,6 +605,22 @@ class MultiAdapterEngine:
                 alpha = weights_config.get(adapter_name, 0.0)
 
                 if alpha <= 0:
+                    continue
+
+                # Shape validation: check if shapes are compatible
+                current_shape_a = tuple(w.lora_a.shape)
+                current_shape_b = tuple(w.lora_b.shape)
+
+                if reference_shape_a is None:
+                    reference_shape_a = current_shape_a
+                    reference_shape_b = current_shape_b
+                elif current_shape_a != reference_shape_a or current_shape_b != reference_shape_b:
+                    logger.warning(
+                        f"Shape mismatch in layer {layer_name}: "
+                        f"expected A={reference_shape_a}, B={reference_shape_b}, "
+                        f"got A={current_shape_a}, B={current_shape_b}. "
+                        f"Skipping adapter {adapter_name} for this layer."
+                    )
                     continue
 
                 # Accumulate weighted contributions
