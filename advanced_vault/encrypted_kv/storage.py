@@ -24,6 +24,14 @@ from .models import EncryptedEntry, QueryFilter, VaultStats, EntryType
 logger = logging.getLogger(__name__)
 
 
+# Security constants
+MASTER_KEY_LENGTH = 32
+NONCE_LENGTH = 12
+
+# Allowed columns for sort_by to prevent SQL injection
+ALLOWED_SORT_COLUMNS = frozenset(['created_at', 'updated_at', 'accessed_at', 'service'])
+
+
 class EncryptedKVStore:
     """
     Local encrypted key-value store with metadata search.
@@ -33,6 +41,7 @@ class EncryptedKVStore:
     - Unique nonce per entry (96-bit random)
     - Client-side encryption only (never sends plaintext)
     - Constant-time operations where possible
+    - Secure key zeroing on close
     """
 
     def __init__(self, master_key: bytes, db_path: str = "~/.vault/kv_store.db"):
@@ -43,11 +52,12 @@ class EncryptedKVStore:
             master_key: 32-byte encryption key
             db_path: Path to SQLite database
         """
-        if len(master_key) != 32:
-            raise ValueError("Master key must be exactly 32 bytes")
+        if len(master_key) != MASTER_KEY_LENGTH:
+            raise ValueError(f"Master key must be exactly {MASTER_KEY_LENGTH} bytes")
 
-        self.master_key = master_key
-        self.cipher = ChaCha20Poly1305(master_key)
+        # Store as mutable bytearray for secure zeroing later
+        self._master_key = bytearray(master_key)
+        self.cipher = ChaCha20Poly1305(bytes(self._master_key))
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -334,15 +344,15 @@ class EncryptedKVStore:
         # Build WHERE clause
         where_clause = " AND ".join(conditions) if conditions else "1=1"
 
-        # Build ORDER BY
+        # Build ORDER BY - validate sort_by to prevent SQL injection
+        sort_column = filter.sort_by if filter.sort_by in ALLOWED_SORT_COLUMNS else "created_at"
         order_direction = "DESC" if filter.sort_desc else "ASC"
-        order_by = f"{filter.sort_by} {order_direction}"
 
-        # Execute query
+        # Execute query (sort_column is validated, order_direction is hardcoded)
         query = f"""
             SELECT * FROM encrypted_entries
             WHERE {where_clause}
-            ORDER BY {order_by}
+            ORDER BY {sort_column} {order_direction}
             LIMIT ? OFFSET ?
         """
         params.extend([filter.limit or -1, filter.offset])
@@ -446,18 +456,24 @@ class EncryptedKVStore:
         )
 
     def close(self):
-        """Close database connection and zero master key."""
-        # Securely zero the master key
-        if self.master_key:
-            # Convert to bytearray for mutability, then zero
-            if isinstance(self.master_key, bytes):
-                # bytes are immutable, so we can't zero them in place
-                # Best we can do is delete the reference
-                del self.master_key
-                self.master_key = None
-            elif isinstance(self.master_key, bytearray):
-                # bytearray is mutable
-                for i in range(len(self.master_key)):
-                    self.master_key[i] = 0
+        """Close database connection and securely zero master key."""
+        # Securely zero the master key (stored as bytearray for this purpose)
+        if self._master_key is not None:
+            # Zero every byte in place
+            for i in range(len(self._master_key)):
+                self._master_key[i] = 0
+            self._master_key = None
+
+        # Clear cipher reference
+        self.cipher = None
 
         logger.info("Closed EncryptedKVStore")
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures key is zeroed."""
+        self.close()
+        return False
