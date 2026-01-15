@@ -9,6 +9,11 @@ Features:
 - Loads TinyLlama model locally (Apple Silicon MLX or PyTorch)
 - Applies DoRA weights ephemerally (in-memory only)
 - Full privacy: after training, inference can be 100% offline
+
+MLX DoRA Support:
+- Full DoRA formula implementation for Apple Silicon
+- W' = m ⊙ ((W₀ + BA) / ||W₀ + BA||_c)
+- Ephemeral adapter loading with automatic cleanup
 """
 
 import os
@@ -51,6 +56,7 @@ _ensure_fast_downloads()
 
 # Check for MLX (Apple Silicon) or PyTorch
 MLX_AVAILABLE = False
+MLX_DORA_AVAILABLE = False
 TORCH_AVAILABLE = False
 
 try:
@@ -59,6 +65,15 @@ try:
     from mlx_lm import load as mlx_load, generate as mlx_generate
     MLX_AVAILABLE = True
     logger.info("MLX available - using Apple Silicon acceleration")
+
+    # Check for MLX DoRA support
+    try:
+        from .mlx_dora_inference import MLXDoRAInference, is_mlx_dora_available
+        MLX_DORA_AVAILABLE = is_mlx_dora_available()
+        if MLX_DORA_AVAILABLE:
+            logger.info("MLX DoRA support available")
+    except ImportError:
+        logger.debug("MLX DoRA module not available")
 except ImportError:
     pass
 
@@ -104,22 +119,32 @@ class LocalInferenceEngine:
     def __init__(self, cache_dir: Optional[str] = None):
         """
         Initialize local inference engine.
-        
+
         Args:
             cache_dir: Directory for model cache (default: ~/.cache/enclave)
         """
         self.cache_dir = Path(cache_dir or os.path.expanduser("~/.cache/enclave"))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        
+
         self.model = None
         self.tokenizer = None
         self.backend = None
         self._loaded_adapter_weights = None
-        
+        self._mlx_dora_engine: Optional['MLXDoRAInference'] = None
+
         # Determine best backend
         if MLX_AVAILABLE:
             self.backend = "mlx"
             logger.info("Using MLX backend (Apple Silicon)")
+
+            # Initialize MLX DoRA engine if available
+            if MLX_DORA_AVAILABLE:
+                try:
+                    self._mlx_dora_engine = MLXDoRAInference(cache_dir=str(self.cache_dir))
+                    logger.info("MLX DoRA engine initialized")
+                except Exception as e:
+                    logger.warning(f"Failed to initialize MLX DoRA engine: {e}")
+
         elif TORCH_AVAILABLE:
             self.backend = "torch"
             logger.info("Using PyTorch backend")
@@ -287,29 +312,59 @@ class LocalInferenceEngine:
     
     def apply_adapter_weights(self, adapter_weights: Dict[str, Any]) -> bool:
         """
-        Apply adapter weights to the loaded model (PyTorch only for now).
-        
+        Apply adapter weights to the loaded model.
+
+        Supports both MLX (Apple Silicon) and PyTorch backends.
+
         Args:
-            adapter_weights: Decrypted adapter weights
-            
+            adapter_weights: Decrypted adapter weights dictionary
+
         Returns:
             True if weights applied successfully
         """
         if self.model is None:
             raise RuntimeError("Model not loaded. Call load_model() first.")
-        
+
         if self.backend == "mlx":
-            # MLX adapter application is more complex - for now, just store weights
-            # Full MLX DoRA support would require custom implementation
-            logger.warning("MLX adapter application not yet implemented - using base model")
-            self._loaded_adapter_weights = adapter_weights
-            return True
-        
+            return self._apply_dora_weights_mlx(adapter_weights)
+
         elif self.backend == "torch":
-            # Apply DoRA weights to PyTorch model
             return self._apply_dora_weights_torch(adapter_weights)
-        
+
         return False
+
+    def _apply_dora_weights_mlx(self, adapter_weights: Dict[str, Any]) -> bool:
+        """Apply DoRA weights to MLX model using MLXDoRAInference."""
+        if self._mlx_dora_engine is None:
+            logger.warning("MLX DoRA engine not available - storing weights for later")
+            self._loaded_adapter_weights = adapter_weights
+            return False
+
+        try:
+            # Group weights into DoRAWeights objects
+            dora_weights = self._mlx_dora_engine._group_weights_by_layer(adapter_weights)
+
+            # Share model/tokenizer with DoRA engine if not already set
+            if self._mlx_dora_engine.model is None:
+                self._mlx_dora_engine.model = self.model
+                self._mlx_dora_engine.tokenizer = self.tokenizer
+
+            # Apply adapter
+            modified = self._mlx_dora_engine.apply_adapter(dora_weights)
+            self._loaded_adapter_weights = adapter_weights
+
+            return modified > 0
+
+        except Exception as e:
+            logger.error(f"Failed to apply MLX DoRA weights: {e}")
+            self._loaded_adapter_weights = adapter_weights
+            return False
+
+    def restore_mlx_base_model(self):
+        """Restore MLX model to base weights (remove adapter)."""
+        if self._mlx_dora_engine is not None:
+            self._mlx_dora_engine.restore_base_model()
+        self._loaded_adapter_weights = None
     
     def _apply_dora_weights_torch(self, dora_weights: Dict[str, Any]) -> bool:
         """Apply DoRA weights to PyTorch model."""
@@ -641,16 +696,25 @@ Be concise, friendly, and helpful."""
     
     def unload(self):
         """Unload model and free memory."""
+        # Restore base model first if adapter was applied
+        if self._mlx_dora_engine is not None:
+            self._mlx_dora_engine.restore_base_model()
+            self._mlx_dora_engine = None
+
         self.model = None
         self.tokenizer = None
         self._loaded_adapter_weights = None
-        
+
         if self.backend == "torch" and TORCH_AVAILABLE:
             import torch
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        
+
         logger.info("Model unloaded")
+
+    def has_mlx_dora_support(self) -> bool:
+        """Check if MLX DoRA adapter support is available."""
+        return self._mlx_dora_engine is not None
 
 
 # Singleton instance for GUI
@@ -662,4 +726,45 @@ def get_local_engine() -> LocalInferenceEngine:
     if _local_engine is None:
         _local_engine = LocalInferenceEngine()
     return _local_engine
+
+
+# Multi-adapter support
+_multi_adapter_engine = None
+
+def get_multi_adapter_engine(max_cached: int = 3):
+    """
+    Get or create the multi-adapter engine singleton.
+
+    The multi-adapter engine supports:
+    - Loading multiple adapters simultaneously
+    - Weighted merging of adapters
+    - Quick-switch profiles
+    - LRU caching for memory efficiency
+    - Usage audit logging
+
+    Args:
+        max_cached: Maximum adapters to keep in memory
+
+    Returns:
+        MultiAdapterEngine instance
+    """
+    global _multi_adapter_engine
+    if _multi_adapter_engine is None:
+        try:
+            from .multi_adapter_engine import MultiAdapterEngine
+            _multi_adapter_engine = MultiAdapterEngine(max_cached_adapters=max_cached)
+            logger.info("Multi-adapter engine initialized")
+        except ImportError as e:
+            logger.warning(f"Multi-adapter engine not available: {e}")
+            return None
+    return _multi_adapter_engine
+
+
+def is_multi_adapter_available() -> bool:
+    """Check if multi-adapter support is available."""
+    try:
+        from .multi_adapter_engine import MultiAdapterEngine
+        return MLX_DORA_AVAILABLE
+    except ImportError:
+        return False
 
