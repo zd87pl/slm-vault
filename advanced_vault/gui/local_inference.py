@@ -727,3 +727,44 @@ def get_local_engine() -> LocalInferenceEngine:
         _local_engine = LocalInferenceEngine()
     return _local_engine
 
+
+# Multi-adapter support
+_multi_adapter_engine = None
+
+def get_multi_adapter_engine(max_cached: int = 3):
+    """
+    Get or create the multi-adapter engine singleton.
+
+    The multi-adapter engine supports:
+    - Loading multiple adapters simultaneously
+    - Weighted merging of adapters
+    - Quick-switch profiles
+    - LRU caching for memory efficiency
+    - Usage audit logging
+
+    Args:
+        max_cached: Maximum adapters to keep in memory
+
+    Returns:
+        MultiAdapterEngine instance
+    """
+    global _multi_adapter_engine
+    if _multi_adapter_engine is None:
+        try:
+            from .multi_adapter_engine import MultiAdapterEngine
+            _multi_adapter_engine = MultiAdapterEngine(max_cached_adapters=max_cached)
+            logger.info("Multi-adapter engine initialized")
+        except ImportError as e:
+            logger.warning(f"Multi-adapter engine not available: {e}")
+            return None
+    return _multi_adapter_engine
+
+
+def is_multi_adapter_available() -> bool:
+    """Check if multi-adapter support is available."""
+    try:
+        from .multi_adapter_engine import MultiAdapterEngine
+        return MLX_DORA_AVAILABLE
+    except ImportError:
+        return False
+
