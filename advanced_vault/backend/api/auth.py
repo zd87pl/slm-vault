@@ -1,15 +1,21 @@
 """Authentication API endpoints."""
 
 from typing import Optional
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+
 from middleware.auth import get_current_user
-from utils.supabase_client import get_supabase
+from utils.supabase_client import get_supabase, get_supabase_service
 import logging
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Rate limiter for auth endpoints (stricter than global)
+limiter = Limiter(key_func=get_remote_address)
 
 
 class LoginRequest(BaseModel):
@@ -26,11 +32,13 @@ class SignupRequest(BaseModel):
 
 
 @router.post("/signup")
-async def signup(data: SignupRequest):
+@limiter.limit("5/minute")
+async def signup(request: Request, data: SignupRequest):
     """
     Sign up new user.
 
     Creates user in Supabase Auth and profile in database.
+    Rate limited to 5 requests per minute per IP.
     """
     try:
         supabase = get_supabase()
@@ -61,17 +69,22 @@ async def signup(data: SignupRequest):
         else:
             raise HTTPException(status_code=400, detail="Signup failed")
 
+    except HTTPException:
+        raise
     except Exception as e:
+        # Log full error internally but return generic message to client
         logger.error(f"Signup failed: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
+        raise HTTPException(status_code=400, detail="Signup failed. Please try again.")
 
 
 @router.post("/login")
-async def login(data: LoginRequest):
+@limiter.limit("10/minute")
+async def login(request: Request, data: LoginRequest):
     """
     Log in user with email/password.
 
     Returns JWT tokens for authentication.
+    Rate limited to 10 requests per minute per IP to prevent brute force.
     """
     try:
         supabase = get_supabase()
@@ -98,7 +111,10 @@ async def login(data: LoginRequest):
         else:
             raise HTTPException(status_code=401, detail="Invalid credentials")
 
+    except HTTPException:
+        raise
     except Exception as e:
+        # Log full error internally but return generic message to prevent enumeration
         logger.error(f"Login failed: {e}")
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
@@ -113,8 +129,9 @@ async def logout(user: dict = Depends(get_current_user)):
         return {"success": True, "message": "Logged out successfully"}
 
     except Exception as e:
+        # Log full error internally but return generic message
         logger.error(f"Logout failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Logout failed")
 
 
 class RefreshTokenRequest(BaseModel):
@@ -123,7 +140,8 @@ class RefreshTokenRequest(BaseModel):
 
 
 @router.post("/refresh")
-async def refresh_token(data: RefreshTokenRequest):
+@limiter.limit("30/minute")
+async def refresh_token(request: Request, data: RefreshTokenRequest):
     """Refresh access token using refresh token."""
     try:
         supabase = get_supabase()
@@ -142,6 +160,8 @@ async def refresh_token(data: RefreshTokenRequest):
         else:
             raise HTTPException(status_code=401, detail="Invalid refresh token")
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Token refresh failed: {e}")
         raise HTTPException(status_code=401, detail="Invalid refresh token")
@@ -151,7 +171,6 @@ async def refresh_token(data: RefreshTokenRequest):
 async def get_current_user_info(user: dict = Depends(get_current_user)):
     """Get current user profile."""
     try:
-        from utils.supabase_client import get_supabase_service
         supabase = get_supabase_service()
 
         result = supabase.table("profiles")\
@@ -164,6 +183,9 @@ async def get_current_user_info(user: dict = Depends(get_current_user)):
         else:
             raise HTTPException(status_code=404, detail="Profile not found")
 
+    except HTTPException:
+        raise
     except Exception as e:
+        # Log full error internally but return generic message
         logger.error(f"Failed to get user profile: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Failed to retrieve user profile")
