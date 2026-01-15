@@ -17,8 +17,9 @@ import os
 import io
 import json
 import logging
+import re
 from pathlib import Path
-from typing import Dict, Optional, Any, List, Tuple, Callable
+from typing import Dict, Optional, Any, List, Tuple, Callable, Set
 from base64 import b64decode
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -31,7 +32,6 @@ try:
     import mlx.core as mx
     import mlx.nn as nn
     from mlx_lm import load as mlx_load, generate as mlx_generate
-    from mlx_lm.models.base import BaseModelArgs
     MLX_AVAILABLE = True
 except ImportError:
     logger.debug("MLX not available - MLX DoRA inference disabled")
@@ -55,6 +55,12 @@ class DoRAWeights:
     magnitude: Optional[Any] = None  # mx.array [out_features] - DoRA specific
     scaling: float = 1.0
 
+    def clear(self):
+        """Clear weight references for cleanup."""
+        self.lora_a = None
+        self.lora_b = None
+        self.magnitude = None
+
 
 class MLXDoRALinear(nn.Module):
     """
@@ -68,35 +74,36 @@ class MLXDoRALinear(nn.Module):
 
     def __init__(
         self,
-        original_weight: mx.array,
-        original_bias: Optional[mx.array],
-        lora_a: mx.array,
-        lora_b: mx.array,
-        magnitude: Optional[mx.array] = None,
+        original_weight: 'mx.array',
+        original_bias: Optional['mx.array'],
+        lora_a: 'mx.array',
+        lora_b: 'mx.array',
+        magnitude: Optional['mx.array'] = None,
         scaling: float = 1.0
     ):
         super().__init__()
-        self.original_weight = original_weight  # [out_features, in_features]
-        self.original_bias = original_bias
-        self.lora_a = lora_a  # [r, in_features]
-        self.lora_b = lora_b  # [out_features, r]
-        self.magnitude = magnitude  # [out_features]
-        self.scaling = scaling
+        # Store as regular attributes (MLX modules use __setattr__)
+        self._original_weight = original_weight  # [out_features, in_features]
+        self._original_bias = original_bias
+        self._lora_a = lora_a  # [r, in_features]
+        self._lora_b = lora_b  # [out_features, r]
+        self._magnitude = magnitude  # [out_features]
+        self._scaling = scaling
 
         # Precompute the adapted weight for efficiency
         self._adapted_weight = self._compute_adapted_weight()
 
-    def _compute_adapted_weight(self) -> mx.array:
+    def _compute_adapted_weight(self) -> 'mx.array':
         """Compute W' = m ⊙ ((W₀ + BA) / ||W₀ + BA||_c)"""
         # BA contribution: [out_features, r] @ [r, in_features] = [out_features, in_features]
-        ba = mx.matmul(self.lora_b, self.lora_a) * self.scaling
+        ba = mx.matmul(self._lora_b, self._lora_a) * self._scaling
 
         # Combined weight: W₀ + BA
-        combined = self.original_weight + ba
+        combined = self._original_weight + ba
 
-        if self.magnitude is not None:
+        if self._magnitude is not None:
             # DoRA normalization: normalize rows (output dimension)
-            # ||W||_c means column-wise norm, but weights are [out, in] so we norm along axis=1
+            # For weight matrix [out, in], we normalize along axis=1 (input features)
             row_norms = mx.linalg.norm(combined, axis=1, keepdims=True)
             row_norms = mx.maximum(row_norms, 1e-8)  # Prevent division by zero
 
@@ -104,21 +111,21 @@ class MLXDoRALinear(nn.Module):
             normalized = combined / row_norms
 
             # Apply magnitude: m ⊙ normalized (broadcast magnitude across input dim)
-            adapted = self.magnitude[:, None] * normalized
+            adapted = self._magnitude[:, None] * normalized
         else:
             # Standard LoRA without DoRA magnitude
             adapted = combined
 
         return adapted
 
-    def __call__(self, x: mx.array) -> mx.array:
+    def __call__(self, x: 'mx.array') -> 'mx.array':
         """Forward pass with adapted weights."""
         # x: [..., in_features]
         # output: [..., out_features]
         out = mx.matmul(x, self._adapted_weight.T)
 
-        if self.original_bias is not None:
-            out = out + self.original_bias
+        if self._original_bias is not None:
+            out = out + self._original_bias
 
         return out
 
@@ -172,6 +179,7 @@ class MLXDoRAInference:
         self.model = None
         self.tokenizer = None
         self._original_modules: Dict[str, nn.Module] = {}
+        self._modified_paths: Set[str] = set()  # Track what we've modified
         self._adapter_applied = False
 
     def load_model(
@@ -191,8 +199,11 @@ class MLXDoRAInference:
             logger.info("Model already loaded")
             return True
 
-        # Try models in order until one works
-        models_to_try = [self.model_path] if self.model_path not in self.SUPPORTED_MODELS else self.SUPPORTED_MODELS
+        # Build list of models to try: specified model first, then fallbacks
+        models_to_try = [self.model_path]
+        for model in self.SUPPORTED_MODELS:
+            if model != self.model_path:
+                models_to_try.append(model)
 
         for model_name in models_to_try:
             try:
@@ -290,37 +301,87 @@ class MLXDoRAInference:
 
         return dora_weights
 
-    def _parse_safetensors_to_mlx(self, data: bytes) -> Dict[str, mx.array]:
+    def _parse_safetensors_to_mlx(self, data: bytes) -> Dict[str, 'mx.array']:
         """Parse safetensors binary data to MLX arrays."""
-        from safetensors import safe_open
+        # FIX Bug #2: Use safetensors.numpy.load() for in-memory data, not safe_open
+        try:
+            from safetensors.numpy import load as load_numpy
+            np_weights = load_numpy(data)
 
-        weights = {}
-        with safe_open(io.BytesIO(data), framework="numpy") as f:
-            for key in f.keys():
-                # Convert numpy to MLX array
-                np_tensor = f.get_tensor(key)
+            # Convert numpy arrays to MLX arrays
+            weights = {}
+            for key, np_tensor in np_weights.items():
                 weights[key] = mx.array(np_tensor)
 
-        return weights
+            return weights
+        except ImportError:
+            # Fallback: write to temp file and use safe_open
+            import tempfile
+            from safetensors import safe_open
+
+            with tempfile.NamedTemporaryFile(suffix='.safetensors', delete=False) as f:
+                f.write(data)
+                temp_path = f.name
+
+            try:
+                weights = {}
+                with safe_open(temp_path, framework="numpy") as f:
+                    for key in f.keys():
+                        np_tensor = f.get_tensor(key)
+                        weights[key] = mx.array(np_tensor)
+                return weights
+            finally:
+                os.unlink(temp_path)
 
     def _group_weights_by_layer(
         self,
-        weights: Dict[str, mx.array]
+        weights: Dict[str, 'mx.array']
     ) -> Dict[str, DoRAWeights]:
         """Group flat weight dict into DoRAWeights per layer."""
-        layers: Dict[str, Dict[str, mx.array]] = {}
+        layers: Dict[str, Dict[str, 'mx.array']] = {}
 
         for key, tensor in weights.items():
             if key == '_type':
                 continue
 
-            # Parse key: "model.layers.0.self_attn.q_proj.lora_A" -> layer_name, weight_type
-            parts = key.rsplit('.', 1)
+            # FIX Bug #4: Handle various PEFT naming formats
+            # Possible formats:
+            # - "model.layers.0.self_attn.q_proj.lora_A"
+            # - "base_model.model.layers.0.self_attn.q_proj.lora_A.weight"
+            # - "base_model.model.layers.0.self_attn.q_proj.lora_A.default"
+
+            # Strip common prefixes
+            clean_key = key
+            for prefix in ['base_model.model.', 'base_model.']:
+                if clean_key.startswith(prefix):
+                    clean_key = clean_key[len(prefix):]
+                    break
+
+            # Strip common suffixes
+            for suffix in ['.weight', '.default']:
+                if clean_key.endswith(suffix):
+                    clean_key = clean_key[:-len(suffix)]
+                    break
+
+            # Parse: "model.layers.0.self_attn.q_proj.lora_A" -> layer_name, weight_type
+            parts = clean_key.rsplit('.', 1)
             if len(parts) != 2:
+                logger.debug(f"Skipping unparseable key: {key}")
                 continue
 
             layer_name = parts[0]
             weight_type = parts[1]
+
+            # Normalize weight type names
+            weight_type_map = {
+                'lora_A': 'lora_A',
+                'lora_a': 'lora_A',
+                'lora_B': 'lora_B',
+                'lora_b': 'lora_B',
+                'magnitude': 'magnitude',
+                'lora_magnitude_vector': 'magnitude',
+            }
+            weight_type = weight_type_map.get(weight_type, weight_type)
 
             if layer_name not in layers:
                 layers[layer_name] = {}
@@ -333,13 +394,14 @@ class MLXDoRAInference:
             lora_b = layer_weights.get('lora_B')
 
             if lora_a is None or lora_b is None:
+                logger.debug(f"Skipping incomplete layer: {layer_name}")
                 continue
 
             dora_weights[layer_name] = DoRAWeights(
                 lora_a=lora_a,
                 lora_b=lora_b,
                 magnitude=layer_weights.get('magnitude'),
-                scaling=1.0  # Could be configurable
+                scaling=1.0
             )
 
         return dora_weights
@@ -371,86 +433,157 @@ class MLXDoRAInference:
 
         modified_count = 0
 
-        # Walk the model tree and find matching layers
-        for name, module in self._iter_named_modules(self.model):
-            # Check if this module has adapter weights
-            if name not in dora_weights:
-                continue
+        # FIX Bug #6: Track modifications for safe rollback
+        try:
+            # Walk the model tree and find matching layers
+            for name, module in self._iter_named_modules(self.model):
+                # Check if this module has adapter weights
+                if name not in dora_weights:
+                    continue
 
-            # Check if it's a Linear layer
-            if not isinstance(module, nn.Linear):
-                continue
+                # Check if it's a Linear layer
+                if not isinstance(module, nn.Linear):
+                    continue
 
-            weights = dora_weights[name]
+                weights = dora_weights[name]
 
-            # Store original for restoration
-            self._original_modules[name] = module
+                # Store original for restoration
+                self._original_modules[name] = module
 
-            # Create DoRA-adapted layer
-            dora_layer = MLXDoRALinear(
-                original_weight=module.weight,
-                original_bias=getattr(module, 'bias', None),
-                lora_a=weights.lora_a,
-                lora_b=weights.lora_b,
-                magnitude=weights.magnitude,
-                scaling=weights.scaling
-            )
+                # FIX Bug #5: Get bias correctly from MLX Linear
+                # MLX nn.Linear stores bias as module.bias (can be None)
+                original_bias = getattr(module, 'bias', None)
 
-            # Replace in model
-            self._replace_module(name, dora_layer)
-            modified_count += 1
+                # Create DoRA-adapted layer
+                dora_layer = MLXDoRALinear(
+                    original_weight=module.weight,
+                    original_bias=original_bias,
+                    lora_a=weights.lora_a,
+                    lora_b=weights.lora_b,
+                    magnitude=weights.magnitude,
+                    scaling=weights.scaling
+                )
 
-            logger.debug(f"Applied DoRA to: {name}")
+                # Replace in model
+                self._replace_module(name, dora_layer)
+                self._modified_paths.add(name)
+                modified_count += 1
 
-        self._adapter_applied = True
-        logger.info(f"✓ Applied DoRA adapter to {modified_count} layers")
+                logger.debug(f"Applied DoRA to: {name}")
 
-        if progress_callback:
-            progress_callback(f"Applied to {modified_count} layers")
+            self._adapter_applied = True
+            logger.info(f"✓ Applied DoRA adapter to {modified_count} layers")
 
-        return modified_count
+            if progress_callback:
+                progress_callback(f"Applied to {modified_count} layers")
 
-    def _iter_named_modules(self, module: nn.Module, prefix: str = '') -> List[Tuple[str, nn.Module]]:
-        """Recursively iterate over named modules."""
-        results = [(prefix, module)] if prefix else []
+            return modified_count
 
-        for name, child in module.children().items() if hasattr(module, 'children') else []:
-            full_name = f"{prefix}.{name}" if prefix else name
-            results.append((full_name, child))
-            results.extend(self._iter_named_modules(child, full_name))
+        except Exception as e:
+            # FIX Bug #6: Rollback on failure
+            logger.error(f"Error applying adapter: {e}. Rolling back...")
+            self._rollback_modifications()
+            raise
 
-        # Also check if module has 'layers' attribute (common in transformers)
-        if hasattr(module, 'layers'):
+    def _rollback_modifications(self):
+        """Rollback any partial modifications."""
+        for name in list(self._modified_paths):
+            if name in self._original_modules:
+                try:
+                    self._replace_module(name, self._original_modules[name])
+                except Exception as e:
+                    logger.warning(f"Failed to rollback {name}: {e}")
+        self._modified_paths.clear()
+        self._original_modules.clear()
+        self._adapter_applied = False
+
+    def _iter_named_modules(
+        self,
+        module: nn.Module,
+        prefix: str = ''
+    ) -> List[Tuple[str, nn.Module]]:
+        """
+        Recursively iterate over named modules in MLX model.
+
+        FIX Bug #1: Use correct MLX API instead of PyTorch-style children()
+        """
+        results = []
+
+        if prefix:
+            results.append((prefix, module))
+
+        # MLX modules store children as attributes
+        # We need to check for common model structure patterns
+
+        # Check for 'model' attribute (wrapper models)
+        if hasattr(module, 'model') and isinstance(module.model, nn.Module):
+            child_prefix = f"{prefix}.model" if prefix else "model"
+            results.extend(self._iter_named_modules(module.model, child_prefix))
+
+        # Check for 'layers' list (transformer blocks)
+        if hasattr(module, 'layers') and isinstance(module.layers, list):
             for i, layer in enumerate(module.layers):
-                layer_name = f"{prefix}.layers.{i}" if prefix else f"layers.{i}"
-                results.append((layer_name, layer))
-                results.extend(self._iter_named_modules(layer, layer_name))
+                if isinstance(layer, nn.Module):
+                    layer_prefix = f"{prefix}.layers.{i}" if prefix else f"layers.{i}"
+                    results.append((layer_prefix, layer))
+                    results.extend(self._iter_named_modules(layer, layer_prefix))
 
-        # Check for model attribute
-        if hasattr(module, 'model') and prefix == '':
-            results.extend(self._iter_named_modules(module.model, 'model'))
+        # Check common transformer attributes
+        common_attrs = [
+            'self_attn', 'attention', 'attn',  # Attention modules
+            'mlp', 'feed_forward', 'ffn',       # MLP modules
+            'q_proj', 'k_proj', 'v_proj', 'o_proj',  # Attention projections
+            'gate_proj', 'up_proj', 'down_proj',     # MLP projections
+            'embed_tokens', 'lm_head', 'norm',       # Other common modules
+            'input_layernorm', 'post_attention_layernorm',
+        ]
+
+        for attr_name in common_attrs:
+            if hasattr(module, attr_name):
+                child = getattr(module, attr_name)
+                if isinstance(child, nn.Module):
+                    child_prefix = f"{prefix}.{attr_name}" if prefix else attr_name
+                    results.append((child_prefix, child))
+                    # Recursively search (but not for Linear layers to avoid infinite recursion)
+                    if not isinstance(child, nn.Linear):
+                        results.extend(self._iter_named_modules(child, child_prefix))
 
         return results
 
     def _replace_module(self, full_name: str, new_module: nn.Module):
-        """Replace a module at the given path in the model tree."""
+        """
+        Replace a module at the given path in the model tree.
+
+        FIX Bug #3: Handle list indices correctly
+        """
         parts = full_name.split('.')
         parent = self.model
 
         # Navigate to parent
-        for part in parts[:-1]:
-            if part.isdigit():
+        for i, part in enumerate(parts[:-1]):
+            next_part = parts[i + 1] if i + 1 < len(parts) else None
+
+            if part == 'layers' and next_part and next_part.isdigit():
+                # Skip 'layers' part, handle index in next iteration
+                continue
+            elif part.isdigit():
+                # This is a list index
                 parent = parent.layers[int(part)]
             elif hasattr(parent, part):
                 parent = getattr(parent, part)
             elif hasattr(parent, 'model') and hasattr(parent.model, part):
                 parent = getattr(parent.model, part)
             else:
-                raise AttributeError(f"Cannot find {part} in path {full_name}")
+                raise AttributeError(f"Cannot find '{part}' in path '{full_name}'")
 
         # Set the final attribute
         final_name = parts[-1]
-        setattr(parent, final_name, new_module)
+
+        if final_name.isdigit():
+            # FIX Bug #3: Handle list assignment
+            parent.layers[int(final_name)] = new_module
+        else:
+            setattr(parent, final_name, new_module)
 
     def restore_base_model(self):
         """Restore the original model weights (remove adapter)."""
@@ -464,6 +597,7 @@ class MLXDoRAInference:
                 logger.warning(f"Failed to restore {name}: {e}")
 
         self._original_modules.clear()
+        self._modified_paths.clear()
         self._adapter_applied = False
         logger.info("✓ Restored base model")
 
@@ -490,6 +624,7 @@ class MLXDoRAInference:
         Yields:
             Number of layers modified
         """
+        dora_weights = None
         try:
             # Load and apply adapter
             dora_weights = self.load_encrypted_adapter(
@@ -501,12 +636,11 @@ class MLXDoRAInference:
             # Always restore base model
             self.restore_base_model()
 
-            # Securely clear weights from memory
-            if 'dora_weights' in locals():
+            # FIX Bug #7: Properly clear weights
+            if dora_weights is not None:
                 for weights in dora_weights.values():
-                    weights.lora_a = None
-                    weights.lora_b = None
-                    weights.magnitude = None
+                    weights.clear()
+                dora_weights.clear()
 
     def generate(
         self,
@@ -577,6 +711,7 @@ class MLXDoRAInference:
         self.model = None
         self.tokenizer = None
         self._original_modules.clear()
+        self._modified_paths.clear()
         logger.info("Model unloaded")
 
 

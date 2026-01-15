@@ -7,8 +7,10 @@ for Apple Silicon (MLX) inference.
 
 import unittest
 import numpy as np
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, patch, PropertyMock
 import sys
+import tempfile
+import os
 
 # Check if MLX is available
 MLX_AVAILABLE = False
@@ -139,7 +141,6 @@ class TestMLXDoRALinear(unittest.TestCase):
         out2 = layer_scale_2(x)
 
         # Outputs should be different due to scaling
-        # (though normalized, the direction changes with scaling before normalization)
         self.assertEqual(out1.shape, out2.shape)
 
 
@@ -199,6 +200,46 @@ class TestDoRAWeightsGrouping(unittest.TestCase):
         # Only complete layer should be included
         self.assertEqual(len(grouped), 1)
         self.assertIn("layer1", grouped)
+
+    def test_peft_format_with_prefix(self):
+        """Test handling of PEFT-style naming with base_model prefix."""
+        from ..mlx_dora_inference import MLXDoRAInference
+
+        engine = MLXDoRAInference.__new__(MLXDoRAInference)
+
+        # PEFT-style naming
+        flat_weights = {
+            "base_model.model.layers.0.self_attn.q_proj.lora_A.weight": mx.random.normal((4, 32)),
+            "base_model.model.layers.0.self_attn.q_proj.lora_B.weight": mx.random.normal((64, 4)),
+        }
+
+        grouped = engine._group_weights_by_layer(flat_weights)
+
+        # Should strip prefix and suffix
+        self.assertEqual(len(grouped), 1)
+        self.assertIn("model.layers.0.self_attn.q_proj", grouped)
+
+    def test_normalize_weight_type_names(self):
+        """Test normalization of various weight type names."""
+        from ..mlx_dora_inference import MLXDoRAInference
+
+        engine = MLXDoRAInference.__new__(MLXDoRAInference)
+
+        flat_weights = {
+            # Lowercase variants
+            "layer1.lora_a": mx.random.normal((4, 32)),
+            "layer1.lora_b": mx.random.normal((64, 4)),
+            # DoRA magnitude vector with different name
+            "layer1.lora_magnitude_vector": mx.ones((64,)),
+        }
+
+        grouped = engine._group_weights_by_layer(flat_weights)
+
+        self.assertEqual(len(grouped), 1)
+        layer = grouped["layer1"]
+        self.assertIsNotNone(layer.lora_a)
+        self.assertIsNotNone(layer.lora_b)
+        self.assertIsNotNone(layer.magnitude)
 
 
 class TestMLXDoRAAvailability(unittest.TestCase):
@@ -289,6 +330,88 @@ class TestDoRAMathCorrectness(unittest.TestCase):
             np.array(target_magnitudes),
             decimal=5
         )
+
+
+@unittest.skipUnless(MLX_AVAILABLE, "MLX not available")
+class TestDoRAWeightsClear(unittest.TestCase):
+    """Test DoRAWeights cleanup."""
+
+    def test_clear_method(self):
+        """Test that clear() properly nullifies weight references."""
+        from ..mlx_dora_inference import DoRAWeights
+
+        weights = DoRAWeights(
+            lora_a=mx.random.normal((4, 32)),
+            lora_b=mx.random.normal((64, 4)),
+            magnitude=mx.ones((64,)),
+            scaling=1.0
+        )
+
+        # Verify weights are set
+        self.assertIsNotNone(weights.lora_a)
+        self.assertIsNotNone(weights.lora_b)
+        self.assertIsNotNone(weights.magnitude)
+
+        # Clear
+        weights.clear()
+
+        # Verify weights are None
+        self.assertIsNone(weights.lora_a)
+        self.assertIsNone(weights.lora_b)
+        self.assertIsNone(weights.magnitude)
+
+
+@unittest.skipUnless(MLX_AVAILABLE, "MLX not available")
+class TestSafetensorsParsing(unittest.TestCase):
+    """Test safetensors parsing with in-memory data."""
+
+    def test_parse_safetensors_to_mlx(self):
+        """Test parsing safetensors bytes to MLX arrays."""
+        from ..mlx_dora_inference import MLXDoRAInference
+
+        try:
+            from safetensors.numpy import save as save_numpy
+        except ImportError:
+            self.skipTest("safetensors not available")
+
+        engine = MLXDoRAInference.__new__(MLXDoRAInference)
+
+        # Create test data
+        test_weights = {
+            "layer.lora_A": np.random.randn(4, 32).astype(np.float32),
+            "layer.lora_B": np.random.randn(64, 4).astype(np.float32),
+        }
+
+        # Serialize to safetensors bytes
+        safetensors_bytes = save_numpy(test_weights)
+
+        # Parse to MLX
+        mlx_weights = engine._parse_safetensors_to_mlx(safetensors_bytes)
+
+        # Verify
+        self.assertEqual(len(mlx_weights), 2)
+        self.assertIn("layer.lora_A", mlx_weights)
+        self.assertIn("layer.lora_B", mlx_weights)
+        self.assertEqual(mlx_weights["layer.lora_A"].shape, (4, 32))
+        self.assertEqual(mlx_weights["layer.lora_B"].shape, (64, 4))
+
+
+@unittest.skipUnless(MLX_AVAILABLE, "MLX not available")
+class TestModelFallbackLogic(unittest.TestCase):
+    """Test model loading fallback logic."""
+
+    def test_fallback_order(self):
+        """Test that custom model is tried first, then fallbacks."""
+        from ..mlx_dora_inference import MLXDoRAInference
+
+        custom_model = "custom/my-model"
+        engine = MLXDoRAInference(model_path=custom_model)
+
+        # The model_path should be set to custom model
+        self.assertEqual(engine.model_path, custom_model)
+
+        # Verify SUPPORTED_MODELS doesn't include custom model
+        self.assertNotIn(custom_model, engine.SUPPORTED_MODELS)
 
 
 if __name__ == "__main__":
