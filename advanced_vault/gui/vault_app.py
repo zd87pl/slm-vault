@@ -117,10 +117,7 @@ class VaultApp:
             logger.info(f"Config status: {show_config_status()}")
             # Continue anyway - some features may not work
         
-        self.backend_url = os.getenv(
-            "ENCLAVE_BACKEND_URL",
-            "https://keen-curiosity-production-1288.up.railway.app"
-        )
+        self.backend_url = os.getenv("ENCLAVE_BACKEND_URL", "")
 
         # Authentication state
         self.session_data = None
@@ -1832,7 +1829,7 @@ class VaultApp:
             self.page.update()
     
     def show_landing_page(self):
-        """Show agent-first landing page — dashboard with document management and activity."""
+        """Show the trusted local agent dashboard — your data, your agent, your rules."""
         self.current_view = "landing"
 
         # Initialize chat messages if not exists
@@ -1931,15 +1928,6 @@ class VaultApp:
         else:
             greeting = "Good evening"
         
-        # MCP configured check
-        mcp_configured = False
-        try:
-            if hasattr(self, 'mcp_setup') and self.mcp_setup:
-                mcp_status = self.mcp_setup.get_setup_status()
-                mcp_configured = mcp_status.get("mcp_configured", False)
-        except Exception:
-            pass
-
         # Get connected agents count
         connected_agents = 0
         try:
@@ -1980,23 +1968,25 @@ class VaultApp:
 
         dashboard_row = ft.Row(
             [
-                _stat_card(ft.Icons.DESCRIPTION_ROUNDED, "Documents Indexed", rag_stats.get("document_count", 0), LightTheme.ACCENT_PRIMARY),
-                _stat_card(ft.Icons.KEY_ROUNDED, "Secrets Stored", secrets_count, LightTheme.ACCENT_WARNING),
-                _stat_card(ft.Icons.SMART_TOY_ROUNDED, "Connected Agents", connected_agents, LightTheme.ACCENT_SUCCESS),
-                _stat_card(ft.Icons.DATA_ARRAY_ROUNDED, "RAG Chunks", rag_stats.get("chunk_count", 0), "#8b5cf6"),
+                _stat_card(ft.Icons.DESCRIPTION_ROUNDED, "Agent Knowledge", rag_stats.get("document_count", 0), LightTheme.ACCENT_PRIMARY),
+                _stat_card(ft.Icons.KEY_ROUNDED, "Protected Secrets", secrets_count, LightTheme.ACCENT_WARNING),
+                _stat_card(ft.Icons.SMART_TOY_ROUNDED, "Authorized Agents", connected_agents, LightTheme.ACCENT_SUCCESS),
+                _stat_card(ft.Icons.DATA_ARRAY_ROUNDED, "Searchable Chunks", rag_stats.get("chunk_count", 0), "#8b5cf6"),
             ],
             spacing=16,
         )
 
-        # Privacy strip
+        # Privacy strip — key differentiator vs. cloud agents
         privacy_strip = ft.Container(
             content=ft.Row(
                 [
-                    ft.Row([ft.Icon(ft.Icons.VERIFIED_USER_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("E2E Encrypted", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
+                    ft.Row([ft.Icon(ft.Icons.LOCK_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("ChaCha20 Encrypted", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
                     ft.Text("|", size=11, color=LightTheme.BORDER_COLOR),
-                    ft.Row([ft.Icon(ft.Icons.KEY_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Local Keys", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
+                    ft.Row([ft.Icon(ft.Icons.KEY_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Local Keys Only", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
                     ft.Text("|", size=11, color=LightTheme.BORDER_COLOR),
                     ft.Row([ft.Icon(ft.Icons.SHIELD_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Data Never Leaves Device", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
+                    ft.Text("|", size=11, color=LightTheme.BORDER_COLOR),
+                    ft.Row([ft.Icon(ft.Icons.VISIBILITY_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Full Audit Trail", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
                 ],
                 spacing=12,
                 alignment=ft.MainAxisAlignment.CENTER,
@@ -2012,8 +2002,8 @@ class VaultApp:
                 [
                     ft.Icon(ft.Icons.CLOUD_UPLOAD_ROUNDED, size=48, color=LightTheme.ACCENT_PRIMARY),
                     ft.Container(height=8),
-                    ft.Text("Drop PDFs here or click to upload", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY, text_align=ft.TextAlign.CENTER),
-                    ft.Text("Your local agent will index them for instant querying", size=13, color=LightTheme.TEXT_SECONDARY, text_align=ft.TextAlign.CENTER),
+                    ft.Text("Feed your local agent", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY, text_align=ft.TextAlign.CENTER),
+                    ft.Text("Documents stay on your device. AI agents get answers, not files.", size=13, color=LightTheme.TEXT_SECONDARY, text_align=ft.TextAlign.CENTER),
                     ft.Container(height=12),
                     ft.ElevatedButton(
                         "Choose Files",
@@ -2067,7 +2057,7 @@ class VaultApp:
         if not doc_list_items:
             doc_list_items.append(
                 ft.Container(
-                    content=ft.Text("No documents indexed yet. Upload PDFs above to get started.", size=13, color=LightTheme.TEXT_MUTED, italic=True, text_align=ft.TextAlign.CENTER),
+                    content=ft.Text("No documents indexed yet. Upload PDFs to teach your agent.", size=13, color=LightTheme.TEXT_MUTED, italic=True, text_align=ft.TextAlign.CENTER),
                     padding=16,
                 )
             )
@@ -2121,7 +2111,7 @@ class VaultApp:
         else:
             activity_items.append(
                 ft.Container(
-                    content=ft.Text("No agent activity yet. Connect Claude Desktop to get started.", size=12, color=LightTheme.TEXT_MUTED, italic=True),
+                    content=ft.Text("No agent activity yet. Connect an AI agent via MCP to see access logs here.", size=12, color=LightTheme.TEXT_MUTED, italic=True),
                     padding=ft.padding.symmetric(horizontal=12, vertical=8),
                 )
             )
@@ -2149,7 +2139,7 @@ class VaultApp:
         action_buttons = ft.Row(
             [
                 ft.ElevatedButton(
-                    "Test Agent",
+                    "Talk to Agent",
                     icon=ft.Icons.CHAT_ROUNDED,
                     on_click=lambda e: self._open_test_agent_chat(),
                     style=ft.ButtonStyle(
@@ -2157,22 +2147,23 @@ class VaultApp:
                         color="white",
                         shape=ft.RoundedRectangleBorder(radius=8),
                     ),
+                    tooltip="Query your local agent directly",
                     height=44,
                 ),
                 ft.ElevatedButton(
-                    "Configure" if not mcp_configured else "Connected",
-                    icon=ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED if not mcp_configured else ft.Icons.CHECK_CIRCLE_ROUNDED,
+                    "Connect Agent" if not mcp_configured else "Claude Connected",
+                    icon=ft.Icons.CABLE_ROUNDED if not mcp_configured else ft.Icons.CHECK_CIRCLE_ROUNDED,
                     on_click=lambda e: self._configure_claude_mcp() if not mcp_configured else None,
                     style=ft.ButtonStyle(
                         bgcolor=LightTheme.ACCENT_SUCCESS if mcp_configured else LightTheme.BG_ELEVATED,
                         color="white" if mcp_configured else LightTheme.TEXT_PRIMARY,
                         shape=ft.RoundedRectangleBorder(radius=8),
                     ),
-                    tooltip="Configure Claude Desktop MCP" if not mcp_configured else "Claude Desktop is connected",
+                    tooltip="Let Claude Desktop query your local agent via MCP" if not mcp_configured else "Claude Desktop connected via MCP",
                     height=44,
                 ),
                 ft.ElevatedButton(
-                    "Permissions",
+                    "Access Control",
                     icon=ft.Icons.SHIELD_ROUNDED,
                     on_click=lambda e: self.on_nav_change(8),
                     style=ft.ButtonStyle(
@@ -2180,6 +2171,7 @@ class VaultApp:
                         color=LightTheme.TEXT_PRIMARY,
                         shape=ft.RoundedRectangleBorder(radius=8),
                     ),
+                    tooltip="Control which agents can access which documents",
                     height=44,
                 ),
             ],
@@ -2197,7 +2189,7 @@ class VaultApp:
                         content=ft.Row(
                             [
                                 ft.Text("Enclave", size=22, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-                                ft.Text(" — Your Local AI Agent", size=14, color=LightTheme.TEXT_SECONDARY),
+                                ft.Text(" — Your data. Your agent. Your rules.", size=14, color=LightTheme.TEXT_SECONDARY, italic=True),
                                 ft.Container(expand=True),
                                 ft.IconButton(ft.Icons.REFRESH_ROUNDED, icon_color=LightTheme.TEXT_MUTED, icon_size=20, tooltip="Refresh", on_click=lambda e: self.show_landing_page()),
                                 ft.IconButton(ft.Icons.SETTINGS_ROUNDED, icon_color=LightTheme.TEXT_MUTED, icon_size=20, tooltip="Settings", on_click=lambda e: self.on_nav_change(5)),
@@ -3820,7 +3812,7 @@ class VaultApp:
                             time_str = "Yesterday"
                         else:
                             time_str = dt.strftime('%b %d')
-                    except:
+                    except (ValueError, TypeError):
                         time_str = timestamp[:10] if len(timestamp) > 10 else timestamp
                     
                     tool_name = activity.get('tool_name', 'unknown')
@@ -5837,7 +5829,7 @@ class VaultApp:
                     from datetime import datetime
                     dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
                     time_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-                except:
+                except (ValueError, TypeError):
                     time_str = timestamp
                 
                 tool_name = activity.get('tool_name', 'unknown')

@@ -115,6 +115,10 @@ class AgentPermission:
         """Convert to dictionary for JSON serialization."""
         d = asdict(self)
         d["scope"] = self.scope.value
+        # Convert sets to lists for JSON serialization
+        for key in ("allowed_tools", "denied_tools", "allowed_documents", "allowed_folders"):
+            if isinstance(d.get(key), set):
+                d[key] = sorted(d[key])
         return d
 
     @classmethod
@@ -123,6 +127,10 @@ class AgentPermission:
         data = data.copy()
         if "scope" in data:
             data["scope"] = AccessScope(data["scope"])
+        # Convert lists back to sets for set-typed fields
+        for key in ("allowed_tools", "denied_tools", "allowed_documents", "allowed_folders"):
+            if isinstance(data.get(key), list):
+                data[key] = set(data[key])
         return cls(**data)
 
 
@@ -243,20 +251,26 @@ class ConsentManager:
         """
         system = platform.system()
         
-        title = f"{app_name} wants to access your vault"
-        message = f"Tool: {tool_name}"
+        # Sanitize inputs to prevent injection in system dialogs
+        safe_app_name = app_name.replace('"', '').replace("'", "").replace("\\", "")[:60]
+        safe_tool = tool_name.replace('"', '').replace("'", "").replace("\\", "")[:40]
+
+        title = f"{safe_app_name} wants to access your vault"
+        message = f"Tool: {safe_tool}"
         if query_preview:
-            # Truncate preview
-            preview = query_preview[:50] + "..." if len(query_preview) > 50 else query_preview
+            preview = query_preview[:50].replace('"', "'").replace("\\", "") + ("..." if len(query_preview) > 50 else "")
             message += f"\nQuery: {preview}"
-        
+
         try:
             if system == "Darwin":  # macOS
                 import subprocess
-                
+
                 # Use AppleScript with osascript for interactive dialog
+                # Escape double quotes for AppleScript string context
+                safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')
+                safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
                 script = f'''
-                display dialog "{message}" buttons {{"Allow Once", "Always Allow", "Deny"}} default button 1 with title "{title}" with icon caution
+                display dialog "{safe_msg}" buttons {{"Allow Once", "Always Allow", "Deny"}} default button 1 with title "{safe_title}" with icon caution
                 set button to button returned of result
                 '''
                 

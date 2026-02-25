@@ -1,8 +1,12 @@
 """
 Activity Logger for MCP Server Access
 
-Logs all vault access attempts from MCP clients for visibility in GUI.
-Provides search, filtering, and export capabilities for compliance.
+Logs all vault access attempts from MCP clients for visibility in the GUI.
+Provides search, filtering, and export capabilities for audit and compliance.
+
+Each access event is persisted as a single JSON line in ``activity.jsonl``
+inside the vault directory, enabling simple append-only writes and easy
+streaming reads.
 """
 
 import csv
@@ -14,6 +18,31 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+#: Suffix appended to display names for requests arriving via MCP.
+_MCP_DISPLAY_SUFFIX = "via Enclave MCP"
+
+#: Default upper bound when bulk-reading activity entries (e.g. for export).
+_BULK_READ_LIMIT = 500
+
+#: Name of the JSONL activity log file stored inside the vault directory.
+_ACTIVITY_LOG_FILENAME = "activity.jsonl"
+
+#: Human-readable names for known MCP client identifiers.
+_APP_DISPLAY_NAMES: Dict[str, str] = {
+    "claude-desktop": f"Claude {_MCP_DISPLAY_SUFFIX}",
+    "claude": f"Claude {_MCP_DISPLAY_SUFFIX}",
+    "cursor": f"Cursor {_MCP_DISPLAY_SUFFIX}",
+    "vscode": f"VS Code {_MCP_DISPLAY_SUFFIX}",
+    "unknown": f"Unknown {_MCP_DISPLAY_SUFFIX}",
+}
+
+#: Fallback display name when no better match is found.
+_DEFAULT_APP_DISPLAY_NAME = f"Claude {_MCP_DISPLAY_SUFFIX}"
 
 
 class ActivityLogger:
@@ -30,7 +59,7 @@ class ActivityLogger:
         self.vault_path.mkdir(parents=True, exist_ok=True)
         
         # Activity log file
-        self.activity_log_path = self.vault_path / "activity.jsonl"
+        self.activity_log_path = self.vault_path / _ACTIVITY_LOG_FILENAME
         
         logger.info(f"Initialized ActivityLogger at {self.vault_path}")
     
@@ -42,7 +71,7 @@ class ActivityLogger:
         granted: bool = True,
         result_summary: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None
-    ):
+    ) -> None:
         """
         Log vault access attempt.
         
@@ -74,7 +103,7 @@ class ActivityLogger:
                 f.write(json.dumps(log_entry) + '\n')
             
             logger.debug(f"Logged activity: {tool_name} from {app_identifier}")
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Failed to log activity: {e}")
     
     def _format_app_name(self, app_identifier: str) -> str:
@@ -87,34 +116,25 @@ class ActivityLogger:
         Returns:
             Friendly app name (e.g., "Claude via Enclave MCP", "Cursor", etc.)
         """
-        # MCP-specific mappings for better display names
-        app_mappings = {
-            "claude-desktop": "Claude via Enclave MCP",
-            "claude": "Claude via Enclave MCP",
-            "cursor": "Cursor via Enclave MCP",
-            "vscode": "VS Code via Enclave MCP",
-            "unknown": "Unknown via Enclave MCP",
-        }
-        
         # Check for exact match first
-        if app_identifier.lower() in app_mappings:
-            return app_mappings[app_identifier.lower()]
-        
+        if app_identifier.lower() in _APP_DISPLAY_NAMES:
+            return _APP_DISPLAY_NAMES[app_identifier.lower()]
+
         # Check for partial matches (e.g., "claude" in "claude-desktop")
         app_lower = app_identifier.lower()
-        for key, value in app_mappings.items():
+        for key, value in _APP_DISPLAY_NAMES.items():
             if key in app_lower or app_lower in key:
                 return value
-        
-        # Default: format as title case and add "via Enclave MCP" if it's an MCP request
+
+        # Default: format as title case and add MCP suffix if it's an MCP request
         # (Since this logger is only used by MCP server, all requests are via MCP)
         formatted = app_identifier.replace("-", " ").replace("_", " ").title()
         if formatted.lower() not in ["unknown", "none", ""]:
-            return f"{formatted} via Enclave MCP"
+            return f"{formatted} {_MCP_DISPLAY_SUFFIX}"
         else:
-            return "Claude via Enclave MCP"  # Default fallback for unknown MCP requests
+            return _DEFAULT_APP_DISPLAY_NAME
     
-    def get_recent_activity(self, limit: int = 50) -> list:
+    def get_recent_activity(self, limit: int = 50) -> List[Dict[str, Any]]:
         """
         Get recent activity entries.
         
@@ -143,7 +163,7 @@ class ActivityLogger:
             entries.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
             
             return entries[:limit]
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Failed to read activity log: {e}")
             return []
     
@@ -168,7 +188,7 @@ class ActivityLogger:
         Returns:
             Filtered list of activity entries (most recent first)
         """
-        activities = self.get_recent_activity(limit=500)
+        activities = self.get_recent_activity(limit=_BULK_READ_LIMIT)
         filtered = []
 
         cutoff = None
@@ -203,7 +223,7 @@ class ActivityLogger:
             CSV string
         """
         if activities is None:
-            activities = self.get_recent_activity(limit=500)
+            activities = self.get_recent_activity(limit=_BULK_READ_LIMIT)
 
         output = io.StringIO()
         fieldnames = [
@@ -227,15 +247,15 @@ class ActivityLogger:
             JSON string
         """
         if activities is None:
-            activities = self.get_recent_activity(limit=500)
+            activities = self.get_recent_activity(limit=_BULK_READ_LIMIT)
         return json.dumps(activities, indent=2)
 
-    def clear_activity(self):
+    def clear_activity(self) -> None:
         """Clear activity log."""
         try:
             if self.activity_log_path.exists():
                 self.activity_log_path.unlink()
             logger.info("Cleared activity log")
-        except Exception as e:
+        except OSError as e:
             logger.error(f"Failed to clear activity log: {e}")
 

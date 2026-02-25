@@ -48,11 +48,17 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 async function handleMessage(message, sender, sendResponse) {
   try {
     switch (message.type) {
-      case 'consent_decision':
-        // Handle consent decision from popup
+      case 'consent_decision': {
+        // Handle consent decision from popup — validate decision value
+        const validDecisions = ['allow_once', 'allow_always', 'deny', 'deny_always'];
+        if (!validDecisions.includes(message.decision)) {
+          sendResponse({ success: false, error: 'Invalid consent decision' });
+          break;
+        }
         consentManager.handleConsentDecision(message.requestId, message.decision);
         sendResponse({ success: true });
         break;
+      }
 
       case 'mcp_consent_request':
         // Handle consent request from MCP server (via native messaging or external message)

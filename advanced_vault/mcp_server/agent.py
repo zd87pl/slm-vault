@@ -1,11 +1,18 @@
 """
-Local Agent for Enclave.
+Local Agent for Enclave -- the primary interface for MCP-based interactions.
 
-Provides the core agent functionality:
-- RAG-based document retrieval
-- Local LLM inference with MLX
-- Synthesized responses (no raw document exposure)
-- Context-aware generation
+External AI assistants (e.g., Claude via MCP) issue high-level commands such as
+``query``, ``summarize``, and ``draft``.  The LocalAgent fulfils those commands
+by reading documents from the local RAG index, running inference on a local LLM
+(Apple Silicon MLX or PyTorch), and returning **synthesised** answers.  Raw
+document content is never exposed to the external caller, preserving the
+privacy boundary that MCP enforces.
+
+Core capabilities:
+- RAG-based document retrieval with configurable similarity thresholds
+- Local LLM inference (MLX on Apple Silicon, PyTorch elsewhere)
+- Synthesised responses -- external AIs never see raw document text
+- Document lifecycle management (add / delete / list)
 """
 
 import logging
@@ -13,6 +20,25 @@ from pathlib import Path
 from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Tuneable constants -- extracted so they are easy to find and override.
+# ---------------------------------------------------------------------------
+
+# Minimum cosine-similarity score for a RAG chunk to be considered relevant.
+RAG_QUERY_THRESHOLD: float = 0.3
+RAG_SUMMARY_THRESHOLD: float = 0.25
+RAG_DRAFT_THRESHOLD: float = 0.25
+
+# Maximum characters of raw document content passed to the summariser.
+SUMMARISE_CONTENT_CHAR_LIMIT: int = 8000
+
+# Fallback context truncation limits (characters) when the LLM is unavailable.
+FALLBACK_CONTEXT_SHORT: int = 1000
+FALLBACK_CONTEXT_LONG: int = 2000
+
+# Maximum number of documents returned by ``get_status``.
+STATUS_MAX_DOCUMENTS: int = 20
 
 
 class LocalAgent:
@@ -46,7 +72,7 @@ class LocalAgent:
 
         logger.info(f"Initialized LocalAgent at {self.vault_path}")
 
-    def _get_rag_index(self):
+    def _get_rag_index(self) -> Optional["RAGIndex"]:  # noqa: F821
         """Get or create RAG index."""
         if self._rag_index is None:
             try:
@@ -60,7 +86,7 @@ class LocalAgent:
                 return None
         return self._rag_index
 
-    def _get_inference_engine(self):
+    def _get_inference_engine(self) -> Optional["LocalInferenceEngine"]:  # noqa: F821
         """Get or create inference engine."""
         if self._inference_engine is None:
             try:
@@ -87,7 +113,7 @@ class LocalAgent:
             success = engine.load_model()
             self._model_loaded = success
             return success
-        except Exception as e:
+        except (RuntimeError, OSError) as e:
             logger.error(f"Failed to load model: {e}")
             return False
 
@@ -133,7 +159,7 @@ class LocalAgent:
                     rag_results = rag_index.search(
                         query=question,
                         top_k=5,
-                        threshold=0.3
+                        threshold=RAG_QUERY_THRESHOLD
                     )
 
                     if rag_results:
@@ -148,7 +174,7 @@ class LocalAgent:
                         context = "\n\n".join(context_parts)
                         result["rag_used"] = True
                         logger.info(f"Found {len(rag_results)} relevant chunks")
-                except Exception as e:
+                except (ValueError, RuntimeError, OSError) as e:
                     logger.error(f"RAG search failed: {e}")
 
         # Ensure model is loaded
@@ -157,7 +183,7 @@ class LocalAgent:
             if context:
                 result["answer"] = (
                     "Based on the indexed documents, here is relevant information:\n\n"
-                    f"{context[:2000]}..."
+                    f"{context[:FALLBACK_CONTEXT_LONG]}..."
                 )
                 result["model_used"] = "context-only (model not available)"
             else:
@@ -212,11 +238,11 @@ or suggest they index documents for context-aware answers."""
 
             result["answer"] = response.strip()
 
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             logger.error(f"Generation failed: {e}")
             result["error"] = str(e)
             if context:
-                result["answer"] = f"Generation failed, but found relevant context:\n{context[:1000]}"
+                result["answer"] = f"Generation failed, but found relevant context:\n{context[:FALLBACK_CONTEXT_SHORT]}"
 
         return result
 
@@ -260,7 +286,7 @@ or suggest they index documents for context-aware answers."""
                 # Summarize specific document
                 full_doc = rag_index.get_document(matching_doc["id"])
                 if full_doc:
-                    content = full_doc.content[:8000]  # Limit content
+                    content = full_doc.content[:SUMMARISE_CONTENT_CHAR_LIMIT]
                     result["sources"].append({
                         "document": matching_doc["name"],
                         "type": "full_document"
@@ -270,7 +296,7 @@ or suggest they index documents for context-aware answers."""
                 rag_results = rag_index.search(
                     query=topic_or_document,
                     top_k=10,
-                    threshold=0.25
+                    threshold=RAG_SUMMARY_THRESHOLD
                 )
                 content = "\n\n".join([r.chunk.content for r in rag_results])
                 for r in rag_results:
@@ -304,7 +330,7 @@ Summary:"""
                 temperature=0.3
             ).strip()
 
-        except Exception as e:
+        except (ValueError, RuntimeError, OSError) as e:
             logger.error(f"Summarization failed: {e}")
             result["error"] = str(e)
 
@@ -341,7 +367,7 @@ Summary:"""
                 rag_results = rag_index.search(
                     query=description,
                     top_k=5,
-                    threshold=0.25
+                    threshold=RAG_DRAFT_THRESHOLD
                 )
                 if rag_results:
                     context = "\n\n".join([r.chunk.content for r in rag_results])
@@ -350,7 +376,7 @@ Summary:"""
                             "document": r.document_name,
                             "score": round(r.score, 3)
                         })
-            except Exception as e:
+            except (ValueError, RuntimeError, OSError) as e:
                 logger.warning(f"RAG search for draft failed: {e}")
 
         # Generate draft
@@ -393,7 +419,7 @@ Draft:"""
                 max_tokens=max_length // 3,
                 temperature=0.7
             ).strip()
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             logger.error(f"Draft generation failed: {e}")
             result["error"] = str(e)
 
@@ -437,9 +463,9 @@ Draft:"""
                 docs = rag_index.list_documents()
                 status["documents"] = [
                     {"name": d["name"], "chunks": d["chunk_count"]}
-                    for d in docs[:20]  # Limit to 20
+                    for d in docs[:STATUS_MAX_DOCUMENTS]
                 ]
-            except Exception as e:
+            except (ValueError, RuntimeError, OSError) as e:
                 logger.warning(f"Failed to get RAG stats: {e}")
 
         status["ready"] = status["rag_available"] or status["model_loaded"]
@@ -481,7 +507,7 @@ Draft:"""
                 "chunks": len(doc.chunks),
                 "success": True
             }
-        except Exception as e:
+        except (ValueError, RuntimeError, OSError) as e:
             logger.error(f"Failed to add document: {e}")
             return {"error": str(e)}
 

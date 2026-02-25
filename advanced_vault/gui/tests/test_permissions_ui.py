@@ -156,5 +156,87 @@ class TestConsentManagerPermissions(unittest.TestCase):
         self.assertEqual(retrieved.scope, AccessScope.SECRETS)
 
 
+class TestAgentPermissionSerialization(unittest.TestCase):
+    """Test that AgentPermission serializes correctly for JSON storage."""
+
+    def test_set_fields_serialize_to_lists(self):
+        """Sets in AgentPermission serialize to sorted lists for JSON."""
+        from advanced_vault.mcp_server.consent import AgentPermission
+
+        perm = AgentPermission(
+            agent_id="test",
+            auto_approve=True,
+            allowed_tools={"agent_query", "agent_summarize"},
+            denied_tools={"vault_delete"},
+            allowed_documents={"report.pdf", "notes.txt"},
+        )
+
+        d = perm.to_dict()
+        # Sets must become lists for JSON serialization
+        self.assertIsInstance(d["allowed_tools"], list)
+        self.assertIsInstance(d["denied_tools"], list)
+        self.assertIsInstance(d["allowed_documents"], list)
+        # Must be sorted for deterministic output
+        self.assertEqual(d["allowed_tools"], ["agent_query", "agent_summarize"])
+
+    def test_roundtrip_serialization(self):
+        """AgentPermission survives to_dict -> from_dict roundtrip."""
+        from advanced_vault.mcp_server.consent import AgentPermission, AccessScope
+
+        perm = AgentPermission(
+            agent_id="claude",
+            auto_approve=True,
+            scope=AccessScope.DOCUMENTS,
+            allowed_tools={"agent_query"},
+            denied_tools={"vault_store"},
+            allowed_documents={"report.pdf"},
+        )
+
+        d = perm.to_dict()
+        # Simulate JSON roundtrip
+        import json
+        json_str = json.dumps(d)
+        d2 = json.loads(json_str)
+        restored = AgentPermission.from_dict(d2)
+
+        self.assertEqual(restored.agent_id, "claude")
+        self.assertEqual(restored.scope, AccessScope.DOCUMENTS)
+        self.assertIn("agent_query", restored.allowed_tools)
+        self.assertIn("vault_store", restored.denied_tools)
+        self.assertTrue(restored.can_access_tool("agent_query"))
+        self.assertFalse(restored.can_access_tool("vault_store"))
+
+    def test_persistence_with_set_fields(self):
+        """Permissions with set fields persist and restore correctly."""
+        from advanced_vault.mcp_server.consent import (
+            ConsentManager, AgentPermission
+        )
+
+        cm = ConsentManager(vault_path=self.tmpdir)
+        cm.set_agent_permission(AgentPermission(
+            agent_id="cursor",
+            auto_approve=False,
+            denied_tools={"vault_store", "vault_delete"},
+            allowed_documents={"public.pdf"},
+        ))
+
+        # Reload from disk
+        cm2 = ConsentManager(vault_path=self.tmpdir)
+        retrieved = cm2.get_agent_permission("cursor")
+        self.assertIsNotNone(retrieved)
+        self.assertFalse(retrieved.can_access_tool("vault_store"))
+        self.assertFalse(retrieved.can_access_tool("vault_delete"))
+        self.assertTrue(retrieved.can_access_tool("agent_query"))
+        self.assertTrue(retrieved.can_access_document("public.pdf"))
+        self.assertFalse(retrieved.can_access_document("secret.pdf"))
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+
 if __name__ == "__main__":
     unittest.main()

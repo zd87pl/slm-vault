@@ -54,13 +54,16 @@ async function loadSecrets() {
     }
 
     emptyStateEl.style.display = 'none';
-    secretsListEl.innerHTML = secrets.map(secret => `
-      <div class="secret-item" data-id="${secret.id}">
+    secretsListEl.innerHTML = secrets.map(secret => {
+      const safeId = escapeHtml(secret.id);
+      const safeIdJs = escapeHtml(secret.id.replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+      return `
+      <div class="secret-item" data-id="${safeId}">
         <div class="secret-header">
           <span class="secret-service">${escapeHtml(secret.service)}</span>
           <div class="secret-actions">
-            <button class="secret-action-btn" onclick="copySecret('${secret.id}')" title="Copy">📋</button>
-            <button class="secret-action-btn" onclick="deleteSecret('${secret.id}')" title="Delete">🗑</button>
+            <button class="secret-action-btn" onclick="copySecret('${safeIdJs}')" title="Copy">📋</button>
+            <button class="secret-action-btn" onclick="deleteSecret('${safeIdJs}')" title="Delete">🗑</button>
           </div>
         </div>
         <div class="secret-meta">
@@ -72,7 +75,7 @@ async function loadSecrets() {
           <span>${formatDate(secret.created_at)}</span>
         </div>
       </div>
-    `).join('');
+    `}).join('');
   } catch (error) {
     console.error('Failed to load secrets:', error);
     loadingEl.textContent = 'Error loading secrets';
