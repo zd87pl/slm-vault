@@ -75,9 +75,14 @@ class VaultMCPServer:
         logger.info(f"Initialized Enclave MCP Server at {self.vault_path}")
 
     def _get_agent(self) -> LocalAgent:
-        """Get or create local agent."""
+        """Get or create local agent with master key."""
         if self._agent is None:
-            self._agent = get_agent(vault_path=str(self.vault_path))
+            # Ensure vault is initialized to get master key
+            self._get_vault()
+            self._agent = get_agent(
+                vault_path=str(self.vault_path),
+                master_key=self._master_key
+            )
         return self._agent
 
     def _get_vault(self) -> HybridVault:

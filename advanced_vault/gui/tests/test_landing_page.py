@@ -2,10 +2,16 @@
 Tests for the agent-first landing page and RAG integration.
 """
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+
+def generate_test_key() -> bytes:
+    """Generate a random 32-byte key for testing."""
+    return os.urandom(32)
 
 
 class TestRAGHelpers(unittest.TestCase):
@@ -17,7 +23,10 @@ class TestRAGHelpers(unittest.TestCase):
             # Simulate the _get_rag_stats method
             try:
                 from advanced_vault.training import RAGIndex
-                rag = RAGIndex(db_path=str(Path(tmpdir) / "rag.db"))
+                rag = RAGIndex(
+                    master_key=generate_test_key(),
+                    db_path=str(Path(tmpdir) / "rag.db")
+                )
                 stats = rag.stats()
                 self.assertEqual(stats["document_count"], 0)
                 self.assertEqual(stats["chunk_count"], 0)
@@ -39,7 +48,10 @@ class TestRAGHelpers(unittest.TestCase):
 
             from advanced_vault.training import RAGIndex
             with tempfile.TemporaryDirectory() as tmpdir:
-                rag = RAGIndex(db_path=str(Path(tmpdir) / "rag.db"))
+                rag = RAGIndex(
+                    master_key=generate_test_key(),
+                    db_path=str(Path(tmpdir) / "rag.db")
+                )
                 stats = rag.stats()
                 self.assertIn("document_count", stats)
                 self.assertIn("chunk_count", stats)
@@ -58,7 +70,10 @@ class TestRAGHelpers(unittest.TestCase):
 
             from advanced_vault.training import RAGIndex
             with tempfile.TemporaryDirectory() as tmpdir:
-                rag = RAGIndex(db_path=str(Path(tmpdir) / "rag.db"))
+                rag = RAGIndex(
+                    master_key=generate_test_key(),
+                    db_path=str(Path(tmpdir) / "rag.db")
+                )
                 docs = rag.list_documents()
                 self.assertEqual(len(docs), 0)
 

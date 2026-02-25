@@ -2989,7 +2989,10 @@ class VaultApp:
         """Get RAG index statistics for dashboard."""
         try:
             from advanced_vault.training import RAGIndex
-            rag = RAGIndex(db_path=str(self.vault_path / "rag.db"))
+            rag = RAGIndex(
+                master_key=self.master_key,
+                db_path=str(self.vault_path / "rag.db")
+            )
             return rag.stats()
         except Exception:
             return {"document_count": 0, "chunk_count": 0, "embedding_dimension": 0}
@@ -2998,7 +3001,10 @@ class VaultApp:
         """Get list of RAG-indexed documents."""
         try:
             from advanced_vault.training import RAGIndex
-            rag = RAGIndex(db_path=str(self.vault_path / "rag.db"))
+            rag = RAGIndex(
+                master_key=self.master_key,
+                db_path=str(self.vault_path / "rag.db")
+            )
             return rag.list_documents()
         except Exception:
             return []
@@ -3007,7 +3013,10 @@ class VaultApp:
         """Delete a document from the RAG index."""
         try:
             from advanced_vault.training import RAGIndex
-            rag = RAGIndex(db_path=str(self.vault_path / "rag.db"))
+            rag = RAGIndex(
+                master_key=self.master_key,
+                db_path=str(self.vault_path / "rag.db")
+            )
             success = rag.delete_document(document_id)
             if success:
                 self.page.snack_bar = ft.SnackBar(

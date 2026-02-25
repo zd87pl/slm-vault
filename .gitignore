@@ -1,3 +1,74 @@
+# Byte-compiled / optimized files
 __pycache__/
+*.py[cod]
+*$py.class
 *.pyc
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.egg
+.eggs/
+*.whl
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# Mypy / type checking
+.mypy_cache/
+.ruff_cache/
+
+# Secrets and credentials - NEVER COMMIT THESE
+*.key
+*.pem
+*.p12
+*.pfx
+master.key
+.env
+.env.*
+!.env.example
+secrets.txt
+credentials.json
+service-account*.json
+
+# Local vault data
+*.db
+*.db-journal
+~/.enclave/
+~/.vault/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local scripts
 launch_enclave_gui.sh
+local_*.sh
+
+# Logs
+*.log
+logs/
+
+# PyInstaller
+*.spec.bak
+
+# Jupyter
+.ipynb_checkpoints/
