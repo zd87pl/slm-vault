@@ -1,5 +1,8 @@
 """Personal Vault GUI - Flet application."""
 
-from .vault_app import main
-
-__all__ = ['main']
+try:
+    from .vault_app import main
+    __all__ = ['main']
+except ImportError:
+    # Flet not installed — submodules still importable directly
+    __all__ = []

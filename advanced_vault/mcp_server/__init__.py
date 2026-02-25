@@ -23,6 +23,9 @@ Usage:
     }
 """
 
-from .server import create_vault_server
-
-__all__ = ["create_vault_server"]
+try:
+    from .server import create_vault_server
+    __all__ = ["create_vault_server"]
+except ImportError:
+    # MCP library not installed — submodules still importable directly
+    __all__ = []

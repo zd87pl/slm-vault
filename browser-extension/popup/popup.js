@@ -11,6 +11,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   await storageManager.init();
   await loadSecrets();
   setupEventListeners();
+  updateAccessCount();
+  checkPauseState();
 });
 
 // Event listeners
@@ -30,6 +32,8 @@ function setupEventListeners() {
     e.preventDefault();
     await showActivityLog();
   });
+
+  document.getElementById('pause-toggle').addEventListener('click', togglePause);
 }
 
 // Load secrets from storage
@@ -50,13 +54,16 @@ async function loadSecrets() {
     }
 
     emptyStateEl.style.display = 'none';
-    secretsListEl.innerHTML = secrets.map(secret => `
-      <div class="secret-item" data-id="${secret.id}">
+    secretsListEl.innerHTML = secrets.map(secret => {
+      const safeId = escapeHtml(secret.id);
+      const safeIdJs = escapeHtml(secret.id.replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
+      return `
+      <div class="secret-item" data-id="${safeId}">
         <div class="secret-header">
           <span class="secret-service">${escapeHtml(secret.service)}</span>
           <div class="secret-actions">
-            <button class="secret-action-btn" onclick="copySecret('${secret.id}')" title="Copy">📋</button>
-            <button class="secret-action-btn" onclick="deleteSecret('${secret.id}')" title="Delete">🗑</button>
+            <button class="secret-action-btn" onclick="copySecret('${safeIdJs}')" title="Copy">📋</button>
+            <button class="secret-action-btn" onclick="deleteSecret('${safeIdJs}')" title="Delete">🗑</button>
           </div>
         </div>
         <div class="secret-meta">
@@ -68,7 +75,7 @@ async function loadSecrets() {
           <span>${formatDate(secret.created_at)}</span>
         </div>
       </div>
-    `).join('');
+    `}).join('');
   } catch (error) {
     console.error('Failed to load secrets:', error);
     loadingEl.textContent = 'Error loading secrets';
@@ -341,6 +348,58 @@ async function showActivityLog() {
     alert('Failed to load activity log');
   }
 }
+
+// Status bar functions
+async function updateAccessCount() {
+    try {
+        const response = await chrome.runtime.sendMessage({ type: 'get_activity', limit: 100 });
+        const activities = response?.activities || [];
+        const today = new Date().toISOString().split('T')[0];
+        const count = activities.filter(a => a.timestamp && a.timestamp.startsWith(today)).length;
+        const el = document.getElementById('access-count');
+        if (el) el.textContent = `${count} access${count !== 1 ? 'es' : ''} today`;
+    } catch (e) {
+        console.debug('Failed to update access count:', e);
+    }
+}
+
+async function togglePause() {
+    try {
+        const response = await chrome.runtime.sendMessage({ type: 'toggle_pause' });
+        const btn = document.getElementById('pause-toggle');
+        if (btn && response) {
+            btn.textContent = response.paused ? 'Resume' : 'Pause All';
+            btn.classList.toggle('paused', response.paused);
+        }
+    } catch (e) {
+        console.debug('Failed to toggle pause:', e);
+    }
+}
+
+async function checkPauseState() {
+    try {
+        const response = await chrome.runtime.sendMessage({ type: 'get_pause_state' });
+        const btn = document.getElementById('pause-toggle');
+        if (btn && response) {
+            btn.textContent = response.paused ? 'Resume' : 'Pause All';
+            btn.classList.toggle('paused', response.paused);
+        }
+    } catch (e) {
+        console.debug('Failed to check pause state:', e);
+    }
+}
+
+// Listen for real-time events from service worker
+chrome.runtime.onMessage.addListener((message) => {
+    if (message.type === 'agent_querying') {
+        const indicator = document.getElementById('live-indicator');
+        if (indicator) indicator.classList.add('active');
+    } else if (message.type === 'agent_query_complete') {
+        const indicator = document.getElementById('live-indicator');
+        if (indicator) indicator.classList.remove('active');
+        updateAccessCount();
+    }
+});
 
 // Make functions available globally for onclick handlers
 window.copySecret = copySecret;
