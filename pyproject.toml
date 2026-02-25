@@ -85,6 +85,12 @@ gui = [
     "flet>=0.21.0",
 ]
 
+# Build/packaging
+build = [
+    "pyinstaller>=6.0.0",
+    "build>=1.0.0",
+]
+
 # Development
 dev = [
     "pytest>=7.0.0",
@@ -109,6 +115,9 @@ Issues = "https://github.com/enclave-ai/enclave-vault/issues"
 [project.scripts]
 enclave = "advanced_vault.cli.main:cli"
 enclave-mcp = "advanced_vault.mcp_server:main"
+
+[project.gui-scripts]
+enclave-gui = "advanced_vault.gui.vault_app:main"
 
 [project.entry-points."mcp.servers"]
 enclave = "advanced_vault.mcp_server.server:create_vault_server"
