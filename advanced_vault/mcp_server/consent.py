@@ -2,17 +2,20 @@
 Consent Manager for Vault Access
 
 Handles user consent for vault access requests from MCP clients.
-Supports OS notifications, permission database, and per-app consent.
+Supports OS notifications, permission database, per-app consent,
+per-document permissions, and time-limited access.
 """
 
 import os
 import json
 import logging
 import platform
+import fnmatch
 from pathlib import Path
-from typing import Optional, Dict, Literal
+from typing import Optional, Dict, List, Any, Set
 from datetime import datetime, timedelta
 from enum import Enum
+from dataclasses import dataclass, field, asdict
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +26,104 @@ class ConsentDecision(Enum):
     ALLOW_ALWAYS = "allow_always"
     DENY = "deny"
     DENY_ALWAYS = "deny_always"
+
+
+class AccessScope(Enum):
+    """Scope of access permission."""
+    ALL = "all"  # Access to everything
+    DOCUMENTS = "documents"  # Only document queries (agent_*)
+    SECRETS = "secrets"  # Only secret access (vault_*)
+    SPECIFIC = "specific"  # Specific documents/folders only
+
+
+@dataclass
+class AgentPermission:
+    """
+    Permission settings for a specific agent.
+
+    Supports granular control:
+    - Per-document permissions
+    - Per-folder permissions
+    - Tool restrictions
+    - Time-limited access
+    """
+    agent_id: str
+    auto_approve: bool = False
+    denied: bool = False
+    scope: AccessScope = field(default=AccessScope.ALL)
+    allowed_documents: List[str] = field(default_factory=list)  # Document IDs or patterns
+    allowed_folders: List[str] = field(default_factory=list)  # Folder paths (glob patterns)
+    allowed_tools: List[str] = field(default_factory=list)  # Specific tool names
+    denied_tools: List[str] = field(default_factory=list)  # Blocked tools
+    expires_at: Optional[str] = None  # ISO timestamp for time-limited access
+    max_queries_per_hour: Optional[int] = None  # Rate limiting
+    created_at: str = field(default_factory=lambda: datetime.utcnow().isoformat())
+    last_access: Optional[str] = None
+    access_count: int = 0
+
+    def is_expired(self) -> bool:
+        """Check if permission has expired."""
+        if self.expires_at is None:
+            return False
+        try:
+            expiry = datetime.fromisoformat(self.expires_at)
+            return datetime.utcnow() > expiry
+        except ValueError:
+            return False
+
+    def can_access_tool(self, tool_name: str) -> bool:
+        """Check if this permission allows access to a specific tool."""
+        # Check if tool is explicitly denied
+        if tool_name in self.denied_tools:
+            return False
+
+        # If allowed_tools is specified, only those tools are allowed
+        if self.allowed_tools:
+            return tool_name in self.allowed_tools
+
+        # Check scope-based access
+        if self.scope == AccessScope.ALL:
+            return True
+        elif self.scope == AccessScope.DOCUMENTS:
+            return tool_name.startswith("agent_")
+        elif self.scope == AccessScope.SECRETS:
+            return tool_name.startswith("vault_") or tool_name.startswith("langchain_")
+
+        return True
+
+    def can_access_document(self, document_path: str) -> bool:
+        """Check if this permission allows access to a specific document."""
+        if self.scope == AccessScope.SECRETS:
+            return False
+
+        if not self.allowed_documents and not self.allowed_folders:
+            return True  # No restrictions
+
+        # Check document patterns
+        for pattern in self.allowed_documents:
+            if fnmatch.fnmatch(document_path, pattern) or pattern in document_path:
+                return True
+
+        # Check folder patterns
+        for folder in self.allowed_folders:
+            if document_path.startswith(folder) or fnmatch.fnmatch(document_path, f"{folder}/*"):
+                return True
+
+        return False
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for JSON serialization."""
+        d = asdict(self)
+        d["scope"] = self.scope.value
+        return d
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AgentPermission":
+        """Create from dictionary."""
+        data = data.copy()
+        if "scope" in data:
+            data["scope"] = AccessScope(data["scope"])
+        return cls(**data)
 
 
 class ConsentManager:
@@ -334,7 +435,200 @@ class ConsentManager:
     def get_permissions(self) -> Dict[str, Dict]:
         """Get all permissions."""
         return self.permissions.copy()
-    
+
+    def get_agent_permission(self, agent_id: str) -> Optional[AgentPermission]:
+        """
+        Get detailed permission for a specific agent.
+
+        Args:
+            agent_id: Agent identifier
+
+        Returns:
+            AgentPermission object or None
+        """
+        if agent_id not in self.permissions:
+            return None
+
+        try:
+            return AgentPermission.from_dict({
+                "agent_id": agent_id,
+                **self.permissions[agent_id]
+            })
+        except Exception as e:
+            logger.warning(f"Failed to parse permission for {agent_id}: {e}")
+            return None
+
+    def set_agent_permission(self, permission: AgentPermission):
+        """
+        Set detailed permission for an agent.
+
+        Args:
+            permission: AgentPermission object
+        """
+        self.permissions[permission.agent_id] = permission.to_dict()
+        del self.permissions[permission.agent_id]["agent_id"]  # Don't duplicate
+        self._save_permissions()
+        logger.info(f"Set agent permission for {permission.agent_id}: scope={permission.scope.value}")
+
+    def set_document_access(
+        self,
+        agent_id: str,
+        documents: Optional[List[str]] = None,
+        folders: Optional[List[str]] = None
+    ):
+        """
+        Set document access restrictions for an agent.
+
+        Args:
+            agent_id: Agent identifier
+            documents: List of allowed document IDs or patterns
+            folders: List of allowed folder paths
+        """
+        if agent_id not in self.permissions:
+            self.permissions[agent_id] = {}
+
+        if documents is not None:
+            self.permissions[agent_id]["allowed_documents"] = documents
+            self.permissions[agent_id]["scope"] = AccessScope.SPECIFIC.value
+
+        if folders is not None:
+            self.permissions[agent_id]["allowed_folders"] = folders
+            self.permissions[agent_id]["scope"] = AccessScope.SPECIFIC.value
+
+        self._save_permissions()
+        logger.info(f"Set document access for {agent_id}: docs={documents}, folders={folders}")
+
+    def set_tool_restrictions(
+        self,
+        agent_id: str,
+        allowed_tools: Optional[List[str]] = None,
+        denied_tools: Optional[List[str]] = None
+    ):
+        """
+        Set tool restrictions for an agent.
+
+        Args:
+            agent_id: Agent identifier
+            allowed_tools: List of allowed tool names (if set, only these are allowed)
+            denied_tools: List of denied tool names
+        """
+        if agent_id not in self.permissions:
+            self.permissions[agent_id] = {}
+
+        if allowed_tools is not None:
+            self.permissions[agent_id]["allowed_tools"] = allowed_tools
+
+        if denied_tools is not None:
+            self.permissions[agent_id]["denied_tools"] = denied_tools
+
+        self._save_permissions()
+        logger.info(f"Set tool restrictions for {agent_id}")
+
+    def set_time_limited_access(
+        self,
+        agent_id: str,
+        duration_hours: int = 24
+    ):
+        """
+        Grant time-limited access to an agent.
+
+        Args:
+            agent_id: Agent identifier
+            duration_hours: Hours until permission expires
+        """
+        if agent_id not in self.permissions:
+            self.permissions[agent_id] = {}
+
+        expires = datetime.utcnow() + timedelta(hours=duration_hours)
+        self.permissions[agent_id]["auto_approve"] = True
+        self.permissions[agent_id]["expires_at"] = expires.isoformat()
+        self._save_permissions()
+        logger.info(f"Set time-limited access for {agent_id}: {duration_hours}h")
+
+    def check_permission(
+        self,
+        agent_id: str,
+        tool_name: str,
+        document_path: Optional[str] = None
+    ) -> bool:
+        """
+        Check if an agent has permission for a specific access.
+
+        Args:
+            agent_id: Agent identifier
+            tool_name: Tool being accessed
+            document_path: Optional document being accessed
+
+        Returns:
+            True if access is allowed
+        """
+        perm = self.get_agent_permission(agent_id)
+
+        if perm is None:
+            return False  # No permission exists, require consent
+
+        if perm.denied:
+            return False
+
+        if perm.is_expired():
+            return False
+
+        if not perm.can_access_tool(tool_name):
+            return False
+
+        if document_path and not perm.can_access_document(document_path):
+            return False
+
+        if perm.auto_approve:
+            # Update access tracking
+            self.permissions[agent_id]["last_access"] = datetime.utcnow().isoformat()
+            self.permissions[agent_id]["access_count"] = perm.access_count + 1
+            self._save_permissions()
+            return True
+
+        return False
+
+    def revoke_permission(self, agent_id: str):
+        """
+        Revoke all permissions for an agent.
+
+        Args:
+            agent_id: Agent identifier
+        """
+        if agent_id in self.permissions:
+            del self.permissions[agent_id]
+            self._save_permissions()
+            logger.info(f"Revoked permission for {agent_id}")
+
+    def list_agents(self) -> List[Dict[str, Any]]:
+        """
+        List all agents with permissions.
+
+        Returns:
+            List of agent info dicts
+        """
+        agents = []
+        for agent_id, perms in self.permissions.items():
+            try:
+                perm = AgentPermission.from_dict({"agent_id": agent_id, **perms})
+                agents.append({
+                    "agent_id": agent_id,
+                    "auto_approve": perm.auto_approve,
+                    "denied": perm.denied,
+                    "scope": perm.scope.value,
+                    "expired": perm.is_expired(),
+                    "expires_at": perm.expires_at,
+                    "last_access": perm.last_access,
+                    "access_count": perm.access_count
+                })
+            except Exception:
+                agents.append({
+                    "agent_id": agent_id,
+                    "auto_approve": perms.get("auto_approve", False),
+                    "denied": perms.get("denied", False)
+                })
+        return agents
+
     def _try_extension_consent(
         self,
         app_identifier: str,

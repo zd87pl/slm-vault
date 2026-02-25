@@ -1,8 +1,11 @@
 """
-MCP Server for Personal Vault
+MCP Server for Enclave - Privacy-First AI Personal Data Manager
 
 Implements Model Context Protocol server that exposes vault operations
-to AI agents (Claude Desktop, Cursor, etc.)
+and local agent commands to AI agents (Claude Desktop, Cursor, Copilot, etc.)
+
+Key principle: External AIs command this server, but never see raw document content.
+The local agent synthesizes responses from indexed documents.
 """
 
 import os
@@ -18,6 +21,7 @@ from pydantic import AnyUrl
 from advanced_vault.core import HybridVault
 from advanced_vault.mcp_server.consent import ConsentManager
 from advanced_vault.mcp_server.activity_logger import ActivityLogger
+from advanced_vault.mcp_server.agent import get_agent, LocalAgent
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -60,12 +64,21 @@ class VaultMCPServer:
         )
 
         # Create MCP server
-        self.server = Server("personal-vault")
+        self.server = Server("enclave-vault")
+
+        # Initialize local agent for synthesized responses
+        self._agent: Optional[LocalAgent] = None
 
         # Register tools
         self._register_tools()
 
-        logger.info(f"Initialized Vault MCP Server at {self.vault_path}")
+        logger.info(f"Initialized Enclave MCP Server at {self.vault_path}")
+
+    def _get_agent(self) -> LocalAgent:
+        """Get or create local agent."""
+        if self._agent is None:
+            self._agent = get_agent(vault_path=str(self.vault_path))
+        return self._agent
 
     def _get_vault(self) -> HybridVault:
         """Get or create vault instance."""
@@ -235,6 +248,73 @@ class VaultMCPServer:
                         },
                         "required": ["adapter_id", "query"]
                     }
+                ),
+                # Agent Tools - External AIs command the local agent, never see raw documents
+                Tool(
+                    name="agent_query",
+                    description="Ask the local Enclave agent a question. The agent reads indexed documents locally and returns a synthesized answer. External AIs never see raw document content - only the agent's response. Use this for questions about user's documents.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "Question to ask the local agent"
+                            },
+                            "temperature": {
+                                "type": "number",
+                                "description": "Generation temperature (0.0-1.0, default: 0.7)",
+                                "default": 0.7
+                            }
+                        },
+                        "required": ["question"]
+                    }
+                ),
+                Tool(
+                    name="agent_summarize",
+                    description="Ask the local agent to summarize a topic or document. The agent generates a summary from indexed documents without exposing raw content.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "topic": {
+                                "type": "string",
+                                "description": "Topic to summarize or document name"
+                            },
+                            "max_length": {
+                                "type": "integer",
+                                "description": "Approximate maximum length of summary (default: 500)",
+                                "default": 500
+                            }
+                        },
+                        "required": ["topic"]
+                    }
+                ),
+                Tool(
+                    name="agent_draft",
+                    description="Ask the local agent to draft content based on indexed documents. Useful for emails, reports, or other content that should draw from user's documents.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "description": {
+                                "type": "string",
+                                "description": "What to draft (e.g., 'email about project status')"
+                            },
+                            "style": {
+                                "type": "string",
+                                "enum": ["professional", "casual", "technical"],
+                                "description": "Writing style (default: professional)",
+                                "default": "professional"
+                            }
+                        },
+                        "required": ["description"]
+                    }
+                ),
+                Tool(
+                    name="agent_status",
+                    description="Get the status of the local Enclave agent including indexed documents, model status, and capabilities.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
+                    }
                 )
             ]
 
@@ -247,11 +327,19 @@ class VaultMCPServer:
                 if name == "vault_recall":
                     query_preview = arguments.get("query", "")
                 elif name == "vault_list_entries":
-                    query_preview = f"List entries"
+                    query_preview = "List entries"
                 elif name == "vault_delete":
                     query_preview = f"Delete {arguments.get('service', 'entry')}"
                 elif name == "vault_store":
                     query_preview = f"Store {arguments.get('data_type', 'data')}"
+                elif name == "agent_query":
+                    query_preview = arguments.get("question", "")[:50]
+                elif name == "agent_summarize":
+                    query_preview = f"Summarize: {arguments.get('topic', '')[:30]}"
+                elif name == "agent_draft":
+                    query_preview = f"Draft: {arguments.get('description', '')[:30]}"
+                elif name == "agent_status":
+                    query_preview = "Check agent status"
                 
                 # Get app identifier for logging
                 app_identifier = self.consent_manager._get_app_identifier()
@@ -309,6 +397,18 @@ class VaultMCPServer:
                 elif name == "langchain_query_knowledge":
                     result = await self._handle_langchain_query_knowledge(arguments)
                     result_summary = "Queried knowledge adapter"
+                elif name == "agent_query":
+                    result = await self._handle_agent_query(arguments)
+                    result_summary = "Agent answered question"
+                elif name == "agent_summarize":
+                    result = await self._handle_agent_summarize(arguments)
+                    result_summary = "Agent generated summary"
+                elif name == "agent_draft":
+                    result = await self._handle_agent_draft(arguments)
+                    result_summary = "Agent drafted content"
+                elif name == "agent_status":
+                    result = await self._handle_agent_status(arguments)
+                    result_summary = "Retrieved agent status"
                 else:
                     raise ValueError(f"Unknown tool: {name}")
                 
@@ -622,6 +722,177 @@ class VaultMCPServer:
             return [TextContent(
                 type="text",
                 text=f"❌ Error: {str(e)}"
+            )]
+
+    async def _handle_agent_query(self, args: dict) -> Sequence[TextContent]:
+        """
+        Handle agent_query tool call.
+
+        The local agent reads indexed documents and synthesizes an answer.
+        External AIs never see raw document content.
+        """
+        question = args.get("question", "")
+        temperature = args.get("temperature", 0.7)
+
+        if not question:
+            return [TextContent(
+                type="text",
+                text="❌ Error: Question is required"
+            )]
+
+        try:
+            agent = self._get_agent()
+            result = agent.query(
+                question=question,
+                temperature=temperature
+            )
+
+            if result.get("error"):
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Agent error: {result['error']}"
+                )]
+
+            # Format response
+            lines = ["✅ Agent Response\n"]
+            lines.append(result["answer"])
+
+            if result.get("sources"):
+                lines.append("\n---")
+                lines.append("Sources consulted:")
+                for src in result["sources"][:5]:
+                    lines.append(f"  • {src['document']} (relevance: {src['score']})")
+
+            if result.get("model_used"):
+                lines.append(f"\nModel: {result['model_used']}")
+
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        except Exception as e:
+            logger.error(f"Agent query failed: {e}", exc_info=True)
+            return [TextContent(
+                type="text",
+                text=f"❌ Agent query failed: {str(e)}"
+            )]
+
+    async def _handle_agent_summarize(self, args: dict) -> Sequence[TextContent]:
+        """Handle agent_summarize tool call."""
+        topic = args.get("topic", "")
+        max_length = args.get("max_length", 500)
+
+        if not topic:
+            return [TextContent(
+                type="text",
+                text="❌ Error: Topic is required"
+            )]
+
+        try:
+            agent = self._get_agent()
+            result = agent.summarize(
+                topic_or_document=topic,
+                max_length=max_length
+            )
+
+            if result.get("error"):
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Summarization failed: {result['error']}"
+                )]
+
+            lines = [f"✅ Summary: {topic}\n"]
+            lines.append(result["summary"])
+
+            if result.get("sources"):
+                lines.append("\n---")
+                lines.append("Based on:")
+                for src in result["sources"][:5]:
+                    lines.append(f"  • {src['document']}")
+
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        except Exception as e:
+            logger.error(f"Agent summarize failed: {e}", exc_info=True)
+            return [TextContent(
+                type="text",
+                text=f"❌ Summarization failed: {str(e)}"
+            )]
+
+    async def _handle_agent_draft(self, args: dict) -> Sequence[TextContent]:
+        """Handle agent_draft tool call."""
+        description = args.get("description", "")
+        style = args.get("style", "professional")
+
+        if not description:
+            return [TextContent(
+                type="text",
+                text="❌ Error: Description is required"
+            )]
+
+        try:
+            agent = self._get_agent()
+            result = agent.draft(
+                description=description,
+                style=style
+            )
+
+            if result.get("error"):
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Draft generation failed: {result['error']}"
+                )]
+
+            lines = [f"✅ Draft ({style} style)\n"]
+            lines.append(result["draft"])
+
+            if result.get("sources"):
+                lines.append("\n---")
+                lines.append("Informed by:")
+                for src in result["sources"][:3]:
+                    lines.append(f"  • {src['document']}")
+
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        except Exception as e:
+            logger.error(f"Agent draft failed: {e}", exc_info=True)
+            return [TextContent(
+                type="text",
+                text=f"❌ Draft generation failed: {str(e)}"
+            )]
+
+    async def _handle_agent_status(self, args: dict) -> Sequence[TextContent]:
+        """Handle agent_status tool call."""
+        try:
+            agent = self._get_agent()
+            status = agent.get_status()
+
+            lines = [
+                "📊 Enclave Agent Status\n",
+                f"Ready: {'✅ Yes' if status['ready'] else '❌ No'}",
+                f"Backend: {status.get('backend', 'unknown')}",
+                f"Model loaded: {'✅ Yes' if status['model_loaded'] else '❌ No'}",
+            ]
+
+            if status.get("model_name"):
+                lines.append(f"Model: {status['model_name']}")
+
+            lines.append(f"\nRAG Index: {'✅ Available' if status['rag_available'] else '❌ Not available'}")
+            lines.append(f"Documents indexed: {status['document_count']}")
+            lines.append(f"Total chunks: {status['chunk_count']}")
+
+            if status.get("documents"):
+                lines.append("\nIndexed documents:")
+                for doc in status["documents"][:10]:
+                    lines.append(f"  • {doc['name']} ({doc['chunks']} chunks)")
+                if len(status["documents"]) > 10:
+                    lines.append(f"  ... and {len(status['documents']) - 10} more")
+
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        except Exception as e:
+            logger.error(f"Agent status failed: {e}", exc_info=True)
+            return [TextContent(
+                type="text",
+                text=f"❌ Status check failed: {str(e)}"
             )]
 
 
