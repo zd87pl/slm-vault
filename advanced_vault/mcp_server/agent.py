@@ -53,7 +53,8 @@ class LocalAgent:
     def __init__(
         self,
         vault_path: str = "~/.enclave",
-        model_name: Optional[str] = None
+        model_name: Optional[str] = None,
+        master_key: Optional[bytes] = None
     ):
         """
         Initialize local agent.
@@ -61,6 +62,7 @@ class LocalAgent:
         Args:
             vault_path: Base path for agent data
             model_name: Optional specific model to use
+            master_key: 32-byte encryption key for RAG index (loaded from vault if not provided)
         """
         self.vault_path = Path(vault_path).expanduser()
         self.vault_path.mkdir(parents=True, exist_ok=True)
@@ -70,17 +72,44 @@ class LocalAgent:
         self._model_name = model_name
         self._model_loaded = False
 
+        # Handle master key - load from vault if not provided
+        if master_key is not None:
+            self._master_key = master_key
+        else:
+            self._master_key = self._load_or_create_master_key()
+
         logger.info(f"Initialized LocalAgent at {self.vault_path}")
 
+    def _load_or_create_master_key(self) -> bytes:
+        """Load existing master key from vault or create a new one."""
+        import os
+        key_path = self.vault_path / "master.key"
+
+        if key_path.exists():
+            with open(key_path, "rb") as f:
+                key = f.read()
+            logger.info("Loaded existing master key for RAG")
+            return key
+        else:
+            # Generate new master key
+            key = os.urandom(32)
+            with open(key_path, "wb") as f:
+                f.write(key)
+            # Set secure permissions
+            os.chmod(key_path, 0o600)
+            logger.info("Generated new master key for RAG")
+            return key
+
     def _get_rag_index(self) -> Optional["RAGIndex"]:  # noqa: F821
-        """Get or create RAG index."""
+        """Get or create RAG index with encryption."""
         if self._rag_index is None:
             try:
                 from advanced_vault.training import RAGIndex
                 self._rag_index = RAGIndex(
+                    master_key=self._master_key,
                     db_path=str(self.vault_path / "rag.db")
                 )
-                logger.info("RAG index initialized")
+                logger.info("Encrypted RAG index initialized")
             except ImportError as e:
                 logger.warning(f"RAG index not available: {e}")
                 return None
@@ -533,9 +562,21 @@ Draft:"""
 _agent: Optional[LocalAgent] = None
 
 
-def get_agent(vault_path: str = "~/.enclave") -> LocalAgent:
-    """Get or create the local agent singleton."""
+def get_agent(
+    vault_path: str = "~/.enclave",
+    master_key: Optional[bytes] = None
+) -> LocalAgent:
+    """
+    Get or create the local agent singleton.
+
+    Args:
+        vault_path: Base path for agent data
+        master_key: Optional 32-byte encryption key (loaded from vault if not provided)
+
+    Returns:
+        LocalAgent singleton instance
+    """
     global _agent
     if _agent is None:
-        _agent = LocalAgent(vault_path=vault_path)
+        _agent = LocalAgent(vault_path=vault_path, master_key=master_key)
     return _agent

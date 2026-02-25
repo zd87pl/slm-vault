@@ -2,8 +2,10 @@
 Tests for RAG Index
 
 Comprehensive tests for document indexing, chunking, embedding, and retrieval.
+Now includes encryption testing with ChaCha20-Poly1305.
 """
 
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -17,6 +19,11 @@ try:
     SENTENCE_TRANSFORMERS_AVAILABLE = True
 except ImportError:
     pass
+
+
+def generate_test_key() -> bytes:
+    """Generate a random 32-byte key for testing."""
+    return os.urandom(32)
 
 
 class TestRAGIndexBasic(unittest.TestCase):
@@ -110,6 +117,7 @@ class TestChunking(unittest.TestCase):
                 mock_engine.return_value = mock_instance
 
                 index = RAGIndex(
+                    master_key=generate_test_key(),
                     db_path=f"{tmpdir}/rag.db",
                     chunk_size=500
                 )
@@ -129,6 +137,7 @@ class TestChunking(unittest.TestCase):
                 mock_engine.return_value = mock_instance
 
                 index = RAGIndex(
+                    master_key=generate_test_key(),
                     db_path=f"{tmpdir}/rag.db",
                     chunk_size=50,  # 200 chars with 4x multiplier
                     chunk_overlap=10  # 40 chars overlap
@@ -156,6 +165,7 @@ class TestChunking(unittest.TestCase):
                 mock_engine.return_value = mock_instance
 
                 index = RAGIndex(
+                    master_key=generate_test_key(),
                     db_path=f"{tmpdir}/rag.db",
                     chunk_size=20,  # 80 chars
                     chunk_overlap=5
@@ -184,6 +194,7 @@ class TestRAGIndexWithEmbeddings(unittest.TestCase):
         """Set up test fixtures."""
         self.tmpdir = tempfile.mkdtemp()
         self.db_path = f"{self.tmpdir}/test_rag.db"
+        self.master_key = generate_test_key()
 
     def tearDown(self):
         """Clean up."""
@@ -191,10 +202,11 @@ class TestRAGIndexWithEmbeddings(unittest.TestCase):
         shutil.rmtree(self.tmpdir, ignore_errors=True)
 
     def test_add_and_search_document(self):
-        """Test adding a document and searching for it."""
+        """Test adding a document and searching for it with encryption."""
         from advanced_vault.training.rag_index import RAGIndex
 
         index = RAGIndex(
+            master_key=self.master_key,
             db_path=self.db_path,
             chunk_size=100
         )
@@ -210,18 +222,20 @@ class TestRAGIndexWithEmbeddings(unittest.TestCase):
         self.assertEqual(doc.name, "test_doc.txt")
         self.assertGreater(len(doc.chunks), 0)
 
-        # Search
+        # Search (should decrypt content automatically)
         results = index.search("programming language", top_k=5)
 
         self.assertGreater(len(results), 0)
         self.assertEqual(results[0].document_name, "test_doc.txt")
         self.assertGreater(results[0].score, 0.3)
+        # Verify decrypted content is readable
+        self.assertIn("programming", results[0].chunk.content.lower())
 
     def test_deduplication(self):
         """Test document deduplication via content hash."""
         from advanced_vault.training.rag_index import RAGIndex
 
-        index = RAGIndex(db_path=self.db_path)
+        index = RAGIndex(master_key=self.master_key, db_path=self.db_path)
 
         content = "This is the same content."
 
@@ -242,7 +256,7 @@ class TestRAGIndexWithEmbeddings(unittest.TestCase):
         """Test deleting a document."""
         from advanced_vault.training.rag_index import RAGIndex
 
-        index = RAGIndex(db_path=self.db_path)
+        index = RAGIndex(master_key=self.master_key, db_path=self.db_path)
 
         doc = index.add_document(
             name="to_delete.txt",
@@ -267,7 +281,7 @@ class TestRAGIndexWithEmbeddings(unittest.TestCase):
         """Test getting formatted context for a query."""
         from advanced_vault.training.rag_index import RAGIndex
 
-        index = RAGIndex(db_path=self.db_path)
+        index = RAGIndex(master_key=self.master_key, db_path=self.db_path)
 
         index.add_document(
             name="context_test.txt",
@@ -284,12 +298,13 @@ class TestRAGIndexWithEmbeddings(unittest.TestCase):
         """Test index statistics."""
         from advanced_vault.training.rag_index import RAGIndex
 
-        index = RAGIndex(db_path=self.db_path)
+        index = RAGIndex(master_key=self.master_key, db_path=self.db_path)
 
         # Empty stats
         stats = index.stats()
         self.assertEqual(stats["document_count"], 0)
         self.assertEqual(stats["chunk_count"], 0)
+        self.assertTrue(stats["encrypted"])
 
         # Add document
         index.add_document(
@@ -306,7 +321,7 @@ class TestRAGIndexWithEmbeddings(unittest.TestCase):
         """Test clearing the index."""
         from advanced_vault.training.rag_index import RAGIndex
 
-        index = RAGIndex(db_path=self.db_path)
+        index = RAGIndex(master_key=self.master_key, db_path=self.db_path)
 
         index.add_document(name="doc1.txt", content="Content 1")
         index.add_document(name="doc2.txt", content="Content 2")
@@ -317,6 +332,69 @@ class TestRAGIndexWithEmbeddings(unittest.TestCase):
 
         self.assertEqual(len(index.list_documents()), 0)
         self.assertEqual(index.stats()["chunk_count"], 0)
+
+    def test_encryption_verification(self):
+        """Test that content is actually encrypted in the database."""
+        from advanced_vault.training.rag_index import RAGIndex
+        import sqlite3
+
+        index = RAGIndex(master_key=self.master_key, db_path=self.db_path)
+
+        secret_content = "This is my super secret document content!"
+        index.add_document(name="secret.txt", content=secret_content)
+
+        # Read raw database to verify content is not plaintext
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.execute("SELECT content FROM documents")
+            row = cursor.fetchone()
+            raw_content = row[0]
+
+            # Content should be bytes (encrypted), not the plaintext string
+            self.assertIsInstance(raw_content, bytes)
+            # Plaintext should not be visible in raw content
+            self.assertNotIn(secret_content.encode(), raw_content)
+
+            # Check chunks too
+            cursor = conn.execute("SELECT content FROM chunks")
+            for row in cursor.fetchall():
+                self.assertIsInstance(row[0], bytes)
+                self.assertNotIn(b"secret", row[0])
+
+    def test_wrong_key_fails_decryption(self):
+        """Test that wrong key cannot decrypt content."""
+        from advanced_vault.training.rag_index import RAGIndex
+
+        # Create index with one key
+        index1 = RAGIndex(master_key=self.master_key, db_path=self.db_path)
+        index1.add_document(name="test.txt", content="Secret content")
+        index1.close()
+
+        # Try to read with different key
+        wrong_key = generate_test_key()
+        index2 = RAGIndex(master_key=wrong_key, db_path=self.db_path)
+
+        # Search should fail to decrypt (returns empty or logs error)
+        results = index2.search("Secret")
+        # Results should be empty because decryption fails
+        self.assertEqual(len(results), 0)
+
+        # get_document should also fail
+        docs = index2.list_documents()
+        if docs:
+            doc = index2.get_document(docs[0]["id"])
+            self.assertIsNone(doc)  # Should return None on decryption failure
+
+    def test_context_manager(self):
+        """Test context manager for secure key cleanup."""
+        from advanced_vault.training.rag_index import RAGIndex
+
+        with RAGIndex(master_key=self.master_key, db_path=self.db_path) as index:
+            index.add_document(name="test.txt", content="Test content")
+            self.assertIsNotNone(index._master_key)
+
+        # After context exit, key should be zeroed
+        self.assertIsNone(index._master_key)
+        self.assertIsNone(index._cipher)
 
 
 class TestEmbeddingEngine(unittest.TestCase):

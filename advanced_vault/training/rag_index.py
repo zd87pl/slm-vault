@@ -2,11 +2,18 @@
 RAG Index for Enclave.
 
 Provides document chunking, embedding storage, and semantic retrieval.
-All data stored locally in SQLite for privacy.
+All data encrypted at rest with ChaCha20-Poly1305 for privacy.
+
+Security properties:
+- Document content encrypted before storage
+- Chunk content encrypted with unique nonce per chunk
+- Embeddings stored unencrypted (enables similarity search)
+- Master key zeroed on close
 """
 
 import json
 import logging
+import os
 import sqlite3
 import uuid
 from dataclasses import dataclass, field
@@ -16,6 +23,7 @@ from typing import List, Optional, Dict, Any, Tuple
 import hashlib
 
 import numpy as np
+from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
 
 from .embeddings import EmbeddingEngine
 
@@ -26,6 +34,10 @@ DEFAULT_CHUNK_SIZE = 500  # tokens (approximate)
 DEFAULT_CHUNK_OVERLAP = 50
 DEFAULT_TOP_K = 5
 SIMILARITY_THRESHOLD = 0.3
+
+# Encryption constants
+MASTER_KEY_LENGTH = 32  # 256-bit key for ChaCha20-Poly1305
+NONCE_LENGTH = 12  # 96-bit nonce
 
 
 @dataclass
@@ -109,7 +121,7 @@ class RetrievalResult:
 
 class RAGIndex:
     """
-    Local RAG index with SQLite backend.
+    Local RAG index with SQLite backend and encrypted storage.
 
     Features:
     - Document chunking with configurable overlap
@@ -117,24 +129,43 @@ class RAGIndex:
     - Semantic search with cosine similarity
     - Document deduplication via content hash
     - Metadata filtering
+    - ChaCha20-Poly1305 encryption for all content at rest
+
+    Security properties:
+    - Document and chunk content encrypted before storage
+    - Unique nonce per chunk (semantic security)
+    - Embeddings unencrypted (enables similarity search, but don't reveal text)
+    - Master key zeroed on close
     """
 
     def __init__(
         self,
+        master_key: bytes,
         db_path: str = "~/.enclave/rag.db",
         embedding_engine: Optional[EmbeddingEngine] = None,
         chunk_size: int = DEFAULT_CHUNK_SIZE,
         chunk_overlap: int = DEFAULT_CHUNK_OVERLAP
     ):
         """
-        Initialize RAG index.
+        Initialize RAG index with encryption.
 
         Args:
+            master_key: 32-byte encryption key for ChaCha20-Poly1305
             db_path: Path to SQLite database
             embedding_engine: Optional embedding engine (created if not provided)
             chunk_size: Target chunk size in characters (approx tokens * 4)
             chunk_overlap: Overlap between chunks
+
+        Raises:
+            ValueError: If master_key is not exactly 32 bytes
         """
+        if len(master_key) != MASTER_KEY_LENGTH:
+            raise ValueError(f"Master key must be exactly {MASTER_KEY_LENGTH} bytes")
+
+        # Store as mutable bytearray for secure zeroing later
+        self._master_key = bytearray(master_key)
+        self._cipher = ChaCha20Poly1305(bytes(self._master_key))
+
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -145,18 +176,70 @@ class RAGIndex:
         self._init_db()
 
         logger.info(
-            f"Initialized RAGIndex at {self.db_path} "
+            f"Initialized encrypted RAGIndex at {self.db_path} "
             f"(chunk_size={chunk_size}, overlap={chunk_overlap})"
         )
 
+    def _encrypt(self, plaintext: str, associated_data: str = "") -> Tuple[bytes, bytes]:
+        """
+        Encrypt plaintext content.
+
+        Args:
+            plaintext: Text to encrypt
+            associated_data: Additional authenticated data (e.g., document ID)
+
+        Returns:
+            Tuple of (ciphertext, nonce)
+        """
+        nonce = os.urandom(NONCE_LENGTH)
+        ciphertext = self._cipher.encrypt(
+            nonce,
+            plaintext.encode('utf-8'),
+            associated_data.encode('utf-8') if associated_data else None
+        )
+        return ciphertext, nonce
+
+    def _decrypt(self, ciphertext: bytes, nonce: bytes, associated_data: str = "") -> str:
+        """
+        Decrypt ciphertext content.
+
+        Args:
+            ciphertext: Encrypted data
+            nonce: Nonce used for encryption
+            associated_data: Additional authenticated data (must match encryption)
+
+        Returns:
+            Decrypted plaintext
+
+        Raises:
+            cryptography.exceptions.InvalidTag: If authentication fails
+        """
+        plaintext = self._cipher.decrypt(
+            nonce,
+            ciphertext,
+            associated_data.encode('utf-8') if associated_data else None
+        )
+        return plaintext.decode('utf-8')
+
     def _init_db(self):
-        """Initialize SQLite database schema."""
+        """Initialize SQLite database schema with encryption support."""
         with sqlite3.connect(self.db_path) as conn:
+            # Check if we need to migrate from unencrypted schema
+            cursor = conn.execute("PRAGMA table_info(documents)")
+            columns = {col[1] for col in cursor.fetchall()}
+
+            if "nonce" not in columns and "content" in columns:
+                # Migration needed - drop old tables (data loss, but necessary for security)
+                logger.warning("Migrating to encrypted schema - existing unencrypted data will be lost")
+                conn.execute("DROP TABLE IF EXISTS chunks")
+                conn.execute("DROP TABLE IF EXISTS documents")
+
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS documents (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
-                    content TEXT NOT NULL,
+                    content BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
                     source_path TEXT,
                     content_hash TEXT UNIQUE,
                     created_at TEXT NOT NULL,
@@ -169,7 +252,8 @@ class RAGIndex:
                 CREATE TABLE IF NOT EXISTS chunks (
                     id TEXT PRIMARY KEY,
                     document_id TEXT NOT NULL,
-                    content TEXT NOT NULL,
+                    content BLOB NOT NULL,
+                    nonce BLOB NOT NULL,
                     chunk_index INTEGER NOT NULL,
                     start_char INTEGER NOT NULL,
                     end_char INTEGER NOT NULL,
@@ -235,17 +319,20 @@ class RAGIndex:
         update_if_exists: bool = True
     ) -> Document:
         """
-        Add a document to the index.
+        Add a document to the index with encrypted storage.
+
+        Content is encrypted before storage. Embeddings are computed from
+        plaintext but stored separately (enabling similarity search).
 
         Args:
             name: Document name
-            content: Document content
+            content: Document content (will be encrypted)
             source_path: Optional source file path
             metadata: Optional metadata dict
             update_if_exists: If True, update existing document with same hash
 
         Returns:
-            Document object
+            Document object (with plaintext content for caller)
 
         Raises:
             ValueError: If document with same hash exists and update_if_exists=False
@@ -253,6 +340,9 @@ class RAGIndex:
         content_hash = hashlib.sha256(content.encode()).hexdigest()
         metadata = metadata or {}
         now = datetime.utcnow()
+
+        # Encrypt document content (use doc_id as associated data after we have it)
+        # We'll re-encrypt with proper associated data below
 
         with sqlite3.connect(self.db_path) as conn:
             # Check for existing document
@@ -268,19 +358,23 @@ class RAGIndex:
                 doc_id = existing[0]
                 # Delete old chunks
                 conn.execute("DELETE FROM chunks WHERE document_id = ?", (doc_id,))
+                # Encrypt content with doc_id as associated data
+                encrypted_content, doc_nonce = self._encrypt(content, doc_id)
                 # Update document
                 conn.execute("""
                     UPDATE documents
-                    SET name = ?, content = ?, source_path = ?, updated_at = ?, metadata = ?
+                    SET name = ?, content = ?, nonce = ?, source_path = ?, updated_at = ?, metadata = ?
                     WHERE id = ?
-                """, (name, content, source_path, now.isoformat(), json.dumps(metadata), doc_id))
+                """, (name, encrypted_content, doc_nonce, source_path, now.isoformat(), json.dumps(metadata), doc_id))
                 logger.info(f"Updated existing document: {doc_id}")
             else:
                 doc_id = str(uuid.uuid4())
+                # Encrypt content with doc_id as associated data
+                encrypted_content, doc_nonce = self._encrypt(content, doc_id)
                 conn.execute("""
-                    INSERT INTO documents (id, name, content, source_path, content_hash, created_at, updated_at, metadata)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                """, (doc_id, name, content, source_path, content_hash, now.isoformat(), now.isoformat(), json.dumps(metadata)))
+                    INSERT INTO documents (id, name, content, nonce, source_path, content_hash, created_at, updated_at, metadata)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (doc_id, name, encrypted_content, doc_nonce, source_path, content_hash, now.isoformat(), now.isoformat(), json.dumps(metadata)))
                 logger.info(f"Added new document: {doc_id}")
 
             # Create chunks
@@ -299,7 +393,7 @@ class RAGIndex:
                 )
                 chunks.append(chunk)
 
-            # Generate embeddings in batch
+            # Generate embeddings in batch (from plaintext, before encryption)
             if chunks:
                 chunk_contents = [c.content for c in chunks]
                 embeddings = self.embedding_engine.embed_documents(
@@ -309,13 +403,16 @@ class RAGIndex:
 
                 for chunk, embedding in zip(chunks, embeddings):
                     chunk.embedding = embedding
+                    # Encrypt chunk content with chunk_id as associated data
+                    encrypted_chunk, chunk_nonce = self._encrypt(chunk.content, chunk.id)
                     conn.execute("""
-                        INSERT INTO chunks (id, document_id, content, chunk_index, start_char, end_char, embedding, metadata)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO chunks (id, document_id, content, nonce, chunk_index, start_char, end_char, embedding, metadata)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         chunk.id,
                         chunk.document_id,
-                        chunk.content,
+                        encrypted_chunk,
+                        chunk_nonce,
                         chunk.index,
                         chunk.start_char,
                         chunk.end_char,
@@ -328,7 +425,7 @@ class RAGIndex:
         doc = Document(
             id=doc_id,
             name=name,
-            content=content,
+            content=content,  # Return plaintext to caller
             source_path=source_path,
             content_hash=content_hash,
             created_at=now,
@@ -337,7 +434,7 @@ class RAGIndex:
             chunks=chunks
         )
 
-        logger.info(f"Indexed document '{name}' with {len(chunks)} chunks")
+        logger.info(f"Indexed document '{name}' with {len(chunks)} encrypted chunks")
         return doc
 
     def search(
@@ -349,7 +446,10 @@ class RAGIndex:
         metadata_filter: Optional[Dict[str, Any]] = None
     ) -> List[RetrievalResult]:
         """
-        Search for relevant chunks.
+        Search for relevant chunks with on-demand decryption.
+
+        Similarity search uses unencrypted embeddings, then decrypts
+        matching chunk content before returning results.
 
         Args:
             query: Search query
@@ -359,14 +459,14 @@ class RAGIndex:
             metadata_filter: Optional metadata filter
 
         Returns:
-            List of RetrievalResult objects sorted by relevance
+            List of RetrievalResult objects sorted by relevance (with decrypted content)
         """
         query_embedding = self.embedding_engine.embed_query(query)
 
         with sqlite3.connect(self.db_path) as conn:
-            # Build query
+            # Build query - include nonce for decryption
             sql = """
-                SELECT c.id, c.document_id, c.content, c.chunk_index,
+                SELECT c.id, c.document_id, c.content, c.nonce, c.chunk_index,
                        c.start_char, c.end_char, c.embedding, c.metadata,
                        d.name as document_name
                 FROM chunks c
@@ -389,10 +489,10 @@ class RAGIndex:
         if not rows:
             return []
 
-        # Compute similarities
+        # Compute similarities and decrypt matching content
         results = []
         for row in rows:
-            chunk_id, doc_id, content, idx, start, end, emb_bytes, meta_str, doc_name = row
+            chunk_id, doc_id, encrypted_content, nonce, idx, start, end, emb_bytes, meta_str, doc_name = row
 
             embedding = np.frombuffer(emb_bytes, dtype=np.float32)
             score = float(np.dot(embedding, query_embedding))
@@ -411,10 +511,17 @@ class RAGIndex:
                 if skip:
                     continue
 
+            # Decrypt chunk content (only for results that pass filters)
+            try:
+                decrypted_content = self._decrypt(encrypted_content, nonce, chunk_id)
+            except Exception as e:
+                logger.error(f"Failed to decrypt chunk {chunk_id}: {e}")
+                continue
+
             chunk = Chunk(
                 id=chunk_id,
                 document_id=doc_id,
-                content=content,
+                content=decrypted_content,
                 index=idx,
                 start_char=start,
                 end_char=end,
@@ -538,17 +645,17 @@ class RAGIndex:
 
     def get_document(self, document_id: str) -> Optional[Document]:
         """
-        Get a document by ID.
+        Get a document by ID with decrypted content.
 
         Args:
             document_id: Document ID
 
         Returns:
-            Document object or None
+            Document object with decrypted content, or None
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.execute(
-                "SELECT id, name, content, source_path, content_hash, created_at, updated_at, metadata "
+                "SELECT id, name, content, nonce, source_path, content_hash, created_at, updated_at, metadata "
                 "FROM documents WHERE id = ?",
                 (document_id,)
             )
@@ -557,18 +664,32 @@ class RAGIndex:
             if not row:
                 return None
 
-            doc_id, name, content, source, hash_, created, updated, meta_str = row
+            doc_id, name, encrypted_content, doc_nonce, source, hash_, created, updated, meta_str = row
 
-            # Get chunks
+            # Decrypt document content
+            try:
+                content = self._decrypt(encrypted_content, doc_nonce, doc_id)
+            except Exception as e:
+                logger.error(f"Failed to decrypt document {doc_id}: {e}")
+                return None
+
+            # Get chunks with nonces
             cursor = conn.execute(
-                "SELECT id, document_id, content, chunk_index, start_char, end_char, embedding, metadata "
+                "SELECT id, document_id, content, nonce, chunk_index, start_char, end_char, embedding, metadata "
                 "FROM chunks WHERE document_id = ? ORDER BY chunk_index",
                 (doc_id,)
             )
 
             chunks = []
             for chunk_row in cursor.fetchall():
-                c_id, c_doc, c_content, c_idx, c_start, c_end, c_emb, c_meta = chunk_row
+                c_id, c_doc, c_encrypted, c_nonce, c_idx, c_start, c_end, c_emb, c_meta = chunk_row
+                # Decrypt chunk content
+                try:
+                    c_content = self._decrypt(c_encrypted, c_nonce, c_id)
+                except Exception as e:
+                    logger.error(f"Failed to decrypt chunk {c_id}: {e}")
+                    continue
+
                 chunks.append(Chunk(
                     id=c_id,
                     document_id=c_doc,
@@ -602,17 +723,19 @@ class RAGIndex:
         with sqlite3.connect(self.db_path) as conn:
             doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
             chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
-            total_chars = conn.execute(
+            # Note: content is encrypted, so LENGTH gives ciphertext size (slightly larger than plaintext)
+            total_encrypted_bytes = conn.execute(
                 "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM documents"
             ).fetchone()[0]
 
         return {
             "document_count": doc_count,
             "chunk_count": chunk_count,
-            "total_characters": total_chars,
+            "total_encrypted_bytes": total_encrypted_bytes,
             "embedding_dimension": self.embedding_engine.dimension,
             "embedding_model": self.embedding_engine.model_name,
             "db_path": str(self.db_path),
+            "encrypted": True,
         }
 
     def clear(self):
@@ -623,3 +746,25 @@ class RAGIndex:
             conn.commit()
 
         logger.info("Cleared RAG index")
+
+    def close(self):
+        """Close index and securely zero master key."""
+        if self._master_key is not None:
+            # Zero every byte in place
+            for i in range(len(self._master_key)):
+                self._master_key[i] = 0
+            self._master_key = None
+
+        # Clear cipher reference
+        self._cipher = None
+
+        logger.info("Closed RAGIndex and zeroed master key")
+
+    def __enter__(self):
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - ensures key is zeroed."""
+        self.close()
+        return False
