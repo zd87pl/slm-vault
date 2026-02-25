@@ -387,3 +387,52 @@ body {
   min-width: 80px;
 }
 
+/* Status Bar */
+.status-bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #f0f4f8;
+  border-bottom: 1px solid #e2e8f0;
+  font-size: 12px;
+}
+.status-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #94a3b8;
+  transition: background 0.3s;
+}
+.indicator.active {
+  background: #22c55e;
+  animation: status-pulse 1s infinite;
+}
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+.pause-btn {
+  padding: 4px 12px;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: white;
+  cursor: pointer;
+  font-size: 11px;
+  color: #64748b;
+  transition: all 0.2s;
+}
+.pause-btn:hover {
+  background: #f1f5f9;
+}
+.pause-btn.paused {
+  background: #fef2f2;
+  border-color: #fca5a5;
+  color: #dc2626;
+}
+

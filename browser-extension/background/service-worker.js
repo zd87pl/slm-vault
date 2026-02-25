@@ -10,6 +10,29 @@ import consentManager from './consent-manager.js';
 import extensionServer from './extension-server.js';
 import activityMonitor from './activity-monitor.js';
 
+// Agent access pause state
+let agentAccessPaused = false;
+
+// Badge update function
+async function updateBadge() {
+    try {
+        const activities = await activityMonitor.getRecentActivities(100);
+        const today = new Date().toISOString().split('T')[0];
+        const todayCount = activities.filter(a => a.timestamp && a.timestamp.startsWith(today)).length;
+        chrome.action.setBadgeText({ text: todayCount > 0 ? String(todayCount) : '' });
+        chrome.action.setBadgeBackgroundColor({ color: '#4CAF50' });
+    } catch (e) {
+        console.debug('Badge update failed:', e);
+    }
+}
+
+// Broadcast event to all extension views (popup, tabs)
+function broadcastEvent(event) {
+    chrome.runtime.sendMessage(event).catch(() => {
+        // Ignore errors when no listeners are available
+    });
+}
+
 // Initialize storage on startup
 chrome.runtime.onInstalled.addListener(async () => {
   await storageManager.init();
@@ -55,8 +78,26 @@ async function handleMessage(message, sender, sendResponse) {
 
       case 'get_secret':
         // Get secret (with consent check)
+        if (agentAccessPaused) {
+          sendResponse({ error: 'Access paused', reason: 'Agent access is currently paused by user' });
+          break;
+        }
+        broadcastEvent({ type: 'agent_querying', service: message.service, agent: message.agentIdentifier });
         const secretResult = await handleGetSecret(message);
+        broadcastEvent({ type: 'agent_query_complete', service: message.service, agent: message.agentIdentifier });
+        await updateBadge();
         sendResponse(secretResult);
+        break;
+
+      case 'toggle_pause':
+        // Toggle agent access pause state
+        agentAccessPaused = !agentAccessPaused;
+        sendResponse({ paused: agentAccessPaused });
+        break;
+
+      case 'get_pause_state':
+        // Get current pause state
+        sendResponse({ paused: agentAccessPaused });
         break;
 
       case 'store_secret':
@@ -74,6 +115,7 @@ async function handleMessage(message, sender, sendResponse) {
       case 'get_activity':
         // Get recent activity log
         const activities = await activityMonitor.getRecentActivities(message.limit || 20);
+        await updateBadge();
         sendResponse({ activities });
         break;
 
@@ -285,6 +327,9 @@ chrome.runtime.onConnectNative?.addListener((port) => {
     console.log('MCP native messaging disconnected');
   });
 });
+
+// Update badge on startup
+updateBadge();
 
 console.log('Enclave service worker loaded');
 

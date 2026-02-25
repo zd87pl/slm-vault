@@ -112,6 +112,7 @@ class ModernSidebar:
             {"icon": ft.Icons.FOLDER_COPY_OUTLINED, "selected": ft.Icons.FOLDER_COPY_ROUNDED, "label": "Library", "idx": 7},
             {"icon": ft.Icons.PSYCHOLOGY_OUTLINED, "selected": ft.Icons.PSYCHOLOGY_ROUNDED, "label": "Training", "idx": 2},
             {"icon": ft.Icons.HISTORY_OUTLINED, "selected": ft.Icons.HISTORY_ROUNDED, "label": "Activity", "idx": 3},
+            {"icon": ft.Icons.SHIELD_OUTLINED, "selected": ft.Icons.SHIELD_ROUNDED, "label": "Permissions", "idx": 8},
             {"icon": ft.Icons.BAR_CHART_OUTLINED, "selected": ft.Icons.BAR_CHART_ROUNDED, "label": "Statistics", "idx": 4},
             {"icon": ft.Icons.SECURITY_OUTLINED, "selected": ft.Icons.SECURITY_ROUNDED, "label": "LangChain", "idx": 6},
         ]

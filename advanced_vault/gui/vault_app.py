@@ -1832,39 +1832,39 @@ class VaultApp:
             self.page.update()
     
     def show_landing_page(self):
-        """Show chat-first landing page - the primary AI assistant experience."""
+        """Show agent-first landing page — dashboard with document management and activity."""
         self.current_view = "landing"
-        
+
         # Initialize chat messages if not exists
         if not hasattr(self, 'chat_messages'):
             self.chat_messages = self._load_chat_history()
-        
+
         self.page.clean()
-        
-        # Clear any floating buttons from overlay (they're for non-chat views)
-        # But preserve file pickers - modify in place since overlay is read-only
-        items_to_remove = [o for o in self.page.overlay 
+
+        # Clear floating buttons from overlay
+        items_to_remove = [o for o in self.page.overlay
                           if isinstance(o, ft.Container) and hasattr(o, 'content') and isinstance(getattr(o, 'content', None), ft.FloatingActionButton)]
         for item in items_to_remove:
             self.page.overlay.remove(item)
-        
-        # Initialize PDF file picker if needed (for the + button in chat input)
+
+        # Initialize PDF file picker
         if not hasattr(self, 'pdf_file_picker') or self.pdf_file_picker is None:
             self.pdf_file_picker = ft.FilePicker(
                 on_result=self.on_pdf_selected
             )
-        
-        # Ensure file picker is in overlay (page.clean() may have removed it)
         if self.pdf_file_picker not in self.page.overlay:
             self.page.overlay.append(self.pdf_file_picker)
-        
         self.page.update()
-        
+
+        # Get RAG stats
+        rag_stats = self._get_rag_stats()
+        rag_documents = self._get_rag_documents()
+
         # Get vault statistics
         try:
             query_filter = QueryFilter()
             all_entries = self.vault.kv_store.search(query_filter)
-            
+
             secrets_count = len([e for e in all_entries if e.entry_type in [EntryType.SECRET, EntryType.API_KEY, EntryType.PASSWORD, EntryType.TOKEN, EntryType.CREDENTIAL]])
             knowledge_count = len([e for e in all_entries if e.entry_type == EntryType.OTHER])
             
@@ -1931,40 +1931,344 @@ class VaultApp:
         else:
             greeting = "Good evening"
         
-        # ===== LEFT SIDEBAR: Chat History + Documents =====
-        
-        # Recent chats from history
-        recent_questions = self._get_recent_questions(8)
-        chat_history_items = []
-        
-        for q in recent_questions:
-            chat_history_items.append(
-                    ft.Container(
+        # MCP configured check
+        mcp_configured = False
+        try:
+            if hasattr(self, 'mcp_setup') and self.mcp_setup:
+                mcp_status = self.mcp_setup.get_setup_status()
+                mcp_configured = mcp_status.get("mcp_configured", False)
+        except Exception:
+            pass
+
+        # Get connected agents count
+        connected_agents = 0
+        try:
+            from advanced_vault.mcp_server.consent import ConsentManager
+            cm = ConsentManager(vault_path=str(self.vault_path))
+            connected_agents = len(cm.list_agents())
+        except Exception:
+            pass
+
+        # ===== AGENT DASHBOARD =====
+
+        # Stat cards
+        def _stat_card(icon, label, value, color):
+            return ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Row([
+                            ft.Container(
+                                content=ft.Icon(icon, size=20, color=color),
+                                width=36, height=36,
+                                border_radius=8,
+                                bgcolor=color + "15",
+                                alignment=ft.alignment.center,
+                            ),
+                        ]),
+                        ft.Container(height=8),
+                        ft.Text(str(value), size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                        ft.Text(label, size=12, color=LightTheme.TEXT_SECONDARY),
+                    ],
+                    spacing=0,
+                ),
+                padding=20,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=12,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                expand=True,
+            )
+
+        dashboard_row = ft.Row(
+            [
+                _stat_card(ft.Icons.DESCRIPTION_ROUNDED, "Documents Indexed", rag_stats.get("document_count", 0), LightTheme.ACCENT_PRIMARY),
+                _stat_card(ft.Icons.KEY_ROUNDED, "Secrets Stored", secrets_count, LightTheme.ACCENT_WARNING),
+                _stat_card(ft.Icons.SMART_TOY_ROUNDED, "Connected Agents", connected_agents, LightTheme.ACCENT_SUCCESS),
+                _stat_card(ft.Icons.DATA_ARRAY_ROUNDED, "RAG Chunks", rag_stats.get("chunk_count", 0), "#8b5cf6"),
+            ],
+            spacing=16,
+        )
+
+        # Privacy strip
+        privacy_strip = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Row([ft.Icon(ft.Icons.VERIFIED_USER_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("E2E Encrypted", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
+                    ft.Text("|", size=11, color=LightTheme.BORDER_COLOR),
+                    ft.Row([ft.Icon(ft.Icons.KEY_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Local Keys", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
+                    ft.Text("|", size=11, color=LightTheme.BORDER_COLOR),
+                    ft.Row([ft.Icon(ft.Icons.SHIELD_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Data Never Leaves Device", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
+                ],
+                spacing=12,
+                alignment=ft.MainAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.symmetric(vertical=8, horizontal=16),
+            bgcolor=LightTheme.ACCENT_SUCCESS + "08",
+            border_radius=8,
+        )
+
+        # Document drop zone
+        drop_zone = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Icon(ft.Icons.CLOUD_UPLOAD_ROUNDED, size=48, color=LightTheme.ACCENT_PRIMARY),
+                    ft.Container(height=8),
+                    ft.Text("Drop PDFs here or click to upload", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY, text_align=ft.TextAlign.CENTER),
+                    ft.Text("Your local agent will index them for instant querying", size=13, color=LightTheme.TEXT_SECONDARY, text_align=ft.TextAlign.CENTER),
+                    ft.Container(height=12),
+                    ft.ElevatedButton(
+                        "Choose Files",
+                        icon=ft.Icons.FILE_UPLOAD_ROUNDED,
+                        on_click=lambda e: self._on_upload_click(e),
+                        style=ft.ButtonStyle(
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
+                            color="white",
+                            shape=ft.RoundedRectangleBorder(radius=8),
+                        ),
+                    ),
+                ],
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                spacing=0,
+            ),
+            padding=40,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=12,
+            border=ft.border.all(2, LightTheme.ACCENT_PRIMARY + "40"),
+            on_click=lambda e: self._on_upload_click(e),
+        )
+
+        # Indexed documents list
+        doc_list_items = []
+        for doc in rag_documents[:10]:
+            doc_id = doc.get("id", "")
+            doc_list_items.append(
+                ft.Container(
                     content=ft.Row(
-                            [
-                            ft.Icon(ft.Icons.CHAT_BUBBLE_OUTLINE_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
-                                ft.Text(
-                                q.get("question", "")[:30] + ("..." if len(q.get("question", "")) > 30 else ""),
-                                size=12,
-                                    color=LightTheme.TEXT_PRIMARY,
-                                overflow=ft.TextOverflow.ELLIPSIS,
-                                expand=True,
+                        [
+                            ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
+                            ft.Text(doc.get("name", "Unknown")[:35], size=13, color=LightTheme.TEXT_PRIMARY, expand=True),
+                            ft.Text(f'{doc.get("chunk_count", 0)} chunks', size=11, color=LightTheme.TEXT_MUTED),
+                            ft.IconButton(
+                                ft.Icons.DELETE_OUTLINE_ROUNDED,
+                                icon_size=16,
+                                icon_color=LightTheme.TEXT_MUTED,
+                                tooltip="Remove from index",
+                                on_click=lambda e, did=doc_id: self._delete_rag_document(did),
                             ),
                         ],
                         spacing=8,
                     ),
-                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
                     border_radius=8,
-                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
-                    on_click=lambda e, question=q.get("question", ""): self._quick_ask(question, trained_adapters),
-                    ink=True,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
                 )
             )
+
+        if not doc_list_items:
+            doc_list_items.append(
+                ft.Container(
+                    content=ft.Text("No documents indexed yet. Upload PDFs above to get started.", size=13, color=LightTheme.TEXT_MUTED, italic=True, text_align=ft.TextAlign.CENTER),
+                    padding=16,
+                )
+            )
+
+        doc_section = ft.Column(
+            [
+                ft.Row([
+                    ft.Text("Indexed Documents", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                    ft.Container(expand=True),
+                    ft.Text(f"{rag_stats.get('document_count', 0)} total", size=12, color=LightTheme.TEXT_MUTED),
+                ]),
+                ft.Container(height=8),
+                ft.Column(doc_list_items, spacing=6),
+            ],
+            spacing=0,
+        )
+
+        # Recent activity feed
+        activity_logger = ActivityLogger(vault_path=str(self.vault_path))
+        recent_activities = activity_logger.get_recent_activity(limit=5)
+
+        activity_items = []
+        if recent_activities:
+            for activity in recent_activities:
+                timestamp = activity.get('timestamp', '')
+                try:
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    time_str = dt.strftime('%H:%M')
+                except Exception:
+                    time_str = ""
+                granted = activity.get('granted', False)
+                tool_name = activity.get('tool_name', 'unknown').replace('vault_', '').replace('agent_', '').replace('_', ' ').title()
+                app_name = activity.get('app_name', 'Unknown')
+                status_color = LightTheme.ACCENT_SUCCESS if granted else LightTheme.ACCENT_ERROR
+                activity_items.append(
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Icon(
+                                    ft.Icons.CHECK_CIRCLE_ROUNDED if granted else ft.Icons.CANCEL_ROUNDED,
+                                    size=14, color=status_color,
+                                ),
+                                ft.Text(f"{app_name}: {tool_name}", size=12, color=LightTheme.TEXT_PRIMARY, expand=True),
+                                ft.Text(time_str, size=11, color=LightTheme.TEXT_MUTED),
+                            ],
+                            spacing=8,
+                        ),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                    )
+                )
+        else:
+            activity_items.append(
+                ft.Container(
+                    content=ft.Text("No agent activity yet. Connect Claude Desktop to get started.", size=12, color=LightTheme.TEXT_MUTED, italic=True),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                )
+            )
+
+        activity_section = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row([
+                        ft.Text("Recent Agent Activity", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                        ft.Container(expand=True),
+                        ft.TextButton("View All", on_click=lambda e: self.on_nav_change(3), style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY)),
+                    ]),
+                    ft.Container(height=4),
+                    ft.Column(activity_items, spacing=2),
+                ],
+                spacing=0,
+            ),
+            padding=16,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=12,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+        )
+
+        # Quick action buttons
+        action_buttons = ft.Row(
+            [
+                ft.ElevatedButton(
+                    "Test Agent",
+                    icon=ft.Icons.CHAT_ROUNDED,
+                    on_click=lambda e: self._open_test_agent_chat(),
+                    style=ft.ButtonStyle(
+                        bgcolor=LightTheme.ACCENT_PRIMARY,
+                        color="white",
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                    height=44,
+                ),
+                ft.ElevatedButton(
+                    "Configure" if not mcp_configured else "Connected",
+                    icon=ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED if not mcp_configured else ft.Icons.CHECK_CIRCLE_ROUNDED,
+                    on_click=lambda e: self._configure_claude_mcp() if not mcp_configured else None,
+                    style=ft.ButtonStyle(
+                        bgcolor=LightTheme.ACCENT_SUCCESS if mcp_configured else LightTheme.BG_ELEVATED,
+                        color="white" if mcp_configured else LightTheme.TEXT_PRIMARY,
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                    tooltip="Configure Claude Desktop MCP" if not mcp_configured else "Claude Desktop is connected",
+                    height=44,
+                ),
+                ft.ElevatedButton(
+                    "Permissions",
+                    icon=ft.Icons.SHIELD_ROUNDED,
+                    on_click=lambda e: self.on_nav_change(8),
+                    style=ft.ButtonStyle(
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        color=LightTheme.TEXT_PRIMARY,
+                        shape=ft.RoundedRectangleBorder(radius=8),
+                    ),
+                    height=44,
+                ),
+            ],
+            spacing=12,
+        )
         
-        # Document list
+        # ===== ASSEMBLE DASHBOARD LAYOUT =====
+
+        # Main scrollable content
+        main_content = ft.Container(
+            content=ft.Column(
+                [
+                    # Header
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Text("Enclave", size=22, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                                ft.Text(" — Your Local AI Agent", size=14, color=LightTheme.TEXT_SECONDARY),
+                                ft.Container(expand=True),
+                                ft.IconButton(ft.Icons.REFRESH_ROUNDED, icon_color=LightTheme.TEXT_MUTED, icon_size=20, tooltip="Refresh", on_click=lambda e: self.show_landing_page()),
+                                ft.IconButton(ft.Icons.SETTINGS_ROUNDED, icon_color=LightTheme.TEXT_MUTED, icon_size=20, tooltip="Settings", on_click=lambda e: self.on_nav_change(5)),
+                            ],
+                            vertical_alignment=ft.CrossAxisAlignment.END,
+                        ),
+                        padding=ft.padding.only(left=32, right=16, top=16, bottom=8),
+                    ),
+                    # Privacy strip
+                    ft.Container(content=privacy_strip, padding=ft.padding.symmetric(horizontal=32)),
+                    ft.Container(height=16),
+                    # Dashboard stats
+                    ft.Container(content=dashboard_row, padding=ft.padding.symmetric(horizontal=32)),
+                    ft.Container(height=24),
+                    # Two-column: drop zone + activity
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                # Left: Drop zone + documents
+                                ft.Container(
+                                    content=ft.Column([drop_zone, ft.Container(height=16), doc_section], spacing=0),
+                                    expand=3,
+                                ),
+                                ft.Container(width=24),
+                                # Right: Activity + actions
+                                ft.Container(
+                                    content=ft.Column([activity_section, ft.Container(height=16), action_buttons], spacing=0),
+                                    expand=2,
+                                ),
+                            ],
+                            spacing=0,
+                            vertical_alignment=ft.CrossAxisAlignment.START,
+                        ),
+                        padding=ft.padding.symmetric(horizontal=32),
+                    ),
+                    ft.Container(height=24),
+                ],
+                scroll=ft.ScrollMode.AUTO,
+                expand=True,
+            ),
+            expand=True,
+            bgcolor=LightTheme.BG_PRIMARY,
+        )
+
+        # Initialize sidebar
+        if not hasattr(self, 'sidebar') or self.sidebar is None:
+            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=-1)
+        else:
+            self.sidebar.selected_index = -1
+
+        sidebar_container = self.sidebar.build()
+
+        self.page.add(
+            ft.Row(
+                [sidebar_container, main_content],
+                spacing=0,
+                expand=True,
+            )
+        )
+        self.page.update()
+
+        # Start automatic status polling for pending/training documents
+        self._start_landing_status_polling()
+
+        # NOTE: Old left sidebar + chat layout removed in agent-first redesign.
+        # Chat is now accessible via "Test Agent" button.
+        # The old adapter document list is preserved below but not rendered on landing page.
+        return
+
+        # === LEGACY CODE (unreachable, kept for reference during transition) ===
         doc_items = []
-        
-        # First: Show documents currently being processed (non-blocking progress)
         for filename, status_info in self.processing_documents.items():
             if status_info.get("status") == "processing":
                 doc_items.append(self._create_processing_card(filename, status_info))
@@ -2689,6 +2993,153 @@ class VaultApp:
         except Exception as e:
             logger.debug(f"Could not start landing status polling: {e}")
     
+    def _get_rag_stats(self) -> dict:
+        """Get RAG index statistics for dashboard."""
+        try:
+            from advanced_vault.training import RAGIndex
+            rag = RAGIndex(db_path=str(self.vault_path / "rag.db"))
+            return rag.stats()
+        except Exception:
+            return {"document_count": 0, "chunk_count": 0, "embedding_dimension": 0}
+
+    def _get_rag_documents(self) -> list:
+        """Get list of RAG-indexed documents."""
+        try:
+            from advanced_vault.training import RAGIndex
+            rag = RAGIndex(db_path=str(self.vault_path / "rag.db"))
+            return rag.list_documents()
+        except Exception:
+            return []
+
+    def _delete_rag_document(self, document_id: str):
+        """Delete a document from the RAG index."""
+        try:
+            from advanced_vault.training import RAGIndex
+            rag = RAGIndex(db_path=str(self.vault_path / "rag.db"))
+            success = rag.delete_document(document_id)
+            if success:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Document removed from index"),
+                    bgcolor=LightTheme.ACCENT_SUCCESS,
+                )
+            else:
+                self.page.snack_bar = ft.SnackBar(
+                    content=ft.Text("Document not found"),
+                    bgcolor=LightTheme.ACCENT_WARNING,
+                )
+            self.page.snack_bar.open = True
+            self.page.update()
+            self.show_landing_page()
+        except Exception as e:
+            logger.error(f"Failed to delete RAG document: {e}")
+
+    def _index_document_in_rag(self, name: str, content: str, source_path: str = None):
+        """Index a document in the RAG index for instant querying."""
+        try:
+            from advanced_vault.mcp_server.agent import get_agent
+            agent = get_agent(vault_path=str(self.vault_path))
+            result = agent.add_document(name=name, content=content, source_path=source_path)
+            if result.get("success"):
+                logger.info(f"Indexed '{name}' in RAG: {result.get('chunks', 0)} chunks")
+            else:
+                logger.warning(f"Failed to index '{name}': {result.get('error')}")
+        except Exception as e:
+            logger.error(f"RAG indexing error: {e}")
+
+    def _open_test_agent_chat(self):
+        """Open chat dialog to test the local agent."""
+        if not hasattr(self, 'chat_messages'):
+            self.chat_messages = self._load_chat_history()
+
+        # Get trained adapters for chat
+        trained_adapters = []
+        try:
+            query_filter = QueryFilter()
+            all_entries = self.vault.kv_store.search(query_filter)
+            for entry in all_entries:
+                if entry.tags:
+                    adapter_id = encryption_key = status = None
+                    for tag in entry.tags:
+                        if tag.startswith("training_status:"):
+                            status = tag.split(":", 1)[1]
+                        elif tag.startswith("training_job:"):
+                            adapter_id = tag.split(":", 1)[1]
+                        elif tag.startswith("training_key:"):
+                            encryption_key = tag.split(":", 1)[1]
+                    if status == "completed" and adapter_id:
+                        trained_adapters.append({"name": entry.service, "adapter_id": adapter_id, "encryption_key": encryption_key})
+        except Exception:
+            pass
+
+        # Build chat dialog
+        chat_list = ft.ListView(spacing=16, padding=20, expand=True, auto_scroll=True)
+        self.chat_messages_list = chat_list
+
+        # Populate existing messages
+        if self.chat_messages:
+            for msg in self.chat_messages:
+                chat_list.controls.append(
+                    self._create_chat_bubble(msg["role"], msg["content"], msg.get("document"))
+                )
+        else:
+            chat_list.controls.append(
+                ft.Container(
+                    content=ft.Column([
+                        ft.Icon(ft.Icons.SMART_TOY_ROUNDED, size=48, color=LightTheme.ACCENT_PRIMARY),
+                        ft.Container(height=8),
+                        ft.Text("Test Your Local Agent", size=20, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY, text_align=ft.TextAlign.CENTER),
+                        ft.Text("Ask questions to see what external AIs would get", size=14, color=LightTheme.TEXT_SECONDARY, text_align=ft.TextAlign.CENTER),
+                    ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=0),
+                    padding=ft.padding.only(top=60),
+                )
+            )
+
+        chat_input = ft.TextField(
+            hint_text="Ask your local agent...",
+            border_radius=24,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_color=LightTheme.BORDER_COLOR,
+            focused_border_color=LightTheme.ACCENT_PRIMARY,
+            content_padding=ft.padding.symmetric(horizontal=20, vertical=14),
+            expand=True,
+            on_submit=lambda e: self._send_chat_message(e, chat_input, trained_adapters),
+        )
+        self.chat_input = chat_input
+        self.trained_adapters = trained_adapters
+
+        dlg = ft.AlertDialog(
+            title=ft.Text("Test Agent"),
+            content=ft.Container(
+                content=ft.Column([
+                    chat_list,
+                    ft.Container(
+                        content=ft.Row([
+                            chat_input,
+                            ft.IconButton(
+                                ft.Icons.SEND_ROUNDED,
+                                icon_color="white",
+                                bgcolor=LightTheme.ACCENT_PRIMARY,
+                                on_click=lambda e: self._send_chat_message(e, chat_input, trained_adapters),
+                            ),
+                        ], spacing=8),
+                        padding=ft.padding.only(top=8),
+                    ),
+                ], expand=True),
+                width=600,
+                height=500,
+            ),
+            modal=True,
+            actions=[ft.TextButton("Close", on_click=lambda e: self._close_dialog(dlg))],
+        )
+        self.page.overlay.append(dlg)
+        dlg.open = True
+        self.page.update()
+
+    def _close_dialog(self, dlg):
+        """Close a dialog."""
+        dlg.open = False
+        self.page.update()
+
     def _set_example_question(self, input_field: ft.TextField, question: str):
         """Set example question in the input field."""
         input_field.value = question
@@ -3100,19 +3551,35 @@ class VaultApp:
         def run_inference():
             try:
                 response_text = None
-                doc_name = adapter["name"] if adapter else "Base AI"
-                
-                # LOCAL INFERENCE - always available with or without adapters
+                doc_name = adapter["name"] if adapter else "Local Agent"
+
+                # PRIORITY 1: Local RAG + LocalAgent (privacy-first)
                 if inference_mode == "local":
+                    try:
+                        from advanced_vault.mcp_server.agent import get_agent
+                        agent = get_agent(vault_path=str(self.vault_path))
+                        result = agent.query(question=query, temperature=0.7)
+
+                        if result.get("error") is None or result.get("answer"):
+                            response_text = result.get("answer", "")
+                            sources = result.get("sources", [])
+                            if sources:
+                                doc_name = ", ".join(s["document"] for s in sources[:3])
+                            elif result.get("rag_used"):
+                                doc_name = "Indexed Documents"
+                            else:
+                                doc_name = result.get("model_used") or "Local Agent"
+                    except Exception as agent_err:
+                        logger.warning(f"Local agent error: {agent_err}")
+                        response_text = None
+
+                # PRIORITY 2: Local MLX with adapter (fallback)
+                if response_text is None and inference_mode == "local":
                     try:
                         from local_inference import get_local_engine
                         engine = get_local_engine()
-                        
-                        # Load model if needed
                         if not engine.model:
                             engine.load_model()
-                        
-                        # Run inference (with or without adapter)
                         if adapter:
                             response_text = engine.query(
                                 query=query,
@@ -3120,17 +3587,14 @@ class VaultApp:
                                 encryption_key_hex=adapter.get("encryption_key")
                             )
                         else:
-                            # Base model query without adapter
                             response_text = engine.query_base(query=query)
-                        
+                        doc_name = adapter["name"] if adapter else "Local MLX"
                     except ImportError:
-                        logger.warning("Local inference not available, falling back to cloud")
-                        response_text = None
+                        logger.debug("Local inference engine not available")
                     except Exception as local_err:
-                        logger.error(f"Local inference error: {local_err}")
-                        response_text = None
-                
-                # Cloud inference (default or fallback) - requires adapter
+                        logger.debug(f"Local inference error: {local_err}")
+
+                # PRIORITY 3: Cloud inference (opt-in fallback)
                 if response_text is None:
                     if adapter:
                         response = self.training_manager.inference_with_adapter(
@@ -3139,14 +3603,15 @@ class VaultApp:
                             encryption_key_hex=adapter["encryption_key"]
                         )
                         response_text = response.get("response", "I couldn't generate a response.") if response else "No response received."
+                        doc_name = adapter["name"]
                     else:
-                        # No adapter and cloud mode - prompt to upload or switch to local
                         response_text = (
-                            "I'm your private AI assistant! 🤖\n\n"
-                            "To get the most out of me:\n"
-                            "• **Upload a PDF** using the + button to add knowledge\n"
-                            "• **Switch to Local mode** to chat with the base AI model offline\n\n"
-                            "Once you upload documents, I'll be able to answer questions about them with enhanced accuracy!"
+                            "Welcome to Enclave — your privacy-first AI agent.\n\n"
+                            "To get started:\n"
+                            "1. **Drop a PDF** on the home screen to index it\n"
+                            "2. **Ask questions** — I'll answer from your indexed documents\n"
+                            "3. **Connect Claude Desktop** for seamless MCP integration\n\n"
+                            "Your data stays local. External AIs never see your raw documents."
                         )
                 
                 # Add AI response
@@ -5224,39 +5689,109 @@ class VaultApp:
                 self.show_langchain_policies()
             elif index == 7:  # Library (Training Queue)
                 self.show_library_view()
+            elif index == 8:  # Permissions
+                self.show_permissions_view()
         
         self.page.update()
 
-    def show_activity_view(self):
-        """Show MCP access activity log."""
+    def show_activity_view(self, search_query: str = "", filter_granted: str = "all", filter_days: str = "all"):
+        """Show enhanced MCP access activity log with search, filter, and export."""
         self.current_view = "activity"
-        
-        # Ensure main UI layout exists (secrets_list is created by build_ui)
+
         if not hasattr(self, 'secrets_list') or self.secrets_list is None:
             self.build_ui()
-        
+
         self.secrets_list.controls.clear()
-        
-        # Initialize activity logger
+
         activity_logger = ActivityLogger(vault_path=str(self.vault_path))
-        
-        # Get recent activity
-        activities = activity_logger.get_recent_activity(limit=50)
-        
-        # Build activity view
+
+        # Apply filters
+        granted_filter = None
+        if filter_granted == "granted":
+            granted_filter = True
+        elif filter_granted == "denied":
+            granted_filter = False
+
+        days_filter = None
+        if filter_days == "today":
+            days_filter = 1
+        elif filter_days == "week":
+            days_filter = 7
+
+        activities = activity_logger.search_activity(
+            query=search_query,
+            granted_filter=granted_filter,
+            days=days_filter,
+            limit=200,
+        )
+
+        # Build activity view header
         activity_items = [
-            ft.Text(
-                "📋 Access Activity",
-                size=24,
-                weight=ft.FontWeight.BOLD,
-                color=LightTheme.TEXT_PRIMARY,
+            ft.Text("Access Activity", size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Agent access log — search, filter, and export for compliance", size=14, color=LightTheme.TEXT_SECONDARY),
+            ft.Container(height=12),
+            # Search bar
+            ft.TextField(
+                hint_text="Search activity...",
+                prefix_icon=ft.Icons.SEARCH_ROUNDED,
+                value=search_query,
+                border_radius=8,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_color=LightTheme.BORDER_COLOR,
+                content_padding=ft.padding.symmetric(horizontal=16, vertical=10),
+                on_submit=lambda e: self.show_activity_view(search_query=e.control.value, filter_granted=filter_granted, filter_days=filter_days),
             ),
-            ft.Text(
-                "Recent vault access from Claude Desktop and other MCP clients",
-                size=14,
-                color=LightTheme.TEXT_SECONDARY,
+            ft.Container(height=8),
+            # Filter chips
+            ft.Row(
+                [
+                    ft.Container(
+                        content=ft.Text("All", size=12, color="white" if filter_granted == "all" else LightTheme.TEXT_PRIMARY),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                        bgcolor=LightTheme.ACCENT_PRIMARY if filter_granted == "all" else LightTheme.BG_ELEVATED,
+                        border_radius=16,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted="all", filter_days=filter_days),
+                    ),
+                    ft.Container(
+                        content=ft.Text("Granted", size=12, color="white" if filter_granted == "granted" else LightTheme.ACCENT_SUCCESS),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                        bgcolor=LightTheme.ACCENT_SUCCESS if filter_granted == "granted" else LightTheme.BG_ELEVATED,
+                        border_radius=16,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted="granted", filter_days=filter_days),
+                    ),
+                    ft.Container(
+                        content=ft.Text("Denied", size=12, color="white" if filter_granted == "denied" else LightTheme.ACCENT_ERROR),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                        bgcolor=LightTheme.ACCENT_ERROR if filter_granted == "denied" else LightTheme.BG_ELEVATED,
+                        border_radius=16,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted="denied", filter_days=filter_days),
+                    ),
+                    ft.Container(width=8),
+                    ft.Container(
+                        content=ft.Text("Today", size=12, color="white" if filter_days == "today" else LightTheme.TEXT_PRIMARY),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                        bgcolor=LightTheme.ACCENT_PRIMARY if filter_days == "today" else LightTheme.BG_ELEVATED,
+                        border_radius=16,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted=filter_granted, filter_days="today"),
+                    ),
+                    ft.Container(
+                        content=ft.Text("This Week", size=12, color="white" if filter_days == "week" else LightTheme.TEXT_PRIMARY),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                        bgcolor=LightTheme.ACCENT_PRIMARY if filter_days == "week" else LightTheme.BG_ELEVATED,
+                        border_radius=16,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted=filter_granted, filter_days="week"),
+                    ),
+                ],
+                spacing=8,
             ),
-            ft.Container(height=16),
+            ft.Container(height=8),
+            ft.Text(f"{len(activities)} results", size=12, color=LightTheme.TEXT_MUTED),
+            ft.Container(height=12),
         ]
         
         if not activities:
@@ -5412,29 +5947,33 @@ class VaultApp:
                 )
                 activity_items.append(ft.Container(height=12))
         
-        # Add refresh button
+        # Add action buttons
         activity_items.append(
             ft.Row(
                 [
                     ft.ElevatedButton(
-                        "🔄 Refresh",
+                        "Refresh",
                         icon=ft.Icons.REFRESH_ROUNDED,
-                        on_click=lambda _: self.show_activity_view(),
-                        style=ft.ButtonStyle(
-                            bgcolor=LightTheme.ACCENT_PRIMARY,
-                            color="white",
-                            shape=ft.RoundedRectangleBorder(radius=8),
-                        ),
+                        on_click=lambda _: self.show_activity_view(search_query=search_query, filter_granted=filter_granted, filter_days=filter_days),
+                        style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white", shape=ft.RoundedRectangleBorder(radius=8)),
                     ),
                     ft.ElevatedButton(
-                        "🗑️ Clear Log",
+                        "Export CSV",
+                        icon=ft.Icons.DOWNLOAD_ROUNDED,
+                        on_click=lambda _: self._export_activity("csv", activities),
+                        style=ft.ButtonStyle(bgcolor=LightTheme.BG_ELEVATED, color=LightTheme.TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8)),
+                    ),
+                    ft.ElevatedButton(
+                        "Export JSON",
+                        icon=ft.Icons.CODE_ROUNDED,
+                        on_click=lambda _: self._export_activity("json", activities),
+                        style=ft.ButtonStyle(bgcolor=LightTheme.BG_ELEVATED, color=LightTheme.TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8)),
+                    ),
+                    ft.ElevatedButton(
+                        "Clear Log",
                         icon=ft.Icons.DELETE_ROUNDED,
                         on_click=lambda _: self._clear_activity_log(),
-                        style=ft.ButtonStyle(
-                            bgcolor=LightTheme.ACCENT_ERROR,
-                            color="white",
-                            shape=ft.RoundedRectangleBorder(radius=8),
-                        ),
+                        style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_ERROR, color="white", shape=ft.RoundedRectangleBorder(radius=8)),
                     ),
                 ],
                 spacing=12,
@@ -5449,6 +5988,36 @@ class VaultApp:
         )
         self.page.update()
     
+    def _export_activity(self, format_type: str, activities: list):
+        """Export activity log to CSV or JSON file."""
+        try:
+            activity_logger = ActivityLogger(vault_path=str(self.vault_path))
+            if format_type == "csv":
+                content = activity_logger.export_csv(activities)
+                ext = "csv"
+            else:
+                content = activity_logger.export_json(activities)
+                ext = "json"
+
+            export_path = self.vault_path / f"activity_export.{ext}"
+            with open(export_path, 'w') as f:
+                f.write(content)
+
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Exported {len(activities)} entries to {export_path}"),
+                bgcolor=LightTheme.ACCENT_SUCCESS,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+        except Exception as e:
+            logger.error(f"Failed to export activity: {e}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Export failed: {str(e)}"),
+                bgcolor=LightTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+
     def _clear_activity_log(self):
         """Clear activity log."""
         try:
@@ -5468,6 +6037,174 @@ class VaultApp:
             logger.error(f"Failed to clear activity log: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"❌ Failed to clear log: {str(e)}"),
+                bgcolor=LightTheme.ACCENT_ERROR,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+
+    def show_permissions_view(self):
+        """Show MCP agent permissions management screen."""
+        self.current_view = "permissions"
+
+        if not hasattr(self, 'secrets_list') or self.secrets_list is None:
+            self.build_ui()
+
+        self.secrets_list.controls.clear()
+
+        # Load consent manager and agents
+        try:
+            from advanced_vault.mcp_server.consent import ConsentManager, AgentPermission, AccessScope
+            consent_manager = ConsentManager(vault_path=str(self.vault_path))
+            agents = consent_manager.list_agents()
+        except Exception as e:
+            logger.error(f"Failed to load consent manager: {e}")
+            agents = []
+            consent_manager = None
+
+        permission_items = [
+            ft.Text("Agent Permissions", size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Control which AI agents can access your data via MCP", size=14, color=LightTheme.TEXT_SECONDARY),
+            ft.Container(height=16),
+        ]
+
+        if not agents:
+            permission_items.append(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Icon(ft.Icons.SHIELD_ROUNDED, size=60, color=LightTheme.TEXT_MUTED),
+                            ft.Container(height=16),
+                            ft.Text("No agents registered yet", size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                            ft.Text(
+                                "When AI agents connect via MCP, they'll appear here.\nConnect Claude Desktop to get started.",
+                                size=14, color=LightTheme.TEXT_SECONDARY, text_align=ft.TextAlign.CENTER,
+                            ),
+                            ft.Container(height=16),
+                            ft.ElevatedButton(
+                                "Connect Claude Desktop",
+                                icon=ft.Icons.ADD_CIRCLE_OUTLINE_ROUNDED,
+                                on_click=lambda e: self._configure_claude_mcp(),
+                                style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white", shape=ft.RoundedRectangleBorder(radius=8)),
+                            ),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=0,
+                    ),
+                    padding=40,
+                    alignment=ft.alignment.center,
+                )
+            )
+        else:
+            for agent_info in agents:
+                agent_id = agent_info.get("agent_id", "unknown")
+                perm = consent_manager.get_agent_permission(agent_id) if consent_manager else None
+
+                # Determine status
+                is_expired = perm.is_expired() if perm else False
+                auto_approve = perm.auto_approve if perm else False
+                scope_value = perm.scope.value if perm else "all"
+                allowed_tools = list(perm.allowed_tools) if perm and perm.allowed_tools else []
+                denied_tools = list(perm.denied_tools) if perm and perm.denied_tools else []
+                allowed_docs = list(perm.allowed_documents) if perm and perm.allowed_documents else []
+                max_queries = perm.max_queries_per_hour if perm else 0
+
+                status_color = LightTheme.ACCENT_ERROR if is_expired else (LightTheme.ACCENT_SUCCESS if auto_approve else LightTheme.ACCENT_WARNING)
+                status_text = "Expired" if is_expired else ("Auto-approved" if auto_approve else "Manual consent")
+                status_icon = ft.Icons.CANCEL_ROUNDED if is_expired else (ft.Icons.CHECK_CIRCLE_ROUNDED if auto_approve else ft.Icons.PENDING_ROUNDED)
+
+                # MCP tools list
+                all_mcp_tools = ["agent_query", "agent_summarize", "agent_draft", "agent_status", "vault_store", "vault_recall", "vault_list_entries", "vault_delete"]
+                tool_chips = []
+                for tool in all_mcp_tools:
+                    is_denied = tool in denied_tools
+                    is_allowed = not denied_tools or tool in allowed_tools
+                    tool_chips.append(
+                        ft.Container(
+                            content=ft.Text(tool.replace("_", " ").title(), size=11, color=LightTheme.ACCENT_ERROR if is_denied else LightTheme.ACCENT_SUCCESS),
+                            padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                            bgcolor=(LightTheme.ACCENT_ERROR if is_denied else LightTheme.ACCENT_SUCCESS) + "15",
+                            border_radius=12,
+                        )
+                    )
+
+                card = ft.Container(
+                    content=ft.Column(
+                        [
+                            # Header: agent name + status
+                            ft.Row(
+                                [
+                                    ft.Icon(ft.Icons.SMART_TOY_ROUNDED, size=24, color=LightTheme.ACCENT_PRIMARY),
+                                    ft.Column([
+                                        ft.Text(agent_id, size=16, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                                        ft.Text(f"Scope: {scope_value} | Max queries/hr: {max_queries or 'unlimited'}", size=12, color=LightTheme.TEXT_SECONDARY),
+                                    ], spacing=2, expand=True),
+                                    ft.Container(
+                                        content=ft.Row([ft.Icon(status_icon, size=14, color=status_color), ft.Text(status_text, size=12, color=status_color)], spacing=4),
+                                        padding=ft.padding.symmetric(horizontal=10, vertical=4),
+                                        bgcolor=status_color + "15",
+                                        border_radius=12,
+                                    ),
+                                ],
+                            ),
+                            ft.Container(height=8),
+                            # Tool permissions
+                            ft.Text("Tool Access", size=13, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                            ft.Row(tool_chips, wrap=True, spacing=6, run_spacing=6),
+                            ft.Container(height=8),
+                            # Document restrictions
+                            ft.Text(
+                                f"Document access: {', '.join(allowed_docs) if allowed_docs else 'All documents'}",
+                                size=12, color=LightTheme.TEXT_SECONDARY,
+                            ),
+                            ft.Container(height=12),
+                            # Action buttons
+                            ft.Row(
+                                [
+                                    ft.ElevatedButton(
+                                        "Revoke Access",
+                                        icon=ft.Icons.BLOCK_ROUNDED,
+                                        on_click=lambda e, aid=agent_id: self._revoke_agent_permission(aid),
+                                        style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_ERROR, color="white", shape=ft.RoundedRectangleBorder(radius=8)),
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                        ],
+                        spacing=4,
+                    ),
+                    padding=20,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                    border_radius=12,
+                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                )
+                permission_items.append(card)
+                permission_items.append(ft.Container(height=12))
+
+        self.secrets_list.controls.append(
+            ft.Container(
+                content=ft.Column(permission_items, spacing=0),
+                padding=24,
+            )
+        )
+        self.page.update()
+
+    def _revoke_agent_permission(self, agent_id: str):
+        """Revoke an agent's permission."""
+        try:
+            from advanced_vault.mcp_server.consent import ConsentManager
+            cm = ConsentManager(vault_path=str(self.vault_path))
+            cm.revoke_permission(agent_id)
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Revoked access for {agent_id}"),
+                bgcolor=LightTheme.ACCENT_SUCCESS,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            self.show_permissions_view()
+        except Exception as e:
+            logger.error(f"Failed to revoke permission: {e}")
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(f"Failed to revoke: {str(e)}"),
                 bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
@@ -6710,7 +7447,14 @@ class VaultApp:
                 page_count = result['metadata']['page_count']
                 chunk_count = len(result['text_chunks'])
                 logger.info(f"Extracted {chunk_count} chunks from {page_count} pages")
-                
+
+                # Index in RAG for instant querying
+                try:
+                    full_text = "\n\n".join(result['text_chunks'])
+                    self._index_document_in_rag(filename, full_text, source_path=str(safe_pdf_path))
+                except Exception as rag_err:
+                    logger.warning(f"RAG indexing failed (non-critical): {rag_err}")
+
                 # === STEP 1: Analyzing content (Q&A generation) ===
                 self._update_processing_status(filename, 1, f"Analyzing {page_count} pages...", 0.3)
                 
@@ -9480,6 +10224,60 @@ class VaultApp:
                 ),
             ])
         
+        # Cloud Inference Section
+        settings_items.extend([
+            ft.Container(height=12),
+            ft.Divider(color=LightTheme.BORDER_COLOR),
+            ft.Text("Cloud Inference (Opt-in)", size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Use cloud models for higher quality responses. Data is encrypted before transmission.", size=12, color=LightTheme.TEXT_MUTED),
+            ft.Container(height=8),
+            ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Text("Enable Cloud Inference", size=14, color=LightTheme.TEXT_PRIMARY),
+                        ft.Container(expand=True),
+                        ft.Switch(
+                            value=getattr(self, 'inference_mode', 'local') == "cloud",
+                            on_change=lambda e: self._set_inference_mode("cloud" if e.control.value else "local"),
+                            active_color=LightTheme.ACCENT_PRIMARY,
+                        ),
+                    ],
+                ),
+                padding=ft.padding.symmetric(horizontal=16, vertical=8),
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=8,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            ),
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Row([ft.Icon(ft.Icons.LOCK_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Data encrypted with ChaCha20-Poly1305 before transmission", size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
+                        ft.Row([ft.Icon(ft.Icons.VISIBILITY_OFF_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Cloud server never sees plaintext data", size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
+                        ft.Row([ft.Icon(ft.Icons.DELETE_SWEEP_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Processed data deleted immediately after response", size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
+                    ],
+                    spacing=4,
+                ),
+                padding=12,
+                bgcolor=LightTheme.ACCENT_SUCCESS + "08",
+                border_radius=8,
+            ),
+        ])
+
+        # Permissions link
+        settings_items.extend([
+            ft.Container(height=12),
+            ft.Divider(color=LightTheme.BORDER_COLOR),
+            ft.Text("Agent Permissions", size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Manage which AI agents can access your data", size=12, color=LightTheme.TEXT_MUTED),
+            ft.Container(height=8),
+            ft.ElevatedButton(
+                "Manage Permissions",
+                icon=ft.Icons.SHIELD_ROUNDED,
+                on_click=lambda e: self.on_nav_change(8),
+                style=ft.ButtonStyle(bgcolor=LightTheme.BG_ELEVATED, color=LightTheme.TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8)),
+            ),
+        ])
+
         # Add all items to container
         self.secrets_list.controls.append(
             ft.Container(

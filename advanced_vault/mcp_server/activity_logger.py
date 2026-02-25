@@ -2,13 +2,16 @@
 Activity Logger for MCP Server Access
 
 Logs all vault access attempts from MCP clients for visibility in GUI.
+Provides search, filtering, and export capabilities for compliance.
 """
 
+import csv
+import io
 import json
 import logging
 from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, Any
+from datetime import datetime, timedelta
+from typing import Optional, Dict, Any, List
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +147,89 @@ class ActivityLogger:
             logger.error(f"Failed to read activity log: {e}")
             return []
     
+    def search_activity(
+        self,
+        query: str = "",
+        tool_filter: str = "",
+        granted_filter: Optional[bool] = None,
+        days: Optional[int] = None,
+        limit: int = 100
+    ) -> List[Dict[str, Any]]:
+        """
+        Search and filter activity entries.
+
+        Args:
+            query: Text to search for in tool_name, app_name, query_preview
+            tool_filter: Filter by specific tool name
+            granted_filter: Filter by granted status (True/False/None for all)
+            days: Filter to last N days (None for all)
+            limit: Maximum results to return
+
+        Returns:
+            Filtered list of activity entries (most recent first)
+        """
+        activities = self.get_recent_activity(limit=500)
+        filtered = []
+
+        cutoff = None
+        if days is not None:
+            cutoff = (datetime.now() - timedelta(days=days)).isoformat()
+
+        for a in activities:
+            if query:
+                searchable = json.dumps(a).lower()
+                if query.lower() not in searchable:
+                    continue
+            if tool_filter and a.get("tool_name") != tool_filter:
+                continue
+            if granted_filter is not None and a.get("granted") != granted_filter:
+                continue
+            if cutoff and a.get("timestamp", "") < cutoff:
+                continue
+            filtered.append(a)
+            if len(filtered) >= limit:
+                break
+
+        return filtered
+
+    def export_csv(self, activities: Optional[List[Dict[str, Any]]] = None) -> str:
+        """
+        Export activities to CSV format.
+
+        Args:
+            activities: List of activities to export. If None, exports recent.
+
+        Returns:
+            CSV string
+        """
+        if activities is None:
+            activities = self.get_recent_activity(limit=500)
+
+        output = io.StringIO()
+        fieldnames = [
+            "timestamp", "tool_name", "app_name",
+            "query_preview", "granted", "result_summary"
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        for a in activities:
+            writer.writerow(a)
+        return output.getvalue()
+
+    def export_json(self, activities: Optional[List[Dict[str, Any]]] = None) -> str:
+        """
+        Export activities to JSON format.
+
+        Args:
+            activities: List of activities to export. If None, exports recent.
+
+        Returns:
+            JSON string
+        """
+        if activities is None:
+            activities = self.get_recent_activity(limit=500)
+        return json.dumps(activities, indent=2)
+
     def clear_activity(self):
         """Clear activity log."""
         try:
