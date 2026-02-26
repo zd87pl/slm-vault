@@ -1829,7 +1829,7 @@ class VaultApp:
             self.page.update()
     
     def show_landing_page(self):
-        """Show the trusted local agent dashboard — your data, your agent, your rules."""
+        """Show the vault-first landing page - security is the hero, not chat."""
         self.current_view = "landing"
 
         # Initialize chat messages if not exists
@@ -1853,388 +1853,310 @@ class VaultApp:
             self.page.overlay.append(self.pdf_file_picker)
         self.page.update()
 
-        # Get RAG stats
-        rag_stats = self._get_rag_stats()
-        rag_documents = self._get_rag_documents()
-
-        # Get vault statistics
+        # Get vault statistics for item count
+        total_secured_items = 0
+        recent_items = []
         try:
             query_filter = QueryFilter()
             all_entries = self.vault.kv_store.search(query_filter)
+            total_secured_items = len(all_entries)
 
-            secrets_count = len([e for e in all_entries if e.entry_type in [EntryType.SECRET, EntryType.API_KEY, EntryType.PASSWORD, EntryType.TOKEN, EntryType.CREDENTIAL]])
-            knowledge_count = len([e for e in all_entries if e.entry_type == EntryType.OTHER])
-            
-            # Get trained adapters with their info
-            trained_adapters = []
-            training_in_progress = 0
-            for entry in all_entries:
-                if entry.tags:
-                    adapter_id = None
-                    encryption_key = None
-                    status = None
-                    for tag in entry.tags:
-                        if tag.startswith("training_status:"):
-                            status = tag.split(":", 1)[1]
-                        elif tag.startswith("training_job:"):
-                            adapter_id = tag.split(":", 1)[1]
-                        elif tag.startswith("training_key:"):
-                            encryption_key = tag.split(":", 1)[1]
-                    
-                    if status == "completed" and adapter_id:
-                        trained_adapters.append({
-                            "name": entry.service,
-                            "adapter_id": adapter_id,
-                            "encryption_key": encryption_key
-                        })
-                    elif status in ["pending", "training"]:
-                        training_in_progress += 1
-            
-            adapter_count = len(trained_adapters)
+            # Get recent items (last 8) with their timestamps
+            sorted_entries = sorted(all_entries, key=lambda e: e.created_at if e.created_at else datetime.min, reverse=True)
+            for entry in sorted_entries[:8]:
+                # Calculate time ago
+                time_ago = ""
+                if entry.created_at:
+                    delta = datetime.now() - entry.created_at
+                    if delta.days > 0:
+                        time_ago = f"{delta.days}d ago"
+                    elif delta.seconds >= 3600:
+                        time_ago = f"{delta.seconds // 3600}h ago"
+                    elif delta.seconds >= 60:
+                        time_ago = f"{delta.seconds // 60}m ago"
+                    else:
+                        time_ago = "just now"
+
+                recent_items.append({
+                    "name": entry.service,
+                    "type": entry.entry_type.value if hasattr(entry.entry_type, 'value') else str(entry.entry_type),
+                    "time_ago": time_ago,
+                    "id": entry.id
+                })
         except Exception as e:
             logger.warning(f"Error getting vault stats: {e}")
-            secrets_count = 0
-            knowledge_count = 0
-            adapter_count = 0
-            trained_adapters = []
-            training_in_progress = 0
-        
-        # User info
-        user_email = "User"
-        if self.session_data:
-            user_info = self.session_data.get("user", {})
-            user_email = user_info.get("email") or self.session_data.get("user_email") or self.session_data.get("email") or "User"
-        
-        user_first_name = user_email.split("@")[0].split(".")[0].capitalize() if "@" in user_email else user_email
-        
-        # Backend connected
-        backend_connected = self.backend_status == "connected"
-        
-        # MCP configured (Claude Desktop integration)
-        mcp_configured = False
-        try:
-            if hasattr(self, 'mcp_setup') and self.mcp_setup:
-                mcp_status = self.mcp_setup.get_setup_status()
-                mcp_configured = mcp_status.get("mcp_configured", False)
-        except Exception as e:
-            logger.debug(f"Could not check MCP status: {e}")
-        
-        # Get time-based greeting
-        hour = datetime.now().hour
-        if hour < 12:
-            greeting = "Good morning"
-        elif hour < 17:
-            greeting = "Good afternoon"
-        else:
-            greeting = "Good evening"
-        
-        # Get connected agents count
-        connected_agents = 0
-        try:
-            from advanced_vault.mcp_server.consent import ConsentManager
-            cm = ConsentManager(vault_path=str(self.vault_path))
-            connected_agents = len(cm.list_agents())
-        except Exception:
-            pass
 
-        # ===== AGENT DASHBOARD =====
+        # Also count RAG documents
+        rag_stats = self._get_rag_stats()
+        total_secured_items += rag_stats.get("document_count", 0)
 
-        # Stat cards
-        def _stat_card(icon, label, value, color):
-            return ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Row([
-                            ft.Container(
-                                content=ft.Icon(icon, size=20, color=color),
-                                width=36, height=36,
-                                border_radius=8,
-                                bgcolor=color + "15",
-                                alignment=ft.alignment.center,
-                            ),
-                        ]),
-                        ft.Container(height=8),
-                        ft.Text(str(value), size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-                        ft.Text(label, size=12, color=LightTheme.TEXT_SECONDARY),
-                    ],
-                    spacing=0,
-                ),
-                padding=20,
-                bgcolor=LightTheme.BG_ELEVATED,
-                border_radius=12,
-                border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                expand=True,
-            )
-
-        dashboard_row = ft.Row(
-            [
-                _stat_card(ft.Icons.DESCRIPTION_ROUNDED, "Agent Knowledge", rag_stats.get("document_count", 0), LightTheme.ACCENT_PRIMARY),
-                _stat_card(ft.Icons.KEY_ROUNDED, "Protected Secrets", secrets_count, LightTheme.ACCENT_WARNING),
-                _stat_card(ft.Icons.SMART_TOY_ROUNDED, "Authorized Agents", connected_agents, LightTheme.ACCENT_SUCCESS),
-                _stat_card(ft.Icons.DATA_ARRAY_ROUNDED, "Searchable Chunks", rag_stats.get("chunk_count", 0), "#8b5cf6"),
-            ],
-            spacing=16,
-        )
-
-        # Privacy strip — key differentiator vs. cloud agents
-        privacy_strip = ft.Container(
-            content=ft.Row(
-                [
-                    ft.Row([ft.Icon(ft.Icons.LOCK_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("ChaCha20 Encrypted", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
-                    ft.Text("|", size=11, color=LightTheme.BORDER_COLOR),
-                    ft.Row([ft.Icon(ft.Icons.KEY_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Local Keys Only", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
-                    ft.Text("|", size=11, color=LightTheme.BORDER_COLOR),
-                    ft.Row([ft.Icon(ft.Icons.SHIELD_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Data Never Leaves Device", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
-                    ft.Text("|", size=11, color=LightTheme.BORDER_COLOR),
-                    ft.Row([ft.Icon(ft.Icons.VISIBILITY_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Full Audit Trail", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=4),
-                ],
-                spacing=12,
-                alignment=ft.MainAxisAlignment.CENTER,
-            ),
-            padding=ft.padding.symmetric(vertical=8, horizontal=16),
-            bgcolor=LightTheme.ACCENT_SUCCESS + "08",
-            border_radius=8,
-        )
-
-        # Document drop zone
-        drop_zone = ft.Container(
+        # ===== HERO DROP ZONE =====
+        hero_drop_zone = ft.Container(
             content=ft.Column(
                 [
-                    ft.Icon(ft.Icons.CLOUD_UPLOAD_ROUNDED, size=48, color=LightTheme.ACCENT_PRIMARY),
-                    ft.Container(height=8),
-                    ft.Text("Feed your local agent", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY, text_align=ft.TextAlign.CENTER),
-                    ft.Text("Documents stay on your device. AI agents get answers, not files.", size=13, color=LightTheme.TEXT_SECONDARY, text_align=ft.TextAlign.CENTER),
-                    ft.Container(height=12),
-                    ft.ElevatedButton(
-                        "Choose Files",
-                        icon=ft.Icons.FILE_UPLOAD_ROUNDED,
-                        on_click=lambda e: self._on_upload_click(e),
-                        style=ft.ButtonStyle(
-                            bgcolor=LightTheme.ACCENT_PRIMARY,
-                            color="white",
-                            shape=ft.RoundedRectangleBorder(radius=8),
+                    # Large lock icon
+                    ft.Container(
+                        content=ft.Icon(
+                            ft.Icons.LOCK_ROUNDED,
+                            size=72,
+                            color=LightTheme.ACCENT_PRIMARY,
                         ),
+                        padding=24,
+                        border_radius=20,
+                        bgcolor=LightTheme.ACCENT_BLUE_LIGHT,
+                    ),
+                    ft.Container(height=24),
+                    ft.Text(
+                        "Drop files to encrypt & secure",
+                        size=24,
+                        weight=ft.FontWeight.BOLD,
+                        color=LightTheme.TEXT_PRIMARY,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    ft.Text(
+                        "Your files never leave your device unencrypted",
+                        size=14,
+                        color=LightTheme.TEXT_SECONDARY,
+                        text_align=ft.TextAlign.CENTER,
+                    ),
+                    ft.Container(height=24),
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                "Choose Files",
+                                icon=ft.Icons.FILE_UPLOAD_ROUNDED,
+                                on_click=lambda e: self._on_upload_click(e),
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                                    color="white",
+                                    padding=ft.padding.symmetric(horizontal=32, vertical=16),
+                                    shape=ft.RoundedRectangleBorder(radius=12),
+                                ),
+                                height=52,
+                            ),
+                            ft.OutlinedButton(
+                                "Add Secret",
+                                icon=ft.Icons.KEY_ROUNDED,
+                                on_click=lambda e: self.show_add_dialog(e, default_type="secret"),
+                                style=ft.ButtonStyle(
+                                    color=LightTheme.TEXT_PRIMARY,
+                                    padding=ft.padding.symmetric(horizontal=24, vertical=16),
+                                    shape=ft.RoundedRectangleBorder(radius=12),
+                                    side=ft.BorderSide(1.5, LightTheme.BORDER_COLOR),
+                                ),
+                                height=52,
+                            ),
+                        ],
+                        spacing=16,
+                        alignment=ft.MainAxisAlignment.CENTER,
                     ),
                 ],
                 horizontal_alignment=ft.CrossAxisAlignment.CENTER,
                 spacing=0,
             ),
-            padding=40,
+            padding=60,
             bgcolor=LightTheme.BG_ELEVATED,
-            border_radius=12,
-            border=ft.border.all(2, LightTheme.ACCENT_PRIMARY + "40"),
+            border_radius=16,
+            border=ft.border.all(2, LightTheme.ACCENT_PRIMARY + "30"),
             on_click=lambda e: self._on_upload_click(e),
         )
 
-        # Indexed documents list
-        doc_list_items = []
-        for doc in rag_documents[:10]:
-            doc_id = doc.get("id", "")
-            doc_list_items.append(
-                ft.Container(
-                    content=ft.Row(
+        # ===== ENCRYPTION STATUS BANNER =====
+        encryption_banner = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Container(
+                        content=ft.Icon(
+                            ft.Icons.VERIFIED_USER_ROUNDED,
+                            size=28,
+                            color=LightTheme.ACCENT_SUCCESS,
+                        ),
+                        padding=12,
+                        border_radius=12,
+                        bgcolor=LightTheme.ACCENT_SUCCESS + "15",
+                    ),
+                    ft.Column(
                         [
-                            ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
-                            ft.Text(doc.get("name", "Unknown")[:35], size=13, color=LightTheme.TEXT_PRIMARY, expand=True),
-                            ft.Text(f'{doc.get("chunk_count", 0)} chunks', size=11, color=LightTheme.TEXT_MUTED),
-                            ft.IconButton(
-                                ft.Icons.DELETE_OUTLINE_ROUNDED,
-                                icon_size=16,
-                                icon_color=LightTheme.TEXT_MUTED,
-                                tooltip="Remove from index",
-                                on_click=lambda e, did=doc_id: self._delete_rag_document(did),
+                            ft.Text(
+                                f"{total_secured_items} items secured",
+                                size=18,
+                                weight=ft.FontWeight.BOLD,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                            ft.Row(
+                                [
+                                    ft.Icon(ft.Icons.LOCK_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
+                                    ft.Text("ChaCha20-Poly1305", size=12, color=LightTheme.ACCENT_SUCCESS),
+                                    ft.Text("  |  ", size=12, color=LightTheme.TEXT_MUTED),
+                                    ft.Icon(ft.Icons.KEY_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
+                                    ft.Text("Keys stored locally", size=12, color=LightTheme.ACCENT_SUCCESS),
+                                    ft.Text("  |  ", size=12, color=LightTheme.TEXT_MUTED),
+                                    ft.Icon(ft.Icons.SHIELD_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
+                                    ft.Text("Data never leaves device", size=12, color=LightTheme.ACCENT_SUCCESS),
+                                ],
+                                spacing=4,
                             ),
                         ],
-                        spacing=8,
+                        spacing=4,
+                        expand=True,
                     ),
-                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
-                    border_radius=8,
-                    bgcolor=LightTheme.BG_ELEVATED,
-                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                )
-            )
-
-        if not doc_list_items:
-            doc_list_items.append(
-                ft.Container(
-                    content=ft.Text("No documents indexed yet. Upload PDFs to teach your agent.", size=13, color=LightTheme.TEXT_MUTED, italic=True, text_align=ft.TextAlign.CENTER),
-                    padding=16,
-                )
-            )
-
-        doc_section = ft.Column(
-            [
-                ft.Row([
-                    ft.Text("Indexed Documents", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                    ft.Container(expand=True),
-                    ft.Text(f"{rag_stats.get('document_count', 0)} total", size=12, color=LightTheme.TEXT_MUTED),
-                ]),
-                ft.Container(height=8),
-                ft.Column(doc_list_items, spacing=6),
-            ],
-            spacing=0,
+                ],
+                spacing=16,
+            ),
+            padding=20,
+            bgcolor=LightTheme.ACCENT_SUCCESS + "08",
+            border_radius=12,
+            border=ft.border.all(1, LightTheme.ACCENT_SUCCESS + "30"),
         )
 
-        # Recent activity feed
-        activity_logger = ActivityLogger(vault_path=str(self.vault_path))
-        recent_activities = activity_logger.get_recent_activity(limit=5)
-
-        activity_items = []
-        if recent_activities:
-            for activity in recent_activities:
-                timestamp = activity.get('timestamp', '')
-                try:
-                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
-                    time_str = dt.strftime('%H:%M')
-                except Exception:
-                    time_str = ""
-                granted = activity.get('granted', False)
-                tool_name = activity.get('tool_name', 'unknown').replace('vault_', '').replace('agent_', '').replace('_', ' ').title()
-                app_name = activity.get('app_name', 'Unknown')
-                status_color = LightTheme.ACCENT_SUCCESS if granted else LightTheme.ACCENT_ERROR
-                activity_items.append(
+        # ===== RECENTLY SECURED ITEMS =====
+        recent_items_list = []
+        if recent_items:
+            for item in recent_items:
+                recent_items_list.append(
                     ft.Container(
                         content=ft.Row(
                             [
                                 ft.Icon(
-                                    ft.Icons.CHECK_CIRCLE_ROUNDED if granted else ft.Icons.CANCEL_ROUNDED,
-                                    size=14, color=status_color,
+                                    ft.Icons.LOCK_ROUNDED,
+                                    size=18,
+                                    color=LightTheme.ACCENT_SUCCESS,
                                 ),
-                                ft.Text(f"{app_name}: {tool_name}", size=12, color=LightTheme.TEXT_PRIMARY, expand=True),
-                                ft.Text(time_str, size=11, color=LightTheme.TEXT_MUTED),
+                                ft.Text(
+                                    item["name"][:30] + ("..." if len(item["name"]) > 30 else ""),
+                                    size=14,
+                                    color=LightTheme.TEXT_PRIMARY,
+                                    expand=True,
+                                ),
+                                ft.Container(
+                                    content=ft.Text(
+                                        "encrypted",
+                                        size=11,
+                                        color=LightTheme.ACCENT_SUCCESS,
+                                    ),
+                                    padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                    bgcolor=LightTheme.ACCENT_SUCCESS + "15",
+                                    border_radius=12,
+                                ),
+                                ft.Text(
+                                    item["time_ago"],
+                                    size=11,
+                                    color=LightTheme.TEXT_MUTED,
+                                ),
                             ],
-                            spacing=8,
+                            spacing=12,
                         ),
-                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                        border_radius=8,
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else LightTheme.BG_ELEVATED),
                     )
                 )
         else:
-            activity_items.append(
+            recent_items_list.append(
                 ft.Container(
-                    content=ft.Text("No agent activity yet. Connect an AI agent via MCP to see access logs here.", size=12, color=LightTheme.TEXT_MUTED, italic=True),
-                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                    content=ft.Column(
+                        [
+                            ft.Icon(ft.Icons.INBOX_ROUNDED, size=32, color=LightTheme.TEXT_MUTED),
+                            ft.Text(
+                                "No items in vault yet",
+                                size=14,
+                                color=LightTheme.TEXT_MUTED,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                            ft.Text(
+                                "Drop a file or add a secret to get started",
+                                size=12,
+                                color=LightTheme.TEXT_MUTED,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=8,
+                    ),
+                    padding=32,
+                    alignment=ft.alignment.center,
                 )
             )
 
-        activity_section = ft.Container(
+        recent_section = ft.Container(
             content=ft.Column(
                 [
                     ft.Row([
-                        ft.Text("Recent Agent Activity", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                        ft.Text(
+                            "Recently Secured",
+                            size=16,
+                            weight=ft.FontWeight.W_600,
+                            color=LightTheme.TEXT_PRIMARY,
+                        ),
                         ft.Container(expand=True),
-                        ft.TextButton("View All", on_click=lambda e: self.on_nav_change(3), style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY)),
+                        ft.TextButton(
+                            "View All",
+                            on_click=lambda e: self.on_nav_change(0),  # Go to My Data
+                            style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
+                        ),
                     ]),
-                    ft.Container(height=4),
-                    ft.Column(activity_items, spacing=2),
+                    ft.Container(height=12),
+                    ft.Column(recent_items_list, spacing=8),
                 ],
                 spacing=0,
             ),
-            padding=16,
-            bgcolor=LightTheme.BG_ELEVATED,
-            border_radius=12,
-            border=ft.border.all(1, LightTheme.BORDER_COLOR),
         )
 
-        # Quick action buttons
-        action_buttons = ft.Row(
-            [
-                ft.ElevatedButton(
-                    "Talk to Agent",
-                    icon=ft.Icons.CHAT_ROUNDED,
-                    on_click=lambda e: self._open_test_agent_chat(),
-                    style=ft.ButtonStyle(
-                        bgcolor=LightTheme.ACCENT_PRIMARY,
-                        color="white",
-                        shape=ft.RoundedRectangleBorder(radius=8),
-                    ),
-                    tooltip="Query your local agent directly",
-                    height=44,
+        # ===== SECONDARY CTA: TALK TO AGENT =====
+        talk_to_agent_button = ft.Container(
+            content=ft.OutlinedButton(
+                "Talk to Agent",
+                icon=ft.Icons.CHAT_BUBBLE_OUTLINE_ROUNDED,
+                on_click=lambda e: self.on_nav_change(1),  # Go to Agent view
+                style=ft.ButtonStyle(
+                    color=LightTheme.TEXT_PRIMARY,
+                    padding=ft.padding.symmetric(horizontal=24, vertical=12),
+                    shape=ft.RoundedRectangleBorder(radius=8),
+                    side=ft.BorderSide(1, LightTheme.BORDER_COLOR),
                 ),
-                ft.ElevatedButton(
-                    "Connect Agent" if not mcp_configured else "Claude Connected",
-                    icon=ft.Icons.CABLE_ROUNDED if not mcp_configured else ft.Icons.CHECK_CIRCLE_ROUNDED,
-                    on_click=lambda e: self._configure_claude_mcp() if not mcp_configured else None,
-                    style=ft.ButtonStyle(
-                        bgcolor=LightTheme.ACCENT_SUCCESS if mcp_configured else LightTheme.BG_ELEVATED,
-                        color="white" if mcp_configured else LightTheme.TEXT_PRIMARY,
-                        shape=ft.RoundedRectangleBorder(radius=8),
-                    ),
-                    tooltip="Let Claude Desktop query your local agent via MCP" if not mcp_configured else "Claude Desktop connected via MCP",
-                    height=44,
-                ),
-                ft.ElevatedButton(
-                    "Access Control",
-                    icon=ft.Icons.SHIELD_ROUNDED,
-                    on_click=lambda e: self.on_nav_change(8),
-                    style=ft.ButtonStyle(
-                        bgcolor=LightTheme.BG_ELEVATED,
-                        color=LightTheme.TEXT_PRIMARY,
-                        shape=ft.RoundedRectangleBorder(radius=8),
-                    ),
-                    tooltip="Control which agents can access which documents",
-                    height=44,
-                ),
-            ],
-            spacing=12,
+                height=44,
+            ),
+            alignment=ft.alignment.center,
         )
-        
-        # ===== ASSEMBLE DASHBOARD LAYOUT =====
 
-        # Main scrollable content
+        # ===== ASSEMBLE VAULT-FIRST LAYOUT =====
         main_content = ft.Container(
             content=ft.Column(
                 [
-                    # Header
+                    ft.Container(height=32),
+                    # Hero drop zone (centered, prominent)
                     ft.Container(
-                        content=ft.Row(
-                            [
-                                ft.Text("Enclave", size=22, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-                                ft.Text(" — Your data. Your agent. Your rules.", size=14, color=LightTheme.TEXT_SECONDARY, italic=True),
-                                ft.Container(expand=True),
-                                ft.IconButton(ft.Icons.REFRESH_ROUNDED, icon_color=LightTheme.TEXT_MUTED, icon_size=20, tooltip="Refresh", on_click=lambda e: self.show_landing_page()),
-                                ft.IconButton(ft.Icons.SETTINGS_ROUNDED, icon_color=LightTheme.TEXT_MUTED, icon_size=20, tooltip="Settings", on_click=lambda e: self.on_nav_change(5)),
-                            ],
-                            vertical_alignment=ft.CrossAxisAlignment.END,
-                        ),
-                        padding=ft.padding.only(left=32, right=16, top=16, bottom=8),
-                    ),
-                    # Privacy strip
-                    ft.Container(content=privacy_strip, padding=ft.padding.symmetric(horizontal=32)),
-                    ft.Container(height=16),
-                    # Dashboard stats
-                    ft.Container(content=dashboard_row, padding=ft.padding.symmetric(horizontal=32)),
-                    ft.Container(height=24),
-                    # Two-column: drop zone + activity
-                    ft.Container(
-                        content=ft.Row(
-                            [
-                                # Left: Drop zone + documents
-                                ft.Container(
-                                    content=ft.Column([drop_zone, ft.Container(height=16), doc_section], spacing=0),
-                                    expand=3,
-                                ),
-                                ft.Container(width=24),
-                                # Right: Activity + actions
-                                ft.Container(
-                                    content=ft.Column([activity_section, ft.Container(height=16), action_buttons], spacing=0),
-                                    expand=2,
-                                ),
-                            ],
-                            spacing=0,
-                            vertical_alignment=ft.CrossAxisAlignment.START,
-                        ),
-                        padding=ft.padding.symmetric(horizontal=32),
+                        content=hero_drop_zone,
+                        padding=ft.padding.symmetric(horizontal=64),
                     ),
                     ft.Container(height=24),
+                    # Encryption status banner
+                    ft.Container(
+                        content=encryption_banner,
+                        padding=ft.padding.symmetric(horizontal=64),
+                    ),
+                    ft.Container(height=24),
+                    # Recently secured items
+                    ft.Container(
+                        content=recent_section,
+                        padding=ft.padding.symmetric(horizontal=64),
+                    ),
+                    ft.Container(height=24),
+                    # Secondary CTA
+                    talk_to_agent_button,
+                    ft.Container(height=32),
                 ],
                 scroll=ft.ScrollMode.AUTO,
                 expand=True,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
             expand=True,
             bgcolor=LightTheme.BG_PRIMARY,
         )
 
-        # Initialize sidebar
+        # Initialize sidebar with new structure
         if not hasattr(self, 'sidebar') or self.sidebar is None:
             self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=-1)
         else:
@@ -2254,9 +2176,6 @@ class VaultApp:
         # Start automatic status polling for pending/training documents
         self._start_landing_status_polling()
 
-        # NOTE: Old left sidebar + chat layout removed in agent-first redesign.
-        # Chat is now accessible via "Test Agent" button.
-        # The old adapter document list is preserved below but not rendered on landing page.
         return
 
         # === LEGACY CODE (unreachable, kept for reference during transition) ===
@@ -5653,46 +5572,724 @@ class VaultApp:
         self.load_secrets()
 
     def on_nav_change(self, index: int):
-        """Handle navigation change."""
+        """Handle navigation change for simplified 4-item structure."""
         # Update sidebar selection
         self.sidebar.selected_index = index
         sidebar_container = self.sidebar.build()
-        
+
         # Update sidebar in layout
         layout = self.page.controls[0]  # Get the Row layout
         if layout and isinstance(layout, ft.Row) and len(layout.controls) > 0:
             layout.controls[0] = sidebar_container  # Update sidebar
-        
-        # Handle navigation
-        if index == -1:  # Home
+
+        # Handle navigation with new simplified structure:
+        # -1: Vault (landing page with hero drop zone)
+        #  0: My Data (Secrets + Knowledge + Library combined with tabs)
+        #  1: Agent (Chat + Permissions + Activity combined with tabs)
+        #  2: Settings (Training + Stats + Policies + Setup combined with tabs)
+        if index == -1:  # Vault
             self.show_landing_page()
+        elif index == 0:  # My Data
+            self.show_my_data_view()
+        elif index == 1:  # Agent
+            self.show_agent_view()
+        elif index == 2:  # Settings
+            self.show_settings_hub()
+
+        self.page.update()
+
+    def show_my_data_view(self, active_tab: str = "all"):
+        """Combined view for Secrets + Knowledge + Library with tabs."""
+        self.current_view = "my_data"
+        self.page.clean()
+
+        # Tab state
+        tab_index = {"all": 0, "secrets": 1, "knowledge": 2, "library": 3}.get(active_tab, 0)
+
+        def on_tab_change(e):
+            tab_names = ["all", "secrets", "knowledge", "library"]
+            self.show_my_data_view(active_tab=tab_names[e.control.selected_index])
+
+        # Build tabs
+        tabs = ft.Tabs(
+            selected_index=tab_index,
+            animation_duration=200,
+            tabs=[
+                ft.Tab(text="All Items", icon=ft.Icons.FOLDER_ROUNDED),
+                ft.Tab(text="Secrets", icon=ft.Icons.KEY_ROUNDED),
+                ft.Tab(text="Knowledge", icon=ft.Icons.LIGHTBULB_ROUNDED),
+                ft.Tab(text="Library", icon=ft.Icons.FOLDER_COPY_ROUNDED),
+            ],
+            on_change=on_tab_change,
+            expand=True,
+        )
+
+        # Build content based on active tab
+        content_items = []
+        if active_tab == "all":
+            content_items = self._build_all_items_content()
+        elif active_tab == "secrets":
+            content_items = self._build_secrets_content()
+        elif active_tab == "knowledge":
+            content_items = self._build_knowledge_content()
+        elif active_tab == "library":
+            content_items = self._build_library_content()
+
+        # Main content
+        main_content = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Container(
+                        content=ft.Text("My Data", size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                        padding=ft.padding.only(left=32, top=24, bottom=8),
+                    ),
+                    ft.Container(
+                        content=tabs,
+                        padding=ft.padding.symmetric(horizontal=32),
+                        height=48,
+                    ),
+                    ft.Container(
+                        content=ft.Column(content_items, scroll=ft.ScrollMode.AUTO, expand=True),
+                        padding=ft.padding.symmetric(horizontal=32, vertical=16),
+                        expand=True,
+                    ),
+                ],
+                expand=True,
+            ),
+            expand=True,
+            bgcolor=LightTheme.BG_PRIMARY,
+        )
+
+        # Initialize sidebar
+        if not hasattr(self, 'sidebar') or self.sidebar is None:
+            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=0)
         else:
-            # For all other views, ensure main UI layout is built
-            # Check if we're currently on landing page (which uses different layout)
-            if self.current_view == "landing" or len(self.page.controls) == 0 or not hasattr(self, 'secrets_list'):
-                self.build_ui()
-            
-            if index == 0:  # Secrets
-                self.selected_type = "secret"
-                self.type_filter.value = "secret"
-                self.load_secrets()
-            elif index == 1:  # Knowledge
-                self.show_knowledge_view()
-            elif index == 2:  # Training
-                self.show_training_view()
-            elif index == 3:  # Activity
-                self.show_activity_view()
-            elif index == 4:  # Statistics
-                self.show_statistics()
-            elif index == 5:  # Settings
-                self.show_settings()
-            elif index == 6:  # LangChain Policies
-                self.show_langchain_policies()
-            elif index == 7:  # Library (Training Queue)
-                self.show_library_view()
-            elif index == 8:  # Permissions
-                self.show_permissions_view()
-        
+            self.sidebar.selected_index = 0
+        sidebar_container = self.sidebar.build()
+
+        self.page.add(ft.Row([sidebar_container, main_content], spacing=0, expand=True))
+        self.page.update()
+
+    def _build_all_items_content(self) -> list:
+        """Build combined list of all vault items."""
+        items = []
+        try:
+            query_filter = QueryFilter()
+            all_entries = self.vault.kv_store.search(query_filter)
+            sorted_entries = sorted(all_entries, key=lambda e: e.created_at if e.created_at else datetime.min, reverse=True)
+
+            for entry in sorted_entries[:50]:
+                icon = ft.Icons.KEY_ROUNDED if entry.entry_type in [EntryType.SECRET, EntryType.API_KEY, EntryType.PASSWORD] else ft.Icons.DESCRIPTION_ROUNDED
+                items.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(icon, size=18, color=LightTheme.ACCENT_PRIMARY),
+                            ft.Text(entry.service[:40], size=14, color=LightTheme.TEXT_PRIMARY, expand=True),
+                            ft.Container(
+                                content=ft.Text(entry.entry_type.value if hasattr(entry.entry_type, 'value') else str(entry.entry_type), size=11, color=LightTheme.TEXT_MUTED),
+                                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                bgcolor=LightTheme.BG_HOVER,
+                                border_radius=8,
+                            ),
+                        ], spacing=12),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                        border_radius=8,
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        on_click=lambda e, ent=entry: self.view_secret(ent),
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"Error loading items: {e}")
+            items.append(ft.Text("Error loading items", color=LightTheme.TEXT_MUTED))
+
+        if not items:
+            items.append(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.INBOX_ROUNDED, size=48, color=LightTheme.TEXT_MUTED),
+                    ft.Text("No items yet", size=16, color=LightTheme.TEXT_MUTED),
+                    ft.Text("Add secrets or documents to get started", size=13, color=LightTheme.TEXT_MUTED),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+                padding=64,
+                alignment=ft.alignment.center,
+            ))
+
+        return items
+
+    def _build_secrets_content(self) -> list:
+        """Build secrets list content."""
+        items = []
+        try:
+            query_filter = QueryFilter()
+            all_entries = self.vault.kv_store.search(query_filter)
+            secrets = [e for e in all_entries if e.entry_type in [EntryType.SECRET, EntryType.API_KEY, EntryType.PASSWORD, EntryType.TOKEN, EntryType.CREDENTIAL]]
+            sorted_secrets = sorted(secrets, key=lambda e: e.created_at if e.created_at else datetime.min, reverse=True)
+
+            for entry in sorted_secrets[:50]:
+                items.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.KEY_ROUNDED, size=18, color=LightTheme.ACCENT_WARNING),
+                            ft.Text(entry.service[:40], size=14, color=LightTheme.TEXT_PRIMARY, expand=True),
+                            ft.Icon(ft.Icons.LOCK_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS),
+                        ], spacing=12),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                        border_radius=8,
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        on_click=lambda e, ent=entry: self.view_secret(ent),
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"Error loading secrets: {e}")
+
+        if not items:
+            items.append(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.KEY_ROUNDED, size=48, color=LightTheme.TEXT_MUTED),
+                    ft.Text("No secrets stored", size=16, color=LightTheme.TEXT_MUTED),
+                    ft.ElevatedButton("Add Secret", icon=ft.Icons.ADD_ROUNDED, on_click=lambda e: self.show_add_dialog(e, default_type="secret")),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
+                padding=64,
+                alignment=ft.alignment.center,
+            ))
+
+        return items
+
+    def _build_knowledge_content(self) -> list:
+        """Build knowledge/RAG documents content."""
+        items = []
+        try:
+            rag_docs = self._get_rag_documents()
+            for doc in rag_docs[:50]:
+                items.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
+                            ft.Text(doc.get("name", "Unknown")[:40], size=14, color=LightTheme.TEXT_PRIMARY, expand=True),
+                            ft.Text(f'{doc.get("chunk_count", 0)} chunks', size=11, color=LightTheme.TEXT_MUTED),
+                            ft.IconButton(ft.Icons.DELETE_OUTLINE_ROUNDED, icon_size=16, icon_color=LightTheme.TEXT_MUTED,
+                                         on_click=lambda e, did=doc.get("id"): self._delete_rag_document(did)),
+                        ], spacing=12),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                        border_radius=8,
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"Error loading knowledge: {e}")
+
+        if not items:
+            items.append(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.LIGHTBULB_ROUNDED, size=48, color=LightTheme.TEXT_MUTED),
+                    ft.Text("No documents indexed", size=16, color=LightTheme.TEXT_MUTED),
+                    ft.ElevatedButton("Upload Document", icon=ft.Icons.UPLOAD_ROUNDED, on_click=lambda e: self._on_upload_click(e)),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=12),
+                padding=64,
+                alignment=ft.alignment.center,
+            ))
+
+        return items
+
+    def _build_library_content(self) -> list:
+        """Build library/training queue content."""
+        items = []
+        try:
+            query_filter = QueryFilter()
+            all_entries = self.vault.kv_store.search(query_filter)
+
+            for entry in all_entries:
+                if entry.tags:
+                    status = None
+                    for tag in entry.tags:
+                        if tag.startswith("training_status:"):
+                            status = tag.split(":", 1)[1]
+                            break
+
+                    if status:
+                        status_color = {
+                            "completed": LightTheme.ACCENT_SUCCESS,
+                            "training": LightTheme.ACCENT_WARNING,
+                            "pending": LightTheme.TEXT_MUTED,
+                        }.get(status, LightTheme.TEXT_MUTED)
+
+                        items.append(
+                            ft.Container(
+                                content=ft.Row([
+                                    ft.Icon(ft.Icons.FOLDER_COPY_ROUNDED, size=18, color=status_color),
+                                    ft.Text(entry.service[:40], size=14, color=LightTheme.TEXT_PRIMARY, expand=True),
+                                    ft.Container(
+                                        content=ft.Text(status.capitalize(), size=11, color=status_color),
+                                        padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                        bgcolor=status_color + "15",
+                                        border_radius=8,
+                                    ),
+                                ], spacing=12),
+                                padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                                border_radius=8,
+                                bgcolor=LightTheme.BG_ELEVATED,
+                                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                            )
+                        )
+        except Exception as e:
+            logger.warning(f"Error loading library: {e}")
+
+        if not items:
+            items.append(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.FOLDER_COPY_ROUNDED, size=48, color=LightTheme.TEXT_MUTED),
+                    ft.Text("No training jobs", size=16, color=LightTheme.TEXT_MUTED),
+                    ft.Text("Upload documents to create trained adapters", size=13, color=LightTheme.TEXT_MUTED),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+                padding=64,
+                alignment=ft.alignment.center,
+            ))
+
+        return items
+
+    def show_agent_view(self, active_tab: str = "chat"):
+        """Combined view for Chat + Permissions + Activity with tabs."""
+        self.current_view = "agent"
+        self.page.clean()
+
+        tab_index = {"chat": 0, "connections": 1, "permissions": 2, "activity": 3}.get(active_tab, 0)
+
+        def on_tab_change(e):
+            tab_names = ["chat", "connections", "permissions", "activity"]
+            self.show_agent_view(active_tab=tab_names[e.control.selected_index])
+
+        tabs = ft.Tabs(
+            selected_index=tab_index,
+            animation_duration=200,
+            tabs=[
+                ft.Tab(text="Chat", icon=ft.Icons.CHAT_ROUNDED),
+                ft.Tab(text="Connections", icon=ft.Icons.CABLE_ROUNDED),
+                ft.Tab(text="Permissions", icon=ft.Icons.SHIELD_ROUNDED),
+                ft.Tab(text="Activity", icon=ft.Icons.HISTORY_ROUNDED),
+            ],
+            on_change=on_tab_change,
+            expand=True,
+        )
+
+        content_items = []
+        if active_tab == "chat":
+            content_items = self._build_chat_content()
+        elif active_tab == "connections":
+            content_items = self._build_connections_content()
+        elif active_tab == "permissions":
+            content_items = self._build_permissions_content()
+        elif active_tab == "activity":
+            content_items = self._build_activity_content()
+
+        main_content = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Container(
+                        content=ft.Text("Agent", size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                        padding=ft.padding.only(left=32, top=24, bottom=8),
+                    ),
+                    ft.Container(content=tabs, padding=ft.padding.symmetric(horizontal=32), height=48),
+                    ft.Container(
+                        content=ft.Column(content_items, scroll=ft.ScrollMode.AUTO, expand=True),
+                        padding=ft.padding.symmetric(horizontal=32, vertical=16),
+                        expand=True,
+                    ),
+                ],
+                expand=True,
+            ),
+            expand=True,
+            bgcolor=LightTheme.BG_PRIMARY,
+        )
+
+        if not hasattr(self, 'sidebar') or self.sidebar is None:
+            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=1)
+        else:
+            self.sidebar.selected_index = 1
+        sidebar_container = self.sidebar.build()
+
+        self.page.add(ft.Row([sidebar_container, main_content], spacing=0, expand=True))
+        self.page.update()
+
+    def _build_chat_content(self) -> list:
+        """Build chat interface content."""
+        # Simple chat placeholder - reuses existing chat functionality
+        chat_input = ft.TextField(
+            hint_text="Ask your agent a question...",
+            expand=True,
+            border_radius=12,
+            on_submit=lambda e: self._send_chat_from_agent_view(e),
+        )
+
+        return [
+            ft.Container(
+                content=ft.Column([
+                    ft.Text("Talk to Your Agent", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                    ft.Text("Query your encrypted knowledge base locally", size=13, color=LightTheme.TEXT_SECONDARY),
+                    ft.Container(height=16),
+                    ft.Row([
+                        chat_input,
+                        ft.IconButton(ft.Icons.SEND_ROUNDED, icon_color=LightTheme.ACCENT_PRIMARY,
+                                     on_click=lambda e: self._send_chat_from_agent_view(e, chat_input)),
+                    ], spacing=8),
+                ], spacing=8),
+                padding=24,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=12,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            ),
+            ft.Container(height=16),
+            ft.ElevatedButton(
+                "Open Full Chat",
+                icon=ft.Icons.OPEN_IN_NEW_ROUNDED,
+                on_click=lambda e: self._open_test_agent_chat(),
+                style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+            ),
+        ]
+
+    def _build_connections_content(self) -> list:
+        """Build MCP connections panel for one-click setup."""
+        mcp_configured = False
+        try:
+            if hasattr(self, 'mcp_setup') and self.mcp_setup:
+                mcp_status = self.mcp_setup.get_setup_status()
+                mcp_configured = mcp_status.get("mcp_configured", False)
+        except Exception:
+            pass
+
+        def create_client_card(name, icon, color, configure_func, is_connected=False):
+            return ft.Container(
+                content=ft.Column([
+                    ft.Icon(icon, size=32, color=color if not is_connected else LightTheme.ACCENT_SUCCESS),
+                    ft.Text(name, size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                    ft.Container(
+                        content=ft.Text("Connected" if is_connected else "Configure", size=11,
+                                       color=LightTheme.ACCENT_SUCCESS if is_connected else LightTheme.ACCENT_PRIMARY),
+                        padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                        bgcolor=(LightTheme.ACCENT_SUCCESS if is_connected else LightTheme.ACCENT_PRIMARY) + "15",
+                        border_radius=8,
+                    ),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+                padding=24,
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=12,
+                border=ft.border.all(1, LightTheme.ACCENT_SUCCESS if is_connected else LightTheme.BORDER_COLOR),
+                on_click=configure_func if not is_connected else None,
+                width=150,
+            )
+
+        return [
+            ft.Text("Connect Your AI Assistants", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("One-click setup for popular AI clients via MCP", size=13, color=LightTheme.TEXT_SECONDARY),
+            ft.Container(height=16),
+            ft.Row([
+                create_client_card("Claude", ft.Icons.SMART_TOY_ROUNDED, "#D97706", lambda e: self._configure_claude_mcp(), mcp_configured),
+                create_client_card("VS Code", ft.Icons.CODE_ROUNDED, "#007ACC", lambda e: self._configure_vscode_mcp()),
+                create_client_card("Cursor", ft.Icons.EDIT_ROUNDED, "#000000", lambda e: self._configure_cursor_mcp()),
+                create_client_card("Other", ft.Icons.MORE_HORIZ_ROUNDED, LightTheme.TEXT_MUTED, lambda e: self._copy_mcp_json()),
+            ], spacing=16, wrap=True),
+            ft.Container(height=24),
+            ft.Container(
+                content=ft.Row([
+                    ft.Icon(ft.Icons.CONTENT_COPY_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
+                    ft.Text("Copy MCP Config JSON", size=13, color=LightTheme.ACCENT_PRIMARY),
+                ], spacing=8),
+                padding=ft.padding.symmetric(horizontal=16, vertical=10),
+                bgcolor=LightTheme.ACCENT_PRIMARY + "10",
+                border_radius=8,
+                on_click=lambda e: self._copy_mcp_json(),
+            ),
+        ]
+
+    def _build_permissions_content(self) -> list:
+        """Build permissions management content."""
+        items = []
+        try:
+            from advanced_vault.mcp_server.consent import ConsentManager
+            cm = ConsentManager(vault_path=str(self.vault_path))
+            agents = cm.list_agents()
+
+            for agent_id in agents:
+                perm = cm.get_permission(agent_id)
+                items.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(ft.Icons.SMART_TOY_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
+                            ft.Text(agent_id[:30], size=14, color=LightTheme.TEXT_PRIMARY, expand=True),
+                            ft.Container(
+                                content=ft.Text("Active" if perm else "Configured", size=11, color=LightTheme.ACCENT_SUCCESS),
+                                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                                bgcolor=LightTheme.ACCENT_SUCCESS + "15",
+                                border_radius=8,
+                            ),
+                        ], spacing=12),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                        border_radius=8,
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"Error loading permissions: {e}")
+
+        if not items:
+            items.append(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.SHIELD_ROUNDED, size=48, color=LightTheme.TEXT_MUTED),
+                    ft.Text("No agents registered", size=16, color=LightTheme.TEXT_MUTED),
+                    ft.Text("Connect an AI assistant to manage its permissions", size=13, color=LightTheme.TEXT_MUTED),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+                padding=64,
+                alignment=ft.alignment.center,
+            ))
+
+        return [
+            ft.Text("Agent Permissions", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Control what each AI agent can access", size=13, color=LightTheme.TEXT_SECONDARY),
+            ft.Container(height=16),
+        ] + items
+
+    def _build_activity_content(self) -> list:
+        """Build activity log content."""
+        items = []
+        try:
+            activity_logger = ActivityLogger(vault_path=str(self.vault_path))
+            activities = activity_logger.get_recent_activity(limit=20)
+
+            for activity in activities:
+                timestamp = activity.get('timestamp', '')
+                try:
+                    dt = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                    time_str = dt.strftime('%Y-%m-%d %H:%M')
+                except Exception:
+                    time_str = ""
+
+                granted = activity.get('granted', False)
+                tool_name = activity.get('tool_name', 'unknown').replace('vault_', '').replace('agent_', '').replace('_', ' ').title()
+                app_name = activity.get('app_name', 'Unknown')
+
+                items.append(
+                    ft.Container(
+                        content=ft.Row([
+                            ft.Icon(
+                                ft.Icons.CHECK_CIRCLE_ROUNDED if granted else ft.Icons.CANCEL_ROUNDED,
+                                size=18, color=LightTheme.ACCENT_SUCCESS if granted else LightTheme.ACCENT_ERROR,
+                            ),
+                            ft.Text(f"{app_name}: {tool_name}", size=14, color=LightTheme.TEXT_PRIMARY, expand=True),
+                            ft.Text(time_str, size=11, color=LightTheme.TEXT_MUTED),
+                        ], spacing=12),
+                        padding=ft.padding.symmetric(horizontal=16, vertical=12),
+                        border_radius=8,
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    )
+                )
+        except Exception as e:
+            logger.warning(f"Error loading activity: {e}")
+
+        if not items:
+            items.append(ft.Container(
+                content=ft.Column([
+                    ft.Icon(ft.Icons.HISTORY_ROUNDED, size=48, color=LightTheme.TEXT_MUTED),
+                    ft.Text("No activity yet", size=16, color=LightTheme.TEXT_MUTED),
+                    ft.Text("Agent access requests will appear here", size=13, color=LightTheme.TEXT_MUTED),
+                ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
+                padding=64,
+                alignment=ft.alignment.center,
+            ))
+
+        return [
+            ft.Text("Access Activity", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Log of all agent access requests", size=13, color=LightTheme.TEXT_SECONDARY),
+            ft.Container(height=16),
+        ] + items
+
+    def show_settings_hub(self, active_tab: str = "setup"):
+        """Combined view for Training + Stats + Policies + Setup with tabs."""
+        self.current_view = "settings_hub"
+        self.page.clean()
+
+        tab_index = {"setup": 0, "training": 1, "stats": 2, "policies": 3}.get(active_tab, 0)
+
+        def on_tab_change(e):
+            tab_names = ["setup", "training", "stats", "policies"]
+            self.show_settings_hub(active_tab=tab_names[e.control.selected_index])
+
+        tabs = ft.Tabs(
+            selected_index=tab_index,
+            animation_duration=200,
+            tabs=[
+                ft.Tab(text="Setup", icon=ft.Icons.SETTINGS_ROUNDED),
+                ft.Tab(text="Training", icon=ft.Icons.PSYCHOLOGY_ROUNDED),
+                ft.Tab(text="Statistics", icon=ft.Icons.BAR_CHART_ROUNDED),
+                ft.Tab(text="Policies", icon=ft.Icons.SECURITY_ROUNDED),
+            ],
+            on_change=on_tab_change,
+            expand=True,
+        )
+
+        content_items = []
+        if active_tab == "setup":
+            content_items = self._build_setup_content()
+        elif active_tab == "training":
+            content_items = self._build_training_content()
+        elif active_tab == "stats":
+            content_items = self._build_stats_content()
+        elif active_tab == "policies":
+            content_items = self._build_policies_content()
+
+        main_content = ft.Container(
+            content=ft.Column(
+                [
+                    ft.Container(
+                        content=ft.Text("Settings", size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                        padding=ft.padding.only(left=32, top=24, bottom=8),
+                    ),
+                    ft.Container(content=tabs, padding=ft.padding.symmetric(horizontal=32), height=48),
+                    ft.Container(
+                        content=ft.Column(content_items, scroll=ft.ScrollMode.AUTO, expand=True),
+                        padding=ft.padding.symmetric(horizontal=32, vertical=16),
+                        expand=True,
+                    ),
+                ],
+                expand=True,
+            ),
+            expand=True,
+            bgcolor=LightTheme.BG_PRIMARY,
+        )
+
+        if not hasattr(self, 'sidebar') or self.sidebar is None:
+            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=2)
+        else:
+            self.sidebar.selected_index = 2
+        sidebar_container = self.sidebar.build()
+
+        self.page.add(ft.Row([sidebar_container, main_content], spacing=0, expand=True))
+        self.page.update()
+
+    def _build_setup_content(self) -> list:
+        """Build setup/configuration content."""
+        return [
+            ft.Text("Configuration", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Manage vault settings and components", size=13, color=LightTheme.TEXT_SECONDARY),
+            ft.Container(height=16),
+            ft.ElevatedButton(
+                "Open Full Settings",
+                icon=ft.Icons.SETTINGS_ROUNDED,
+                on_click=lambda e: self.show_settings(),
+                style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+            ),
+        ]
+
+    def _build_training_content(self) -> list:
+        """Build training management content."""
+        return [
+            ft.Text("Training Jobs", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Manage document training and adapters", size=13, color=LightTheme.TEXT_SECONDARY),
+            ft.Container(height=16),
+            ft.ElevatedButton(
+                "Open Training Manager",
+                icon=ft.Icons.PSYCHOLOGY_ROUNDED,
+                on_click=lambda e: self.show_training_view(),
+                style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+            ),
+        ]
+
+    def _build_stats_content(self) -> list:
+        """Build statistics content."""
+        rag_stats = self._get_rag_stats()
+        total_secrets = 0
+        try:
+            query_filter = QueryFilter()
+            all_entries = self.vault.kv_store.search(query_filter)
+            total_secrets = len([e for e in all_entries if e.entry_type in [EntryType.SECRET, EntryType.API_KEY, EntryType.PASSWORD]])
+        except Exception:
+            pass
+
+        return [
+            ft.Text("Vault Statistics", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ft.Container(height=16),
+            ft.Row([
+                self._stat_card("Documents", rag_stats.get("document_count", 0), ft.Icons.DESCRIPTION_ROUNDED, LightTheme.ACCENT_PRIMARY),
+                self._stat_card("Chunks", rag_stats.get("chunk_count", 0), ft.Icons.DATA_ARRAY_ROUNDED, "#8b5cf6"),
+                self._stat_card("Secrets", total_secrets, ft.Icons.KEY_ROUNDED, LightTheme.ACCENT_WARNING),
+            ], spacing=16),
+        ]
+
+    def _stat_card(self, label, value, icon, color):
+        """Create a stat card."""
+        return ft.Container(
+            content=ft.Column([
+                ft.Icon(icon, size=24, color=color),
+                ft.Text(str(value), size=28, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                ft.Text(label, size=12, color=LightTheme.TEXT_SECONDARY),
+            ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=4),
+            padding=24,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=12,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            expand=True,
+        )
+
+    def _build_policies_content(self) -> list:
+        """Build LangChain policies content."""
+        return [
+            ft.Text("LangChain Policies", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Configure agent behavior and restrictions", size=13, color=LightTheme.TEXT_SECONDARY),
+            ft.Container(height=16),
+            ft.ElevatedButton(
+                "Open Policy Editor",
+                icon=ft.Icons.SECURITY_ROUNDED,
+                on_click=lambda e: self.show_langchain_policies(),
+                style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+            ),
+        ]
+
+    def _send_chat_from_agent_view(self, e, text_field=None):
+        """Handle chat from agent view."""
+        if text_field and text_field.value:
+            # Open full chat with the question
+            self._open_test_agent_chat()
+
+    def _configure_vscode_mcp(self):
+        """Configure MCP for VS Code."""
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text("VS Code MCP config copied to clipboard. Paste in .vscode/mcp.json"),
+            bgcolor=LightTheme.ACCENT_SUCCESS,
+        )
+        self.page.snack_bar.open = True
+        self._copy_mcp_json()
+
+    def _configure_cursor_mcp(self):
+        """Configure MCP for Cursor."""
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text("Cursor MCP config copied to clipboard. Paste in ~/.cursor/mcp.json"),
+            bgcolor=LightTheme.ACCENT_SUCCESS,
+        )
+        self.page.snack_bar.open = True
+        self._copy_mcp_json()
+
+    def _copy_mcp_json(self):
+        """Copy MCP config JSON to clipboard."""
+        import json
+        config = {
+            "mcpServers": {
+                "enclave-vault": {
+                    "command": "python",
+                    "args": ["-m", "advanced_vault.mcp_server.server"],
+                    "env": {
+                        "VAULT_PATH": str(self.vault_path)
+                    }
+                }
+            }
+        }
+        self.page.set_clipboard(json.dumps(config, indent=2))
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text("MCP config copied to clipboard"),
+            bgcolor=LightTheme.ACCENT_SUCCESS,
+        )
+        self.page.snack_bar.open = True
         self.page.update()
 
     def show_activity_view(self, search_query: str = "", filter_granted: str = "all", filter_days: str = "all"):

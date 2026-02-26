@@ -46,50 +46,32 @@ class ModernSidebar:
         })
     
     def build(self) -> ft.Container:
-        """Build the sidebar component."""
+        """Build the sidebar component with simplified 4-item navigation."""
         nav_controls = []
-        
+
         # Clean top spacing (branding is in window title)
         nav_controls.append(
             ft.Container(
                 height=12,
             )
         )
-        
-        # Navigation items
+
+        # Navigation items - simplified to 4 main items
         nav_items_column = []
-        
-        # Home item (always first)
-        home_item = {
-            "icon": ft.Icons.HOME_OUTLINED,
-            "selected": ft.Icons.HOME_ROUNDED,
-            "label": "Home",
-            "idx": -1
-        }
-        nav_items_column.append(
-            self._create_nav_item(
-                icon=home_item["icon"],
-                selected_icon=home_item["selected"],
-                label=home_item["label"],
-                index=home_item["idx"],
-                is_selected=self.selected_index == home_item["idx"]
-            )
-        )
-        
-        nav_items_column.append(
-            ft.Container(
-                height=LightTheme.SPACING_MD,
-                margin=ft.margin.only(top=LightTheme.SPACING_MD, bottom=LightTheme.SPACING_MD),
-            )
-        )
-        
-        # Primary section
-        primary_items = [
-            {"icon": ft.Icons.KEY_OUTLINED, "selected": ft.Icons.KEY_ROUNDED, "label": "Secrets", "idx": 0},
-            {"icon": ft.Icons.LIGHTBULB_OUTLINED, "selected": ft.Icons.LIGHTBULB_ROUNDED, "label": "Knowledge", "idx": 1},
+
+        # Simplified navigation structure (4 items instead of 9)
+        # -1: Vault (landing page with hero drop zone)
+        #  0: My Data (Secrets + Knowledge + Library combined)
+        #  1: Agent (Chat + Permissions + Activity combined)
+        #  2: Settings (Training + Stats + Policies + Setup combined)
+        nav_items = [
+            {"icon": ft.Icons.SHIELD_OUTLINED, "selected": ft.Icons.SHIELD_ROUNDED, "label": "Vault", "idx": -1},
+            {"icon": ft.Icons.FOLDER_OUTLINED, "selected": ft.Icons.FOLDER_ROUNDED, "label": "My Data", "idx": 0},
+            {"icon": ft.Icons.SMART_TOY_OUTLINED, "selected": ft.Icons.SMART_TOY_ROUNDED, "label": "Agent", "idx": 1},
+            {"icon": ft.Icons.SETTINGS_OUTLINED, "selected": ft.Icons.SETTINGS_ROUNDED, "label": "Settings", "idx": 2},
         ]
-        
-        for item in primary_items:
+
+        for item in nav_items:
             nav_items_column.append(
                 self._create_nav_item(
                     icon=item["icon"],
@@ -99,60 +81,7 @@ class ModernSidebar:
                     is_selected=self.selected_index == item["idx"]
                 )
             )
-        
-        nav_items_column.append(
-            ft.Container(
-                height=LightTheme.SPACING_MD,
-                margin=ft.margin.only(top=LightTheme.SPACING_MD, bottom=LightTheme.SPACING_MD),
-            )
-        )
-        
-        # Secondary section
-        secondary_items = [
-            {"icon": ft.Icons.FOLDER_COPY_OUTLINED, "selected": ft.Icons.FOLDER_COPY_ROUNDED, "label": "Library", "idx": 7},
-            {"icon": ft.Icons.PSYCHOLOGY_OUTLINED, "selected": ft.Icons.PSYCHOLOGY_ROUNDED, "label": "Training", "idx": 2},
-            {"icon": ft.Icons.HISTORY_OUTLINED, "selected": ft.Icons.HISTORY_ROUNDED, "label": "Activity", "idx": 3},
-            {"icon": ft.Icons.SHIELD_OUTLINED, "selected": ft.Icons.SHIELD_ROUNDED, "label": "Permissions", "idx": 8},
-            {"icon": ft.Icons.BAR_CHART_OUTLINED, "selected": ft.Icons.BAR_CHART_ROUNDED, "label": "Statistics", "idx": 4},
-            {"icon": ft.Icons.SECURITY_OUTLINED, "selected": ft.Icons.SECURITY_ROUNDED, "label": "LangChain", "idx": 6},
-        ]
-        
-        for item in secondary_items:
-            nav_items_column.append(
-                self._create_nav_item(
-                    icon=item["icon"],
-                    selected_icon=item["selected"],
-                    label=item["label"],
-                    index=item["idx"],
-                    is_selected=self.selected_index == item["idx"]
-                )
-            )
-        
-        nav_items_column.append(
-            ft.Container(
-                height=LightTheme.SPACING_MD,
-                margin=ft.margin.only(top=LightTheme.SPACING_MD, bottom=LightTheme.SPACING_MD),
-            )
-        )
-        
-        # Setup/Settings section
-        settings_item = {
-            "icon": ft.Icons.SETTINGS_OUTLINED,
-            "selected": ft.Icons.SETTINGS_ROUNDED,
-            "label": "Setup",
-            "idx": 5
-        }
-        
-        nav_items_column.append(
-            self._create_nav_item(
-                icon=settings_item["icon"],
-                selected_icon=settings_item["selected"],
-                label=settings_item["label"],
-                index=settings_item["idx"],
-                is_selected=self.selected_index == settings_item["idx"]
-            )
-        )
-        
+
         nav_controls.append(
             ft.Container(
                 content=ft.Column(
@@ -163,7 +92,7 @@ class ModernSidebar:
                 expand=True,
             )
         )
-        
+
         # Build sidebar container
         return ft.Container(
             content=ft.Column(
