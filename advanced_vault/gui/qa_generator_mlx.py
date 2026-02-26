@@ -289,7 +289,9 @@ class MLXQAGenerator:
                 # Set additional environment variables for faster downloads
                 os.environ["HF_HUB_DISABLE_TELEMETRY"] = "1"  # Disable telemetry for faster startup
                 
-                self.model = outlines.models.mlxlm(self.model_path)
+                import mlx_lm
+                mlx_model, mlx_tokenizer = mlx_lm.load(self.model_path)
+                self.model = outlines.models.from_mlxlm(mlx_model, mlx_tokenizer)
             except KeyboardInterrupt:
                 download_active["active"] = False
                 logger.info("Model download cancelled by user")
@@ -307,12 +309,12 @@ class MLXQAGenerator:
                 raise
             finally:
                 download_active["active"] = False
-            
+
             if progress_callback:
                 progress_callback("Model downloaded! Initializing...", 90.0, None)
-            
+
             # Create generator with schema enforcement
-            self.generator = outlines.generate.json(self.model, ThreeQAPairs)
+            self.generator = outlines.Generator(self.model, output_type=ThreeQAPairs)
             
             if progress_callback:
                 progress_callback("✅ MLX Q&A model ready!", 100.0, None)
