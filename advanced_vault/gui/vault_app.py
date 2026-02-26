@@ -2009,6 +2009,67 @@ class VaultApp:
             border=ft.border.all(1, LightTheme.ACCENT_SUCCESS + "30"),
         )
 
+        # ===== RAG STATUS PANEL =====
+        rag_status = self._get_rag_status()
+        rag_ready = rag_status.get("document_count", 0) > 0 or self._check_rag_dependencies().get("ready", False)
+        rag_status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if rag_ready else ft.Icons.HOURGLASS_EMPTY_ROUNDED
+        rag_status_color = LightTheme.ACCENT_SUCCESS if rag_ready else LightTheme.TEXT_MUTED
+        rag_status_text = "Ready" if rag_ready else "No documents indexed"
+
+        rag_panel = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Container(
+                        content=ft.Icon(
+                            ft.Icons.PSYCHOLOGY_ROUNDED,
+                            size=24,
+                            color=LightTheme.ACCENT_PRIMARY,
+                        ),
+                        padding=10,
+                        border_radius=10,
+                        bgcolor=LightTheme.ACCENT_PRIMARY + "15",
+                    ),
+                    ft.Column(
+                        [
+                            ft.Row([
+                                ft.Text(
+                                    "Knowledge Index",
+                                    size=14,
+                                    weight=ft.FontWeight.W_600,
+                                    color=LightTheme.TEXT_PRIMARY,
+                                ),
+                                ft.Container(width=8),
+                                ft.Icon(rag_status_icon, size=14, color=rag_status_color),
+                                ft.Text(rag_status_text, size=12, color=rag_status_color),
+                            ], spacing=4),
+                            ft.Row(
+                                [
+                                    ft.Text(f"{rag_status.get('document_count', 0)} docs", size=11, color=LightTheme.TEXT_MUTED),
+                                    ft.Text(" | ", size=11, color=LightTheme.TEXT_MUTED),
+                                    ft.Text(f"{rag_status.get('chunk_count', 0)} chunks", size=11, color=LightTheme.TEXT_MUTED),
+                                    ft.Text(" | ", size=11, color=LightTheme.TEXT_MUTED),
+                                    ft.Text("all-MiniLM-L6-v2", size=11, color=LightTheme.TEXT_MUTED),
+                                ],
+                                spacing=0,
+                            ),
+                        ],
+                        spacing=2,
+                        expand=True,
+                    ),
+                    ft.TextButton(
+                        "View",
+                        on_click=lambda e: self.show_my_data_view(active_tab="knowledge"),
+                        style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
+                    ),
+                ],
+                spacing=12,
+            ),
+            padding=16,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=12,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+        )
+
         # ===== RECENTLY SECURED ITEMS =====
         recent_items_list = []
         if recent_items:
@@ -2135,6 +2196,12 @@ class VaultApp:
                     # Encryption status banner
                     ft.Container(
                         content=encryption_banner,
+                        padding=ft.padding.symmetric(horizontal=64),
+                    ),
+                    ft.Container(height=16),
+                    # RAG status panel
+                    ft.Container(
+                        content=rag_panel,
                         padding=ft.padding.symmetric(horizontal=64),
                     ),
                     ft.Container(height=24),
@@ -2915,6 +2982,43 @@ class VaultApp:
             return rag.stats()
         except Exception:
             return {"document_count": 0, "chunk_count": 0, "embedding_dimension": 0}
+
+    def _check_rag_dependencies(self) -> dict:
+        """Check if RAG dependencies are available."""
+        result = {
+            "ready": False,
+            "missing": [],
+            "model_loaded": False,
+            "error": None
+        }
+        try:
+            # Check sentence-transformers
+            try:
+                from sentence_transformers import SentenceTransformer
+                result["model_loaded"] = True
+            except ImportError:
+                result["missing"].append("sentence-transformers")
+
+            # Check numpy
+            try:
+                import numpy
+            except ImportError:
+                result["missing"].append("numpy")
+
+            # Check cryptography
+            try:
+                from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+            except ImportError:
+                result["missing"].append("cryptography")
+
+            # If no missing dependencies, RAG is ready
+            if not result["missing"]:
+                result["ready"] = True
+
+        except Exception as e:
+            result["error"] = str(e)
+
+        return result
 
     def _get_rag_documents(self) -> list:
         """Get list of RAG-indexed documents."""

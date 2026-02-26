@@ -558,8 +558,10 @@ Draft:"""
         return {"success": success}
 
 
-# Singleton instance
+# Singleton instance with thread-safe initialization
+import threading
 _agent: Optional[LocalAgent] = None
+_agent_lock = threading.Lock()
 
 
 def get_agent(
@@ -567,7 +569,7 @@ def get_agent(
     master_key: Optional[bytes] = None
 ) -> LocalAgent:
     """
-    Get or create the local agent singleton.
+    Get or create the local agent singleton (thread-safe).
 
     Args:
         vault_path: Base path for agent data
@@ -577,6 +579,9 @@ def get_agent(
         LocalAgent singleton instance
     """
     global _agent
+    # Double-checked locking pattern for thread safety
     if _agent is None:
-        _agent = LocalAgent(vault_path=vault_path, master_key=master_key)
+        with _agent_lock:
+            if _agent is None:
+                _agent = LocalAgent(vault_path=vault_path, master_key=master_key)
     return _agent

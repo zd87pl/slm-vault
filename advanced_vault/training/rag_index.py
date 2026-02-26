@@ -175,10 +175,21 @@ class RAGIndex:
 
         self._init_db()
 
+        # Track search errors for GUI reporting
+        self._last_search_errors: list = []
+
         logger.info(
             f"Initialized encrypted RAGIndex at {self.db_path} "
             f"(chunk_size={chunk_size}, overlap={chunk_overlap})"
         )
+
+    def get_last_errors(self) -> list:
+        """Get errors from the last search operation."""
+        return self._last_search_errors.copy()
+
+    def clear_errors(self):
+        """Clear stored errors."""
+        self._last_search_errors = []
 
     def _encrypt(self, plaintext: str, associated_data: str = "") -> Tuple[bytes, bytes]:
         """
@@ -491,6 +502,7 @@ class RAGIndex:
 
         # Compute similarities and decrypt matching content
         results = []
+        decryption_errors = []  # Track decryption failures for reporting
         for row in rows:
             chunk_id, doc_id, encrypted_content, nonce, idx, start, end, emb_bytes, meta_str, doc_name = row
 
@@ -516,7 +528,18 @@ class RAGIndex:
                 decrypted_content = self._decrypt(encrypted_content, nonce, chunk_id)
             except Exception as e:
                 logger.error(f"Failed to decrypt chunk {chunk_id}: {e}")
+                decryption_errors.append({"chunk_id": chunk_id, "error": str(e)})
                 continue
+
+        # Report decryption errors if any occurred
+        if decryption_errors:
+            logger.warning(
+                f"Search completed with {len(decryption_errors)} decryption errors. "
+                f"This may indicate key corruption or database tampering. "
+                f"Consider rebuilding the index."
+            )
+            # Store last errors for GUI access
+            self._last_search_errors = decryption_errors
 
             chunk = Chunk(
                 id=chunk_id,
