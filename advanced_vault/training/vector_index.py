@@ -184,7 +184,8 @@ class HNSWIndex(VectorIndex):
         query = query.astype(np.float32).reshape(1, -1)
 
         # Search more than top_k to account for deleted items
-        search_k = min(top_k + len(self._deleted), self.size)
+        # Use _next_idx as upper bound (total vectors added, including deleted)
+        search_k = min(top_k + len(self._deleted), self._next_idx)
 
         indices, distances = self._index.knn_query(query, k=search_k)
 

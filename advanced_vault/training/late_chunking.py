@@ -11,7 +11,7 @@ Reference: https://arxiv.org/abs/2409.04701
 """
 
 import logging
-from typing import List, Optional, Tuple, Dict, Any
+from typing import List, Optional, Tuple, Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -173,14 +173,32 @@ class LateChunker:
         return text.strip()
 
     def _estimate_char_position(self, tokens: List[str], token_idx: int) -> int:
-        """Estimate character position from token index."""
-        # Rough estimate: average 4 chars per token
-        return token_idx * 4
+        """
+        Estimate character position from token index.
+
+        Computes actual character offset by summing token lengths up to the index.
+        """
+        if token_idx == 0:
+            return 0
+
+        # Sum actual token lengths (accounting for WordPiece/BPE)
+        char_pos = 0
+        for i, token in enumerate(tokens[:token_idx]):
+            if token.startswith("##"):
+                char_pos += len(token) - 2  # Exclude "##"
+            elif token.startswith("Ġ"):
+                char_pos += len(token)  # Include space
+            elif token in ["[CLS]", "[SEP]", "[PAD]", "<s>", "</s>"]:
+                continue
+            else:
+                char_pos += len(token) + 1  # Token + space
+
+        return char_pos
 
     def process_document(
         self,
         text: str,
-        get_token_embeddings: callable
+        get_token_embeddings: Callable[[str], Tuple[np.ndarray, List[str]]]
     ) -> List[LateChunk]:
         """
         Process a document using late chunking.
@@ -193,19 +211,17 @@ class LateChunker:
         Returns:
             List of LateChunk objects
         """
-        self._load_tokenizer()
+        # Get token-level embeddings from the model
+        # Note: The embedding model handles its own tokenization
+        token_embeddings, tokens = get_token_embeddings(text)
 
-        # Truncate if too long
-        tokens = self._tokenizer.tokenize(text)
+        # Truncate if too long (after getting embeddings)
         if len(tokens) > self.max_document_length:
             tokens = tokens[:self.max_document_length]
-            text = self._tokens_to_text(tokens)
+            token_embeddings = token_embeddings[:self.max_document_length]
             logger.warning(
                 f"Document truncated to {self.max_document_length} tokens"
             )
-
-        # Get token-level embeddings from model
-        token_embeddings, tokens = get_token_embeddings(text)
 
         # Create chunks with context-aware embeddings
         return self.chunk_with_embeddings(text, token_embeddings, tokens)

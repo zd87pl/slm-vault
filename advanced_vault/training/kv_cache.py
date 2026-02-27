@@ -1,12 +1,12 @@
 """
 KV Cache for Enclave RAG Pipeline.
 
-Implements the TurboRAG pattern for up to 8.6x faster time-to-first-token (TTFT).
+Implements KV caching patterns for faster time-to-first-token (TTFT).
 
 The cache stores pre-computed key-value states for frequently accessed document chunks,
 eliminating redundant computation during inference.
 
-Reference: TurboRAG (ICLR 2026) - https://openreview.net/forum?id=x7NbaU8RSU
+Inspired by TurboRAG and similar KV caching approaches for RAG acceleration.
 """
 
 import logging
@@ -14,7 +14,7 @@ import json
 import sqlite3
 import time
 from pathlib import Path
-from typing import Optional, Dict, Any, List, Tuple
+from typing import Optional, Dict, Any, List
 from dataclasses import dataclass
 import hashlib
 
