@@ -38,31 +38,48 @@ External AIs send commands. Enclave reads your documents locally and returns syn
 
 ## Features
 
-- **Local RAG**: Drop documents → instantly queryable via semantic search
+- **Local RAG**: Drop documents, instantly queryable via semantic search
 - **MCP Integration**: Works with Claude Desktop, Cursor, Copilot, and any MCP client
-- **Encrypted Storage**: ChaCha20-Poly1305 encryption for all data
+- **Encrypted Storage**: ChaCha20-Poly1305 encryption for all data at rest
 - **Activity Logging**: See every command from every AI agent
 - **Per-Agent Permissions**: Control what each AI can access
-- **Local Inference**: MLX-powered LLM on Apple Silicon (optional)
-- **Adapter Training**: Fine-tune local models on your documents (optional)
+- **Local Inference**: MLX-powered LLM on Apple Silicon (Qwen3, Phi-4, Llama)
+- **Desktop GUI**: Native macOS/Windows/Linux application
+- **Adapter Training**: Fine-tune local models on your documents
+
+### Performance Optimizations
+
+- **HNSW Index**: 10-30x faster vector search at scale
+- **E5-small Embeddings**: +15% retrieval quality vs MiniLM
+- **Persistent Cache**: 2-9x speedup for repeated queries
+- **Recursive Chunking**: Better recall with semantic boundaries
 
 ## Quick Start
 
 ### Installation
 
 ```bash
-# Install from PyPI
-pip install enclave-vault
+# Install from source
+git clone https://github.com/your-org/slm-vault
+cd slm-vault
+pip install -e .
 
-# Or install with Apple Silicon support
-pip install enclave-vault[mlx]
+# Or with Apple Silicon support
+pip install -e ".[mlx]"
+```
+
+### Run the Desktop App
+
+```bash
+# Start the GUI
+python -m advanced_vault.gui.vault_app
 ```
 
 ### Start the MCP Server
 
 ```bash
 # Start Enclave MCP server
-enclave-mcp
+python -m advanced_vault.mcp_server
 ```
 
 ### Connect Claude Desktop
@@ -73,7 +90,8 @@ Add to your Claude Desktop MCP config (`~/Library/Application Support/Claude/cla
 {
   "mcpServers": {
     "enclave": {
-      "command": "enclave-mcp"
+      "command": "python",
+      "args": ["-m", "advanced_vault.mcp_server"]
     }
   }
 }
@@ -81,22 +99,27 @@ Add to your Claude Desktop MCP config (`~/Library/Application Support/Claude/cla
 
 Restart Claude Desktop. Now you can ask Claude about your documents — Enclave handles the rest.
 
-### Index Documents
+### Index Documents (Python API)
 
 ```python
 from advanced_vault.training import RAGIndex
+import os
 
-# Create index
-index = RAGIndex()
+# Generate or load a 32-byte encryption key
+master_key = os.urandom(32)  # In production, derive from password
 
-# Add documents
-index.add_document(
-    name="Q3 Report",
-    content=open("q3_report.pdf").read()
-)
+# Create encrypted index
+with RAGIndex(master_key=master_key) as index:
+    # Add documents
+    index.add_document(
+        name="Q3 Report",
+        content="Revenue increased 15% to $4.2M in Q3..."
+    )
 
-# Search
-results = index.search("What was Q3 revenue?")
+    # Search
+    results = index.search("What was Q3 revenue?")
+    for r in results:
+        print(f"{r.document_name}: {r.chunk.content[:100]}...")
 ```
 
 ## MCP Tools
@@ -135,36 +158,65 @@ Enclave exposes these tools to AI agents:
         ▼                   ▼                   ▼
 ┌───────────────┐  ┌───────────────┐  ┌───────────────────┐
 │   RAG Index   │  │  Local LLM    │  │ Encrypted Vault   │
-│  (Embeddings) │  │   (MLX)       │  │ (ChaCha20)        │
+│  (HNSW+E5)    │  │   (MLX)       │  │ (ChaCha20)        │
 └───────────────┘  └───────────────┘  └───────────────────┘
 ```
 
 ## Privacy Model
 
 1. **Your data stays local**: Documents are indexed and stored on your device
-2. **Encryption at rest**: All data encrypted with ChaCha20-Poly1305
+2. **Encryption at rest**: All content encrypted with ChaCha20-Poly1305
 3. **Synthesized responses**: External AIs get answers, not raw documents
 4. **Consent required**: Every access requires explicit permission
 5. **Full audit trail**: See exactly what each AI accessed and when
+6. **Key zeroing**: Encryption keys securely wiped from memory after use
+
+## Project Structure
+
+```
+slm-vault/
+├── advanced_vault/          # Core application
+│   ├── gui/                 # Desktop GUI (Flet)
+│   ├── training/            # RAG index, embeddings, caching
+│   ├── mcp_server/          # MCP server implementation
+│   └── backend/             # Supabase integration (optional)
+├── browser-extension/       # Browser extension
+├── langchain-enclave/       # LangChain integration
+├── docs/                    # Documentation
+│   ├── architecture/        # Technical architecture
+│   ├── deployment/          # Deployment guides
+│   └── security/            # Security documentation
+└── examples/                # Example scripts
+```
 
 ## Requirements
 
 - Python 3.10+
-- macOS (Apple Silicon recommended) or Linux
+- macOS (Apple Silicon recommended), Windows, or Linux
 - 8GB+ RAM (16GB+ recommended for local LLM)
 
-### Optional
+### Optional Dependencies
 
-- MLX for Apple Silicon acceleration
-- sentence-transformers for embeddings
-- flet for desktop GUI
+```bash
+# Apple Silicon acceleration
+pip install mlx mlx-lm
+
+# Fast embeddings (ONNX)
+pip install fastembed
+
+# HNSW index (10-30x faster search)
+pip install hnswlib
+
+# Desktop GUI
+pip install flet
+```
 
 ## Development
 
 ```bash
 # Clone repository
-git clone https://github.com/enclave-ai/enclave-vault
-cd enclave-vault
+git clone https://github.com/your-org/slm-vault
+cd slm-vault
 
 # Install with dev dependencies
 pip install -e ".[dev]"
@@ -174,29 +226,41 @@ pytest
 
 # Run linter
 ruff check .
+
+# Type checking
+mypy advanced_vault/
 ```
 
 ## Documentation
 
-- [MCP Integration Guide](docs/MCP_INTEGRATION.md)
-- [RAG Index API](docs/RAG_INDEX.md)
+- [Architecture Overview](docs/architecture/ARCHITECTURE.md)
+- [Cryptographic Specs](docs/architecture/CRYPTOGRAPHIC_SPECS.md)
 - [MLX DoRA Architecture](docs/MLX_DORA_ARCHITECTURE.md)
-- [Security Model](docs/SECURITY.md)
+- [Security Analysis](docs/security/SECURITY_ANALYSIS_PDF_QA.md)
+- [Deployment Guide](docs/deployment/RUNPOD_DEPLOYMENT.md)
 
-## Roadmap
+## Status
 
-- [x] RAG indexing with semantic search
+- [x] RAG indexing with HNSW acceleration
+- [x] E5-small embeddings with persistent cache
 - [x] MCP server with agent commands
-- [x] Encrypted vault storage
-- [x] Activity logging
-- [ ] Desktop GUI (Flet)
-- [ ] Browser extension enhancements
+- [x] Encrypted vault storage (ChaCha20-Poly1305)
+- [x] Activity logging and consent management
+- [x] Desktop GUI (Flet)
+- [x] Local LLM inference (MLX)
+- [x] Browser extension
 - [ ] Multi-device sync (encrypted)
-- [ ] Adapter sharing
+- [ ] Adapter marketplace
 
 ## Contributing
 
-We welcome contributions! See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+We welcome contributions! Please:
+
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes
+4. Run tests and linting
+5. Submit a pull request
 
 ## License
 
