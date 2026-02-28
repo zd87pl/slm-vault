@@ -162,6 +162,7 @@ class VaultApp:
         self._sheriff_workflow_step = ""
         self._sheriff_workflow_error: Optional[str] = None
         self._sheriff_last_action_note: str = "No Sheriff actions run yet."
+        self._sheriff_show_advanced = False
         self._load_sheriff_scan_summary()
         
         # Initialize MCP setup helper (after vault_path is set)
@@ -1560,9 +1561,17 @@ class VaultApp:
             rules_count = len(self.sheriff_core.policy.list_rules())
         except Exception:
             rules_count = 0
-        protect_ready = rules_count > 0
+        try:
+            enforcement = self.sheriff_core.enforcement_status()
+        except Exception:
+            enforcement = {"enabled": False, "message": "Enforcement status unavailable."}
+        enforcement_enabled = bool(enforcement.get("enabled"))
+
+        protect_ready = rules_count > 0 and enforcement_enabled
         if protect_ready:
-            protect_hint = f"{rules_count} protection rule(s) active."
+            protect_hint = f"{rules_count} rule(s) active with OS-level enforcement."
+        elif rules_count > 0:
+            protect_hint = "Rules are active, but OS-level enforcement is not installed yet."
         else:
             protect_hint = "Enable deny-by-default consent barrier for risky paths."
 
@@ -7681,6 +7690,10 @@ class VaultApp:
             except Exception:
                 pass
 
+        def toggle_advanced(_):
+            self._sheriff_show_advanced = not self._sheriff_show_advanced
+            self.show_settings_hub(active_tab="sheriff")
+
         status_color = LightTheme.ACCENT_SUCCESS if enforcement.get("enabled") else LightTheme.ACCENT_WARNING
         findings_controls: List[ft.Control] = []
         for finding in summary.get("findings", [])[:12]:
@@ -7802,6 +7815,57 @@ class VaultApp:
                 )
             )
 
+        advanced_controls: List[ft.Control] = []
+        if self._sheriff_show_advanced:
+            advanced_controls.extend(
+                [
+                    ft.Divider(height=14, color=LightTheme.BORDER_COLOR),
+                    ft.Text("Advanced scan options", size=13, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                    ft.TextField(
+                        label="Scan roots (comma or newline separated)",
+                        value=self._sheriff_scan_paths_text,
+                        on_change=update_paths,
+                        border_radius=8,
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border_color=LightTheme.BORDER_COLOR,
+                    ),
+                    ft.Row(
+                        [
+                            ft.TextField(
+                                label="Max files",
+                                width=140,
+                                value=str(self._sheriff_max_files),
+                                on_change=update_max_files,
+                                border_radius=8,
+                                bgcolor=LightTheme.BG_ELEVATED,
+                                border_color=LightTheme.BORDER_COLOR,
+                            ),
+                            ft.ElevatedButton(
+                                "Scan Only",
+                                icon=ft.Icons.PLAY_CIRCLE_ROUNDED,
+                                on_click=lambda e: self._start_sheriff_scan(),
+                                disabled=self._sheriff_scan_in_progress or self._sheriff_workflow_in_progress,
+                                style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                            ),
+                            ft.ElevatedButton(
+                                "Protect Only",
+                                icon=ft.Icons.SHIELD_ROUNDED,
+                                on_click=lambda e: self._protect_sheriff_recommended(),
+                                disabled=self._sheriff_scan_in_progress or self._sheriff_workflow_in_progress,
+                                style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_SUCCESS, color="white"),
+                            ),
+                            ft.ElevatedButton(
+                                "Refresh",
+                                icon=ft.Icons.REFRESH_ROUNDED,
+                                on_click=lambda e: self.show_settings_hub(active_tab="sheriff"),
+                                style=ft.ButtonStyle(bgcolor=LightTheme.BG_ELEVATED, color=LightTheme.TEXT_PRIMARY),
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+                ]
+            )
+
         content: List[ft.Control] = [
             ft.Text("Data Sheriff", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
             ft.Text(
@@ -7867,50 +7931,12 @@ class VaultApp:
                             size=12,
                             color=LightTheme.TEXT_MUTED,
                         ),
-                        ft.Divider(height=14, color=LightTheme.BORDER_COLOR),
-                        ft.Text("Advanced scan options", size=13, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                        ft.TextField(
-                            label="Scan roots (comma or newline separated)",
-                            value=self._sheriff_scan_paths_text,
-                            on_change=update_paths,
-                            border_radius=8,
-                            bgcolor=LightTheme.BG_ELEVATED,
-                            border_color=LightTheme.BORDER_COLOR,
+                        ft.TextButton(
+                            "Hide advanced options" if self._sheriff_show_advanced else "Show advanced options",
+                            icon=ft.Icons.EXPAND_LESS_ROUNDED if self._sheriff_show_advanced else ft.Icons.EXPAND_MORE_ROUNDED,
+                            on_click=toggle_advanced,
                         ),
-                        ft.Row(
-                            [
-                                ft.TextField(
-                                    label="Max files",
-                                    width=140,
-                                    value=str(self._sheriff_max_files),
-                                    on_change=update_max_files,
-                                    border_radius=8,
-                                    bgcolor=LightTheme.BG_ELEVATED,
-                                    border_color=LightTheme.BORDER_COLOR,
-                                ),
-                                ft.ElevatedButton(
-                                    "Scan Only",
-                                    icon=ft.Icons.PLAY_CIRCLE_ROUNDED,
-                                    on_click=lambda e: self._start_sheriff_scan(),
-                                    disabled=self._sheriff_scan_in_progress or self._sheriff_workflow_in_progress,
-                                    style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
-                                ),
-                                ft.ElevatedButton(
-                                    "Protect Only",
-                                    icon=ft.Icons.SHIELD_ROUNDED,
-                                    on_click=lambda e: self._protect_sheriff_recommended(),
-                                    disabled=self._sheriff_scan_in_progress or self._sheriff_workflow_in_progress,
-                                    style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_SUCCESS, color="white"),
-                                ),
-                                ft.ElevatedButton(
-                                    "Refresh",
-                                    icon=ft.Icons.REFRESH_ROUNDED,
-                                    on_click=lambda e: self.show_settings_hub(active_tab="sheriff"),
-                                    style=ft.ButtonStyle(bgcolor=LightTheme.BG_ELEVATED, color=LightTheme.TEXT_PRIMARY),
-                                ),
-                            ],
-                            spacing=10,
-                        ),
+                        *advanced_controls,
                         ft.Row(
                             [
                                 ft.Icon(ft.Icons.INFO_ROUNDED, size=16, color=status_color),
