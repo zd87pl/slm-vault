@@ -8,6 +8,7 @@ Key principle: External AIs command this server, but never see raw document cont
 The local agent synthesizes responses from indexed documents.
 """
 
+import json
 import os
 import logging
 import requests
@@ -16,9 +17,10 @@ from typing import Any, Sequence, Optional
 
 from mcp.server import Server
 from mcp.types import Tool, TextContent
-from pydantic import AnyUrl
 
 from advanced_vault.core import HybridVault
+from advanced_vault.sheriff.core import SheriffCore
+from advanced_vault.sheriff.models import AccessDecision
 from advanced_vault.mcp_server.consent import ConsentManager
 from advanced_vault.mcp_server.activity_logger import ActivityLogger
 from advanced_vault.mcp_server.agent import get_agent, LocalAgent
@@ -54,6 +56,9 @@ class VaultMCPServer:
         
         # Initialize activity logger
         self.activity_logger = ActivityLogger(vault_path=str(self.vault_path))
+        
+        # Local Data Sheriff core: deny-by-default consent + lease controls
+        self.sheriff = SheriffCore(vault_path=str(self.vault_path))
 
         # API configuration (for LangChain tools)
         # Can be set via environment variable or configured later
@@ -320,6 +325,93 @@ class VaultMCPServer:
                         "type": "object",
                         "properties": {}
                     }
+                ),
+                Tool(
+                    name="sheriff.request_access",
+                    description="Request access to a resource through Data Sheriff policy engine. Returns ALLOW_WITH_LEASE, PROMPT, or DENY.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "resource": {
+                                "type": "string",
+                                "description": "Absolute or user-home resource path."
+                            },
+                            "purpose": {
+                                "type": "string",
+                                "description": "Human purpose for access request."
+                            },
+                            "ttl_seconds": {
+                                "type": "integer",
+                                "description": "Requested lease duration in seconds (default: 900).",
+                                "default": 900
+                            }
+                        },
+                        "required": ["resource", "purpose"]
+                    }
+                ),
+                Tool(
+                    name="sheriff.read",
+                    description="Read a file only when a valid lease_id is provided. Content is redacted by default.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "resource": {
+                                "type": "string",
+                                "description": "Path to resource."
+                            },
+                            "lease_id": {
+                                "type": "string",
+                                "description": "Lease token issued by sheriff.request_access."
+                            },
+                            "redact": {
+                                "type": "boolean",
+                                "description": "Whether to apply redaction before returning content (default: true).",
+                                "default": True
+                            }
+                        },
+                        "required": ["resource", "lease_id"]
+                    }
+                ),
+                Tool(
+                    name="sheriff.list_audit",
+                    description="List recent Data Sheriff audit events with optional filters.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "limit": {
+                                "type": "integer",
+                                "description": "Max events to return (default: 50).",
+                                "default": 50
+                            },
+                            "subject": {
+                                "type": "string",
+                                "description": "Optional subject/app filter."
+                            },
+                            "resource": {
+                                "type": "string",
+                                "description": "Optional resource substring filter."
+                            },
+                            "decision": {
+                                "type": "string",
+                                "enum": ["ALLOW", "DENY", "PROMPT", "ALLOW_WITH_LEASE"],
+                                "description": "Optional decision filter."
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="sheriff.revoke",
+                    description="Immediately revoke an active lease by lease_id.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "lease_id": {
+                                "type": "string",
+                                "description": "Lease token to revoke."
+                            }
+                        },
+                        "required": ["lease_id"]
+                    }
                 )
             ]
 
@@ -327,105 +419,129 @@ class VaultMCPServer:
         async def call_tool(name: str, arguments: Any) -> Sequence[TextContent]:
             """Handle tool calls."""
             try:
-                # Request consent before allowing vault access
+                args = arguments or {}
+
+                # Request consent before allowing vault access.
+                # sheriff.* tools manage consent/leases internally.
                 query_preview = ""
                 if name == "vault_recall":
-                    query_preview = arguments.get("query", "")
+                    query_preview = args.get("query", "")
                 elif name == "vault_list_entries":
                     query_preview = "List entries"
                 elif name == "vault_delete":
-                    query_preview = f"Delete {arguments.get('service', 'entry')}"
+                    query_preview = f"Delete {args.get('service', 'entry')}"
                 elif name == "vault_store":
-                    query_preview = f"Store {arguments.get('data_type', 'data')}"
+                    query_preview = f"Store {args.get('data_type', 'data')}"
                 elif name == "agent_query":
-                    query_preview = arguments.get("question", "")[:50]
+                    query_preview = args.get("question", "")[:50]
                 elif name == "agent_summarize":
-                    query_preview = f"Summarize: {arguments.get('topic', '')[:30]}"
+                    query_preview = f"Summarize: {args.get('topic', '')[:30]}"
                 elif name == "agent_draft":
-                    query_preview = f"Draft: {arguments.get('description', '')[:30]}"
+                    query_preview = f"Draft: {args.get('description', '')[:30]}"
                 elif name == "agent_status":
                     query_preview = "Check agent status"
-                
+                elif name == "sheriff.request_access":
+                    purpose = args.get("purpose", "")
+                    resource = args.get("resource", "")
+                    query_preview = f"{purpose[:30]} -> {resource[:30]}"
+                elif name == "sheriff.read":
+                    query_preview = f"Read {args.get('resource', '')[:40]}"
+                elif name == "sheriff.list_audit":
+                    query_preview = "List sheriff audit"
+                elif name == "sheriff.revoke":
+                    query_preview = f"Revoke lease {args.get('lease_id', '')[:18]}"
+
                 # Get app identifier for logging
                 app_identifier = self.consent_manager._get_app_identifier()
-                
-                # Request consent
-                granted = self.consent_manager.request_consent(
-                    tool_name=name,
-                    query_preview=query_preview
-                )
-                
-                if not granted:
-                    # Log denied access
-                    self.activity_logger.log_access(
+
+                if not name.startswith("sheriff."):
+                    granted = self.consent_manager.request_consent(
                         tool_name=name,
-                        app_identifier=app_identifier,
                         query_preview=query_preview,
-                        granted=False
                     )
-                    return [TextContent(
-                        type="text",
-                        text=f"❌ Access denied: You did not grant permission for {name}. Please approve the notification to access your vault."
-                    )]
-                
-                vault = self._get_vault()
+                    if not granted:
+                        # Log denied access
+                        self.activity_logger.log_access(
+                            tool_name=name,
+                            app_identifier=app_identifier,
+                            query_preview=query_preview,
+                            granted=False,
+                        )
+                        return [
+                            TextContent(
+                                type="text",
+                                text=f"❌ Access denied: You did not grant permission for {name}. Please approve the notification to access your vault.",
+                            )
+                        ]
 
                 # Execute tool and capture result summary
                 result_summary = None
                 if name == "vault_store":
-                    result = await self._handle_store(vault, arguments)
-                    result_summary = f"Stored {arguments.get('data_type', 'data')}"
+                    result = await self._handle_store(self._get_vault(), args)
+                    result_summary = f"Stored {args.get('data_type', 'data')}"
                 elif name == "vault_recall":
-                    result = await self._handle_recall(vault, arguments)
+                    result = await self._handle_recall(self._get_vault(), args)
                     result_summary = "Query executed"
                 elif name == "vault_list_entries":
-                    result = await self._handle_list(vault, arguments)
+                    result = await self._handle_list(self._get_vault(), args)
                     # Extract count from result
                     result_text = result[0].text if result else ""
                     if "Found" in result_text:
                         try:
                             count = result_text.split("Found")[1].split("entries")[0].strip()
                             result_summary = f"Found {count} entries"
-                        except:
+                        except Exception:
                             result_summary = "Listed entries"
                     else:
                         result_summary = "Listed entries"
                 elif name == "vault_delete":
-                    result = await self._handle_delete(vault, arguments)
-                    result_summary = f"Deleted {arguments.get('service', 'entry')}"
+                    result = await self._handle_delete(self._get_vault(), args)
+                    result_summary = f"Deleted {args.get('service', 'entry')}"
                 elif name == "vault_stats":
-                    result = await self._handle_stats(vault, arguments)
+                    result = await self._handle_stats(self._get_vault(), args)
                     result_summary = "Retrieved statistics"
                 elif name == "langchain_get_secret":
-                    result = await self._handle_langchain_get_secret(arguments)
-                    result_summary = f"Retrieved secret for {arguments.get('service', 'unknown')}"
+                    result = await self._handle_langchain_get_secret(args)
+                    result_summary = f"Retrieved secret for {args.get('service', 'unknown')}"
                 elif name == "langchain_query_knowledge":
-                    result = await self._handle_langchain_query_knowledge(arguments)
+                    result = await self._handle_langchain_query_knowledge(args)
                     result_summary = "Queried knowledge adapter"
                 elif name == "agent_query":
-                    result = await self._handle_agent_query(arguments)
+                    result = await self._handle_agent_query(args)
                     result_summary = "Agent answered question"
                 elif name == "agent_summarize":
-                    result = await self._handle_agent_summarize(arguments)
+                    result = await self._handle_agent_summarize(args)
                     result_summary = "Agent generated summary"
                 elif name == "agent_draft":
-                    result = await self._handle_agent_draft(arguments)
+                    result = await self._handle_agent_draft(args)
                     result_summary = "Agent drafted content"
                 elif name == "agent_status":
-                    result = await self._handle_agent_status(arguments)
+                    result = await self._handle_agent_status(args)
                     result_summary = "Retrieved agent status"
+                elif name == "sheriff.request_access":
+                    result = await self._handle_sheriff_request_access(args, app_identifier)
+                    result_summary = f"Sheriff request_access for {args.get('resource', '')[:40]}"
+                elif name == "sheriff.read":
+                    result = await self._handle_sheriff_read(args, app_identifier)
+                    result_summary = f"Sheriff read {args.get('resource', '')[:40]}"
+                elif name == "sheriff.list_audit":
+                    result = await self._handle_sheriff_list_audit(args)
+                    result_summary = "Sheriff audit listed"
+                elif name == "sheriff.revoke":
+                    result = await self._handle_sheriff_revoke(args)
+                    result_summary = f"Sheriff lease revoked {args.get('lease_id', '')[:18]}"
                 else:
                     raise ValueError(f"Unknown tool: {name}")
-                
+
                 # Log successful access
                 self.activity_logger.log_access(
                     tool_name=name,
                     app_identifier=app_identifier,
                     query_preview=query_preview,
                     granted=True,
-                    result_summary=result_summary
+                    result_summary=result_summary,
                 )
-                
+
                 return result
 
             except Exception as e:
@@ -899,6 +1015,111 @@ class VaultMCPServer:
                 type="text",
                 text=f"❌ Status check failed: {str(e)}"
             )]
+
+    async def _handle_sheriff_request_access(self, args: dict, app_identifier: str) -> Sequence[TextContent]:
+        """Handle sheriff.request_access tool call."""
+        resource = args.get("resource")
+        purpose = args.get("purpose")
+        ttl_seconds = int(args.get("ttl_seconds", 900))
+
+        if not resource or not purpose:
+            return [TextContent(
+                type="text",
+                text="❌ Error: 'resource' and 'purpose' are required."
+            )]
+
+        result = self.sheriff.request_access(
+            subject_app=app_identifier,
+            resource=resource,
+            purpose=purpose,
+            ttl_seconds=ttl_seconds,
+        )
+
+        # Bridge PROMPT decisions to existing OS consent flow for MCP agents.
+        if result.decision == AccessDecision.PROMPT:
+            granted = self.consent_manager.request_consent(
+                tool_name="sheriff.request_access",
+                query_preview=f"{purpose[:30]} -> {resource[:40]}",
+            )
+            result = self.sheriff.consent_decide(
+                subject_app=app_identifier,
+                resource=resource,
+                purpose=purpose,
+                allow=granted,
+                ttl_seconds=ttl_seconds,
+            )
+
+        payload = result.model_dump(mode="json")
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+    async def _handle_sheriff_read(self, args: dict, app_identifier: str) -> Sequence[TextContent]:
+        """Handle sheriff.read tool call."""
+        resource = args.get("resource")
+        lease_id = args.get("lease_id")
+        redact = args.get("redact", True)
+
+        if not resource or not lease_id:
+            return [TextContent(
+                type="text",
+                text="❌ Error: 'resource' and 'lease_id' are required."
+            )]
+
+        try:
+            content = self.sheriff.read_with_lease(
+                subject_app=app_identifier,
+                resource=resource,
+                lease_id=lease_id,
+                redact=bool(redact),
+            )
+        except PermissionError as e:
+            return [TextContent(type="text", text=f"❌ Access denied: {e}")]
+        except FileNotFoundError:
+            return [TextContent(type="text", text=f"❌ Resource not found: {resource}")]
+
+        max_chars = 20000
+        truncated = len(content) > max_chars
+        body = content[:max_chars]
+        suffix = "\n\n[TRUNCATED]" if truncated else ""
+        return [TextContent(type="text", text=f"{body}{suffix}")]
+
+    async def _handle_sheriff_list_audit(self, args: dict) -> Sequence[TextContent]:
+        """Handle sheriff.list_audit tool call."""
+        limit = int(args.get("limit", 50))
+        subject = args.get("subject")
+        resource = args.get("resource")
+        decision_raw = args.get("decision")
+
+        decision = None
+        if decision_raw:
+            try:
+                decision = AccessDecision(str(decision_raw))
+            except ValueError:
+                return [TextContent(
+                    type="text",
+                    text=f"❌ Invalid decision value: {decision_raw}. Allowed: ALLOW, DENY, PROMPT, ALLOW_WITH_LEASE."
+                )]
+
+        events = self.sheriff.audit_events(
+            limit=limit,
+            subject=subject,
+            resource=resource,
+            decision=decision,
+        )
+        return [TextContent(type="text", text=json.dumps({"items": events}, indent=2))]
+
+    async def _handle_sheriff_revoke(self, args: dict) -> Sequence[TextContent]:
+        """Handle sheriff.revoke tool call."""
+        lease_id = args.get("lease_id")
+        if not lease_id:
+            return [TextContent(
+                type="text",
+                text="❌ Error: 'lease_id' is required."
+            )]
+
+        ok = self.sheriff.revoke_lease(lease_id=lease_id, actor="user")
+        if ok:
+            return [TextContent(type="text", text=f"✅ Lease revoked: {lease_id}")]
+        return [TextContent(type="text", text=f"❌ Lease not found: {lease_id}")]
 
 
 def create_vault_server(vault_path: str = "~/.vault") -> VaultMCPServer:

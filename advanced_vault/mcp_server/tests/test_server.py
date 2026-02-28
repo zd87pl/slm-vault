@@ -2,6 +2,7 @@
 Tests for Vault MCP Server
 """
 
+import json
 import os
 import pytest
 import tempfile
@@ -202,6 +203,70 @@ class TestVaultMCPServer:
         # Should return an error or "not found" message
         assert ("❌" in result[0].text or "❓" in result[0].text or "No" in result[0].text)
 
+    @pytest.mark.asyncio
+    async def test_sheriff_access_read_revoke_flow(self, server, monkeypatch):
+        """Test sheriff lease lifecycle through MCP handlers."""
+        critical_file = Path(server.vault_path) / "tax_records_2025.pem"
+        critical_file.write_text("password=supersecret")
+
+        monkeypatch.setattr(server.consent_manager, "request_consent", lambda **_: True)
+
+        request_result = await server._handle_sheriff_request_access(
+            {
+                "resource": str(critical_file),
+                "purpose": "summarize for user",
+                "ttl_seconds": 300,
+            },
+            app_identifier="test-app",
+        )
+        payload = json.loads(request_result[0].text)
+        assert payload["decision"] == "ALLOW_WITH_LEASE"
+        assert payload["lease"] is not None
+        lease_id = payload["lease"]["lease_id"]
+
+        read_result = await server._handle_sheriff_read(
+            {
+                "resource": str(critical_file),
+                "lease_id": lease_id,
+                "redact": True,
+            },
+            app_identifier="test-app",
+        )
+        assert "[REDACTED]" in read_result[0].text
+
+        revoke_result = await server._handle_sheriff_revoke({"lease_id": lease_id})
+        assert "✅ Lease revoked" in revoke_result[0].text
+
+        denied_read = await server._handle_sheriff_read(
+            {
+                "resource": str(critical_file),
+                "lease_id": lease_id,
+            },
+            app_identifier="test-app",
+        )
+        assert "❌ Access denied" in denied_read[0].text
+
+    @pytest.mark.asyncio
+    async def test_sheriff_list_audit(self, server, monkeypatch):
+        """Test sheriff audit listing handler."""
+        critical_file = Path(server.vault_path) / "passport_copy.pem"
+        critical_file.write_text("dummy")
+        monkeypatch.setattr(server.consent_manager, "request_consent", lambda **_: True)
+
+        await server._handle_sheriff_request_access(
+            {
+                "resource": str(critical_file),
+                "purpose": "read metadata",
+                "ttl_seconds": 120,
+            },
+            app_identifier="test-audit-app",
+        )
+        audit_result = await server._handle_sheriff_list_audit({"limit": 10, "subject": "test-audit-app"})
+        audit_payload = json.loads(audit_result[0].text)
+        assert "items" in audit_payload
+        assert len(audit_payload["items"]) >= 1
+        assert any(item["subject"] == "test-audit-app" for item in audit_payload["items"])
+
 
 class TestMCPToolDefinitions:
     """Test MCP tool definitions are correct."""
@@ -228,6 +293,10 @@ class TestMCPToolDefinitions:
         assert hasattr(server, '_handle_list')
         assert hasattr(server, '_handle_delete')
         assert hasattr(server, '_handle_stats')
+        assert hasattr(server, '_handle_sheriff_request_access')
+        assert hasattr(server, '_handle_sheriff_read')
+        assert hasattr(server, '_handle_sheriff_list_audit')
+        assert hasattr(server, '_handle_sheriff_revoke')
 
 
 class TestVaultIntegration:
