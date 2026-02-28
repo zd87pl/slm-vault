@@ -158,6 +158,10 @@ class VaultApp:
         self._sheriff_scan_paths_text = str(Path.home() / "Documents")
         self._sheriff_max_files = 2000
         self._sheriff_summary_path = self.vault_path / "sheriff" / "last_scan_summary.json"
+        self._sheriff_workflow_in_progress = False
+        self._sheriff_workflow_step = ""
+        self._sheriff_workflow_error: Optional[str] = None
+        self._sheriff_last_action_note: str = "No Sheriff actions run yet."
         self._load_sheriff_scan_summary()
         
         # Initialize MCP setup helper (after vault_path is set)
@@ -1167,12 +1171,59 @@ class VaultApp:
             "warning": LightTheme.ACCENT_WARNING,
             "error": LightTheme.ACCENT_ERROR,
         }
-        self.page.snack_bar = ft.SnackBar(
-            content=ft.Text(message, color="white"),
-            bgcolor=colors.get(level, LightTheme.ACCENT_PRIMARY),
-        )
-        self.page.snack_bar.open = True
-        self.page.update()
+        color = colors.get(level, LightTheme.ACCENT_PRIMARY)
+
+        def _apply():
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text(message, color="white"),
+                bgcolor=color,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+
+        try:
+            _apply()
+        except Exception as e:
+            # Fallback for background-thread calls.
+            logger.debug(f"Deferred UI message update: {e}")
+
+            async def _deferred():
+                try:
+                    _apply()
+                except Exception as inner:
+                    logger.debug(f"Could not render deferred user message: {inner}")
+
+            try:
+                self.page.run_task(_deferred)
+            except Exception as inner:
+                logger.debug(f"Failed to queue deferred message update: {inner}")
+
+    def _run_on_ui_thread(self, callback: Callable[[], None]) -> None:
+        """Run UI callback safely from any thread."""
+        async def _deferred():
+            try:
+                callback()
+            except Exception as e:
+                logger.debug(f"Deferred UI callback failed: {e}")
+
+        try:
+            self.page.run_task(_deferred)
+        except Exception as e:
+            logger.debug(f"Failed to schedule UI callback: {e}")
+
+    def _refresh_sheriff_views(self) -> None:
+        """Refresh Sheriff-related views without assuming current thread."""
+
+        def _refresh():
+            if self.current_view == "landing":
+                self.show_landing_page()
+            elif self.current_view == "settings_hub":
+                self.show_settings_hub(active_tab="sheriff")
+
+        try:
+            _refresh()
+        except Exception:
+            self._run_on_ui_thread(_refresh)
 
     def _show_actionable_error(
         self,
@@ -1433,7 +1484,12 @@ class VaultApp:
                     ft.Container(height=8),
                     ft.Row(
                         [
-                            ft.Wrap(chips, spacing=8, run_spacing=8, expand=True),
+                            ft.Row(
+                                chips,
+                                spacing=8,
+                                scroll=ft.ScrollMode.AUTO,
+                                expand=True,
+                            ),
                             ft.ElevatedButton(
                                 self.tr("readiness.action.ready")
                                 if next_incomplete is None
@@ -1534,6 +1590,144 @@ class VaultApp:
             },
         ]
 
+    def _get_sheriff_posture(self) -> Dict[str, Any]:
+        """Return high-level protection posture for simple UX messaging."""
+        summary = self._sheriff_last_summary or {}
+        scanned_files = int(summary.get("total_files", 0) or 0)
+        critical = int(summary.get("critical_count", 0) or 0)
+        sensitive = int(summary.get("sensitive_count", 0) or 0)
+
+        try:
+            rules_count = len(self.sheriff_core.policy.list_rules())
+        except Exception:
+            rules_count = 0
+
+        try:
+            enforcement = self.sheriff_core.enforcement_status()
+        except Exception:
+            enforcement = {"enabled": False, "message": "Enforcement status unavailable."}
+        enforcement_enabled = bool(enforcement.get("enabled"))
+
+        if rules_count <= 0:
+            status = "NOT_PROTECTED"
+            headline = "Protection not active"
+            detail = "Consent barrier rules are not active yet."
+            color = LightTheme.ACCENT_ERROR
+            security_answer = "No. Critical data is not protected yet."
+        elif not enforcement_enabled:
+            status = "PARTIAL"
+            headline = "Partially protected"
+            detail = "Consent rules are active, but OS-level blocking is not installed."
+            color = LightTheme.ACCENT_WARNING
+            security_answer = "Partly. Brokered access is controlled, but direct filesystem reads may still bypass Sheriff."
+        elif scanned_files <= 0:
+            status = "PARTIAL"
+            headline = "Protection partially active"
+            detail = "OS enforcement is ready, but no scan results yet."
+            color = LightTheme.ACCENT_WARNING
+            security_answer = "Not fully yet. Run a scan so Sheriff can protect discovered critical files."
+        else:
+            status = "PROTECTED"
+            headline = "Protection active"
+            detail = f"{rules_count} rule(s) active. Last scan: {critical} critical, {sensitive} sensitive."
+            color = LightTheme.ACCENT_SUCCESS
+            security_answer = "Yes. Access to protected critical files requires consent or a valid lease."
+
+        return {
+            "status": status,
+            "headline": headline,
+            "detail": detail,
+            "color": color,
+            "rules_count": rules_count,
+            "scanned_files": scanned_files,
+            "enforcement_enabled": enforcement_enabled,
+            "enforcement_message": str(enforcement.get("message", "")),
+            "security_answer": security_answer,
+        }
+
+    def _get_sheriff_recommended_paths(self, max_paths: int = 25) -> List[str]:
+        """Compute top-risk paths from latest scan, fallback to scan roots."""
+        summary = self._sheriff_last_summary or {}
+        findings = summary.get("findings", [])
+        candidate_paths: List[str] = []
+
+        for finding in findings:
+            label = finding.get("label")
+            if label in {"CRITICAL", "SENSITIVE"} and finding.get("path"):
+                candidate_paths.append(str(finding["path"]))
+            if len(candidate_paths) >= max_paths:
+                break
+
+        if not candidate_paths:
+            candidate_paths = self._parse_sheriff_scan_paths()
+
+        unique_paths: List[str] = []
+        seen = set()
+        for path in candidate_paths:
+            if path and path not in seen:
+                unique_paths.append(path)
+                seen.add(path)
+        return unique_paths
+
+    def _run_sheriff_secure_now(self) -> None:
+        """One-click value flow: configure MCP -> scan -> protect."""
+        if self._sheriff_workflow_in_progress or self._sheriff_scan_in_progress:
+            return
+
+        self._sheriff_workflow_in_progress = True
+        self._sheriff_workflow_step = "Configuring AI apps..."
+        self._sheriff_workflow_error = None
+        self._sheriff_last_action_note = "Secure flow started. Step 1/3: configuring AI apps."
+        self._refresh_sheriff_views()
+        self._show_user_message("Starting one-click protection workflow...", level="info")
+
+        def worker():
+            try:
+                # Step 1: App MCP config (best effort)
+                try:
+                    result = self.mcp_setup.auto_configure_all_clients()
+                    configured_count = int(result.get("configured_count", 0))
+                    if configured_count > 0:
+                        self._show_user_message(f"MCP ready for {configured_count} app(s).", level="success")
+                except Exception as ex:
+                    logger.debug(f"MCP auto-config step failed: {ex}")
+
+                # Step 2: Scan
+                self._sheriff_workflow_step = "Scanning local files..."
+                self._sheriff_last_action_note = "Secure flow running. Step 2/3: scanning files."
+                self._refresh_sheriff_views()
+                paths = self._parse_sheriff_scan_paths()
+                max_files = max(1, int(self._sheriff_max_files or 2000))
+                summary = self.sheriff_core.scan_risk(paths=paths, max_files=max_files)
+                self._sheriff_last_summary = summary.model_dump(mode="json")
+                self._save_sheriff_scan_summary()
+
+                # Step 3: Protect
+                self._sheriff_workflow_step = "Applying consent barrier..."
+                self._sheriff_last_action_note = "Secure flow running. Step 3/3: applying protection rules."
+                self._refresh_sheriff_views()
+                paths_to_protect = self._get_sheriff_recommended_paths(max_paths=25)
+                rules = self.sheriff_core.protect_now(paths=paths_to_protect)
+                self._sheriff_last_action_note = (
+                    f"Secure flow complete. Added {len(rules)} rule(s); "
+                    f"scan found {summary.critical_count} critical files."
+                )
+                self._show_user_message(
+                    f"Protection active: {len(rules)} rule(s), scan found {summary.critical_count} critical file(s).",
+                    level="success",
+                )
+            except Exception as ex:
+                logger.error(f"Secure now workflow failed: {ex}")
+                self._sheriff_workflow_error = str(ex)
+                self._sheriff_last_action_note = f"Secure flow failed: {ex}"
+                self._show_user_message(f"Secure now failed: {ex}", level="error")
+            finally:
+                self._sheriff_workflow_in_progress = False
+                self._sheriff_workflow_step = ""
+                self._refresh_sheriff_views()
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _run_sheriff_wizard_action(self, step_id: str) -> None:
         """Execute action for selected sheriff wizard step."""
         if step_id == "setup":
@@ -1568,6 +1762,7 @@ class VaultApp:
         """Build landing quick-start wizard for Data Sheriff."""
         steps = self._collect_sheriff_wizard_steps()
         next_incomplete = next((step for step in steps if not step["ready"]), None)
+        posture = self._get_sheriff_posture()
 
         cards: List[ft.Control] = []
         for step in steps:
@@ -1626,7 +1821,7 @@ class VaultApp:
                             ),
                             ft.Container(expand=True),
                             ft.Text(
-                                "All critical access requires consent/lease" if next_incomplete is None else "3 steps to enable full protection",
+                                "Protection enabled" if next_incomplete is None else "3 steps to enable protection",
                                 size=12,
                                 color=LightTheme.TEXT_MUTED,
                             ),
@@ -1634,15 +1829,74 @@ class VaultApp:
                         spacing=8,
                         vertical_alignment=ft.CrossAxisAlignment.CENTER,
                     ),
+                    ft.Container(height=8),
+                    ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Icon(ft.Icons.SECURITY_ROUNDED, size=16, color=posture["color"]),
+                                ft.Column(
+                                    [
+                                        ft.Text(posture["headline"], size=13, weight=ft.FontWeight.W_600, color=posture["color"]),
+                                        ft.Text(posture["detail"], size=12, color=LightTheme.TEXT_SECONDARY),
+                                    ],
+                                    spacing=2,
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                        padding=ft.padding.all(10),
+                        border_radius=8,
+                        bgcolor=LightTheme.BG_HOVER,
+                        border=ft.border.all(1, posture["color"] + "40"),
+                    ),
+                    ft.Container(height=8),
+                    ft.Text(
+                        f"Is my data secure right now? {posture['security_answer']}",
+                        size=12,
+                        color=posture["color"],
+                    ),
+                    ft.Text(
+                        posture.get("enforcement_message", ""),
+                        size=11,
+                        color=LightTheme.TEXT_MUTED,
+                    ),
                     ft.Container(height=10),
-                    ft.Wrap(cards, spacing=12, run_spacing=12),
+                    ft.Row(
+                        cards,
+                        spacing=12,
+                        scroll=ft.ScrollMode.AUTO,
+                    ),
                     ft.Container(height=10),
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                "Secure My Data Now",
+                                icon=ft.Icons.SHIELD_ROUNDED,
+                                disabled=self._sheriff_workflow_in_progress or self._sheriff_scan_in_progress,
+                                on_click=lambda e: self._run_sheriff_secure_now(),
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.ACCENT_SUCCESS,
+                                    color="white",
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                ),
+                            ),
+                            ft.Text(
+                                self._sheriff_workflow_step if self._sheriff_workflow_in_progress else "",
+                                size=12,
+                                color=LightTheme.TEXT_MUTED,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=10,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(height=8),
                     ft.Row(
                         [
                             ft.ElevatedButton(
                                 "All Set" if next_incomplete is None else next_incomplete["action_label"],
                                 icon=ft.Icons.CHECK_ROUNDED if next_incomplete is None else ft.Icons.PLAY_ARROW_ROUNDED,
-                                disabled=next_incomplete is None or self._sheriff_scan_in_progress,
+                                disabled=next_incomplete is None or self._sheriff_scan_in_progress or self._sheriff_workflow_in_progress,
                                 on_click=(
                                     (lambda e, sid=next_incomplete["id"]: self._run_sheriff_wizard_action(sid))
                                     if next_incomplete
@@ -1664,9 +1918,13 @@ class VaultApp:
                                     shape=ft.RoundedRectangleBorder(radius=8),
                                 ),
                             ),
+                            ft.ProgressRing(width=14, height=14, stroke_width=2, color=LightTheme.ACCENT_PRIMARY) if self._sheriff_workflow_in_progress else ft.Container(),
                         ],
                         spacing=10,
                     ),
+                    ft.Text(f"Workflow error: {self._sheriff_workflow_error}", size=12, color=LightTheme.ACCENT_ERROR)
+                    if self._sheriff_workflow_error
+                    else ft.Container(),
                 ],
                 spacing=0,
             ),
@@ -7311,8 +7569,12 @@ class VaultApp:
         max_files = max(1, int(self._sheriff_max_files or 2000))
         self._sheriff_scan_in_progress = True
         self._sheriff_last_error = None
-        if self.current_view == "settings_hub":
-            self.show_settings_hub(active_tab="sheriff")
+        self._sheriff_last_action_note = (
+            f"Risk scan started at {datetime.now().strftime('%H:%M:%S')} "
+            f"for {len(paths)} root(s), max {max_files} files."
+        )
+        self._show_user_message("Sheriff scan started...", level="info")
+        self._refresh_sheriff_views()
 
         def worker():
             try:
@@ -7320,6 +7582,10 @@ class VaultApp:
                 self._sheriff_last_summary = summary.model_dump(mode="json")
                 self._save_sheriff_scan_summary()
                 self._sheriff_last_error = None
+                self._sheriff_last_action_note = (
+                    f"Risk scan complete at {datetime.now().strftime('%H:%M:%S')}: "
+                    f"{summary.critical_count} critical, {summary.sensitive_count} sensitive."
+                )
                 self._show_user_message(
                     f"Sheriff scan complete: {summary.critical_count} critical, {summary.sensitive_count} sensitive.",
                     level="success",
@@ -7327,14 +7593,11 @@ class VaultApp:
             except Exception as ex:
                 logger.error(f"Sheriff scan failed: {ex}")
                 self._sheriff_last_error = str(ex)
+                self._sheriff_last_action_note = f"Risk scan failed at {datetime.now().strftime('%H:%M:%S')}: {ex}"
                 self._show_user_message(f"Sheriff scan failed: {ex}", level="error")
             finally:
                 self._sheriff_scan_in_progress = False
-                if self.current_view == "settings_hub":
-                    try:
-                        self.show_settings_hub(active_tab="sheriff")
-                    except Exception:
-                        pass
+                self._refresh_sheriff_views()
 
         threading.Thread(target=worker, daemon=True).start()
 
@@ -7365,15 +7628,24 @@ class VaultApp:
             self._show_user_message("No paths selected for protection.", level="info")
             return
 
+        self._sheriff_last_action_note = (
+            f"Applying protection rules at {datetime.now().strftime('%H:%M:%S')} "
+            f"for {len(unique_paths)} path(s)."
+        )
+        self._show_user_message("Applying protection rules...", level="info")
         try:
             rules = self.sheriff_core.protect_now(paths=unique_paths)
+            self._sheriff_last_action_note = (
+                f"Protection complete at {datetime.now().strftime('%H:%M:%S')}: "
+                f"{len(rules)} rule(s) active."
+            )
             self._show_user_message(f"Protected {len(rules)} path(s) with consent barrier.", level="success")
         except Exception as ex:
             logger.error(f"Failed to enable sheriff protection: {ex}")
+            self._sheriff_last_action_note = f"Protection failed at {datetime.now().strftime('%H:%M:%S')}: {ex}"
             self._show_user_message(f"Protection failed: {ex}", level="error")
 
-        if self.current_view == "settings_hub":
-            self.show_settings_hub(active_tab="sheriff")
+        self._refresh_sheriff_views()
 
     def _revoke_sheriff_lease(self, lease_id: str) -> None:
         """Revoke one active lease and refresh panel."""
@@ -7393,6 +7665,7 @@ class VaultApp:
         recent_audit = self.sheriff_core.audit_events(limit=8)
         rules_count = len(self.sheriff_core.policy.list_rules())
         summary = self._sheriff_last_summary or {}
+        posture = self._get_sheriff_posture()
 
         critical_count = int(summary.get("critical_count", 0))
         sensitive_count = int(summary.get("sensitive_count", 0))
@@ -7534,6 +7807,32 @@ class VaultApp:
                 size=13,
                 color=LightTheme.TEXT_SECONDARY,
             ),
+            ft.Container(height=8),
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text(
+                            f"Security status: {posture['headline']}",
+                            size=14,
+                            weight=ft.FontWeight.W_600,
+                            color=posture["color"],
+                        ),
+                        ft.Text(
+                            f"Is my data secure right now? {posture['security_answer']}",
+                            size=12,
+                            color=posture["color"],
+                        ),
+                        ft.Text(posture["detail"], size=12, color=LightTheme.TEXT_SECONDARY),
+                        ft.Text(posture.get("enforcement_message", ""), size=11, color=LightTheme.TEXT_MUTED),
+                        ft.Text(f"Last action: {self._sheriff_last_action_note}", size=11, color=LightTheme.TEXT_MUTED),
+                    ],
+                    spacing=4,
+                ),
+                padding=ft.padding.all(12),
+                border=ft.border.all(1, posture["color"] + "40"),
+                border_radius=10,
+                bgcolor=LightTheme.BG_ELEVATED,
+            ),
             ft.Container(height=12),
             ft.Row(
                 [
@@ -7548,7 +7847,26 @@ class VaultApp:
             ft.Container(
                 content=ft.Column(
                     [
-                        ft.Text("One-Click Scan", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                        ft.Text("Recommended: 1-click Secure", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                        ft.Text(
+                            "Use this first. It auto-configures supported AI apps, scans files, and enables protection rules.",
+                            size=12,
+                            color=LightTheme.TEXT_SECONDARY,
+                        ),
+                        ft.ElevatedButton(
+                            "Secure My Data Now",
+                            icon=ft.Icons.SHIELD_ROUNDED,
+                            disabled=self._sheriff_workflow_in_progress or self._sheriff_scan_in_progress,
+                            on_click=lambda e: self._run_sheriff_secure_now(),
+                            style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_SUCCESS, color="white"),
+                        ),
+                        ft.Text(
+                            self._sheriff_workflow_step if self._sheriff_workflow_in_progress else "",
+                            size=12,
+                            color=LightTheme.TEXT_MUTED,
+                        ),
+                        ft.Divider(height=14, color=LightTheme.BORDER_COLOR),
+                        ft.Text("Advanced scan options", size=13, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
                         ft.TextField(
                             label="Scan roots (comma or newline separated)",
                             value=self._sheriff_scan_paths_text,
@@ -7569,16 +7887,17 @@ class VaultApp:
                                     border_color=LightTheme.BORDER_COLOR,
                                 ),
                                 ft.ElevatedButton(
-                                    "Run Scan",
+                                    "Scan Only",
                                     icon=ft.Icons.PLAY_CIRCLE_ROUNDED,
                                     on_click=lambda e: self._start_sheriff_scan(),
-                                    disabled=self._sheriff_scan_in_progress,
+                                    disabled=self._sheriff_scan_in_progress or self._sheriff_workflow_in_progress,
                                     style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
                                 ),
                                 ft.ElevatedButton(
-                                    "Protect Now",
+                                    "Protect Only",
                                     icon=ft.Icons.SHIELD_ROUNDED,
                                     on_click=lambda e: self._protect_sheriff_recommended(),
+                                    disabled=self._sheriff_scan_in_progress or self._sheriff_workflow_in_progress,
                                     style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_SUCCESS, color="white"),
                                 ),
                                 ft.ElevatedButton(
@@ -7602,7 +7921,19 @@ class VaultApp:
                             spacing=8,
                         ),
                         ft.Text(str(enforcement.get("message", "")), size=11, color=LightTheme.TEXT_MUTED),
-                        ft.ProgressRing(width=16, height=16, stroke_width=2, color=LightTheme.ACCENT_PRIMARY) if self._sheriff_scan_in_progress else ft.Container(),
+                        ft.Row(
+                            [
+                                ft.ProgressRing(width=16, height=16, stroke_width=2, color=LightTheme.ACCENT_PRIMARY)
+                                if (self._sheriff_scan_in_progress or self._sheriff_workflow_in_progress)
+                                else ft.Container(width=16, height=16),
+                                ft.Text(
+                                    "Sheriff is working..." if (self._sheriff_scan_in_progress or self._sheriff_workflow_in_progress) else "Sheriff is idle.",
+                                    size=11,
+                                    color=LightTheme.TEXT_MUTED,
+                                ),
+                            ],
+                            spacing=8,
+                        ),
                         ft.Text(f"Last scan error: {self._sheriff_last_error}", size=12, color=LightTheme.ACCENT_ERROR) if self._sheriff_last_error else ft.Container(),
                     ],
                     spacing=10,
