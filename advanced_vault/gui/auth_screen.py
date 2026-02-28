@@ -16,6 +16,8 @@ import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
+from localization import get_text
+
 
 class OAuthCallbackHandler(BaseHTTPRequestHandler):
     """Handle OAuth redirect callback."""
@@ -92,12 +94,16 @@ class AuthScreen:
         self,
         page: ft.Page,
         backend_url: str,
-        on_auth_success: Callable[[dict], None]
+        on_auth_success: Callable[[dict], None],
+        language: str = "en",
+        translate: Optional[Callable[..., str]] = None,
     ):
         """Initialize auth screen."""
         self.page = page
         self.backend_url = backend_url
         self.on_auth_success = on_auth_success
+        self.language = language or "en"
+        self.translate = translate
 
         # Get Supabase credentials from environment variables
         # Set SUPABASE_URL and SUPABASE_ANON_KEY in launch script or environment
@@ -116,12 +122,24 @@ class AuthScreen:
         # Build UI components
         self.build_components()
 
+    def t(self, key: str, **kwargs) -> str:
+        """Resolve localized text with fallback."""
+        if self.translate:
+            try:
+                return self.translate(key, **kwargs)
+            except Exception:
+                try:
+                    return self.translate(key)
+                except Exception:
+                    pass
+        return get_text(self.language, key, **kwargs)
+
     def build_components(self):
         """Build auth UI components."""
         # Email field
         self.email_field = ft.TextField(
-            label="Email",
-            hint_text="your@email.com",
+            label=self.t("auth.email.label"),
+            hint_text=self.t("auth.email.hint"),
             prefix_icon=ft.Icons.EMAIL,
             border_radius=12,
             filled=True,
@@ -133,8 +151,8 @@ class AuthScreen:
 
         # Password field
         self.password_field = ft.TextField(
-            label="Password",
-            hint_text="Enter your password",
+            label=self.t("auth.password.label"),
+            hint_text=self.t("auth.password.hint"),
             prefix_icon=ft.Icons.LOCK,
             password=True,
             can_reveal_password=True,
@@ -148,8 +166,8 @@ class AuthScreen:
 
         # Full name field (for signup)
         self.fullname_field = ft.TextField(
-            label="Full Name (optional)",
-            hint_text="John Doe",
+            label=self.t("auth.full_name.label"),
+            hint_text=self.t("auth.full_name.hint"),
             prefix_icon=ft.Icons.PERSON,
             border_radius=12,
             filled=True,
@@ -170,7 +188,7 @@ class AuthScreen:
 
         # Submit button
         self.submit_button = ft.ElevatedButton(
-            "Sign In",
+            self.t("auth.submit.signin"),
             icon=ft.Icons.LOGIN,
             on_click=self.handle_email_auth,
             width=300,
@@ -184,7 +202,7 @@ class AuthScreen:
 
         # Toggle mode link
         self.toggle_mode_btn = ft.TextButton(
-            "Don't have an account? Sign up",
+            self.t("auth.toggle.to_signup"),
             on_click=self.toggle_auth_mode,
             style=ft.ButtonStyle(
                 color="#667eea",
@@ -193,7 +211,7 @@ class AuthScreen:
 
         # OAuth buttons
         self.google_button = ft.ElevatedButton(
-            "Continue with Google",
+            self.t("auth.oauth.google"),
             icon=ft.Icons.LOGIN,
             on_click=lambda _: self.handle_oauth("google"),
             width=300,
@@ -206,7 +224,7 @@ class AuthScreen:
         )
 
         self.github_button = ft.ElevatedButton(
-            "Continue with GitHub",
+            self.t("auth.oauth.github"),
             icon=ft.Icons.CODE,
             on_click=lambda _: self.handle_oauth("github"),
             width=300,
@@ -242,7 +260,7 @@ class AuthScreen:
                                     color="#ffffff",
                                 ),
                                 ft.Text(
-                                    "Secure Encrypted Vault with AI Inference",
+                                    self.t("auth.subtitle"),
                                     size=14,
                                     color="#999999",
                                 ),
@@ -276,7 +294,7 @@ class AuthScreen:
                                     expand=True,
                                 ),
                                 ft.Text(
-                                    "or",
+                                    self.t("auth.divider.or"),
                                     size=12,
                                     color="#666666",
                                 ),
@@ -326,15 +344,15 @@ class AuthScreen:
         """Toggle between sign in and sign up."""
         if self.auth_mode == "signin":
             self.auth_mode = "signup"
-            self.submit_button.text = "Sign Up"
+            self.submit_button.text = self.t("auth.submit.signup")
             self.submit_button.icon = ft.Icons.PERSON_ADD
-            self.toggle_mode_btn.text = "Already have an account? Sign in"
+            self.toggle_mode_btn.text = self.t("auth.toggle.to_signin")
             self.fullname_field.visible = True
         else:
             self.auth_mode = "signin"
-            self.submit_button.text = "Sign In"
+            self.submit_button.text = self.t("auth.submit.signin")
             self.submit_button.icon = ft.Icons.LOGIN
-            self.toggle_mode_btn.text = "Don't have an account? Sign up"
+            self.toggle_mode_btn.text = self.t("auth.toggle.to_signup")
             self.fullname_field.visible = False
 
         self.page.update()
@@ -366,7 +384,7 @@ class AuthScreen:
         password = self.password_field.value
 
         if not email or not password:
-            self.show_error("Please enter email and password")
+            self.show_error(self.t("auth.error.missing_credentials"))
             return
 
         self.show_loading(True)
@@ -411,12 +429,12 @@ class AuthScreen:
                     # Callback
                     self.on_auth_success(session_data)
                 else:
-                    self.show_error("Authentication failed")
+                    self.show_error(self.t("auth.error.failed"))
 
             except AuthApiError as ex:
                 self.show_error(str(ex))
             except Exception as ex:
-                self.show_error(f"Error: {str(ex)}")
+                self.show_error(self.t("auth.error.generic", error=str(ex)))
 
             finally:
                 self.show_loading(False)
@@ -473,7 +491,7 @@ class AuthScreen:
             thread.start()
 
         except Exception as ex:
-            self.show_error(f"OAuth error: {str(ex)}")
+            self.show_error(self.t("auth.error.oauth", error=str(ex)))
             self.show_loading(False)
 
     def save_session(self, session_data: dict):

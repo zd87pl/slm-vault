@@ -17,7 +17,8 @@ class ModernSidebar:
     def __init__(
         self,
         on_nav_change: Callable[[int], None],
-        selected_index: int = 0
+        selected_index: int = 0,
+        translate: Optional[Callable[..., str]] = None,
     ):
         """
         Initialize modern sidebar.
@@ -28,7 +29,17 @@ class ModernSidebar:
         """
         self.on_nav_change = on_nav_change
         self.selected_index = selected_index
+        self.translate = translate
         self._nav_items = []
+
+    def t(self, key: str, fallback: str) -> str:
+        """Translate label if callback is available."""
+        if not self.translate:
+            return fallback
+        try:
+            return self.translate(key)
+        except Exception:
+            return fallback
     
     def add_nav_item(
         self,
@@ -50,25 +61,39 @@ class ModernSidebar:
         nav_controls = []
 
         # Clean top spacing (branding is in window title)
-        nav_controls.append(
-            ft.Container(
-                height=12,
-            )
-        )
+        nav_controls.append(ft.Container(height=12))
 
-        # Navigation items - simplified to 4 main items
+        # Simplified navigation structure (4 items)
+        # -1: Vault (landing page)
+        #  0: My Data
+        #  1: Agent
+        #  2: Settings
         nav_items_column = []
-
-        # Simplified navigation structure (4 items instead of 9)
-        # -1: Vault (landing page with hero drop zone)
-        #  0: My Data (Secrets + Knowledge + Library combined)
-        #  1: Agent (Chat + Permissions + Activity combined)
-        #  2: Settings (Training + Stats + Policies + Setup combined)
         nav_items = [
-            {"icon": ft.Icons.SHIELD_OUTLINED, "selected": ft.Icons.SHIELD_ROUNDED, "label": "Vault", "idx": -1},
-            {"icon": ft.Icons.FOLDER_OUTLINED, "selected": ft.Icons.FOLDER_ROUNDED, "label": "My Data", "idx": 0},
-            {"icon": ft.Icons.SMART_TOY_OUTLINED, "selected": ft.Icons.SMART_TOY_ROUNDED, "label": "Agent", "idx": 1},
-            {"icon": ft.Icons.SETTINGS_OUTLINED, "selected": ft.Icons.SETTINGS_ROUNDED, "label": "Settings", "idx": 2},
+            {
+                "icon": ft.Icons.SHIELD_OUTLINED,
+                "selected": ft.Icons.SHIELD_ROUNDED,
+                "label": self.t("sidebar.vault", "Vault"),
+                "idx": -1,
+            },
+            {
+                "icon": ft.Icons.FOLDER_OUTLINED,
+                "selected": ft.Icons.FOLDER_ROUNDED,
+                "label": self.t("sidebar.my_data", "My Data"),
+                "idx": 0,
+            },
+            {
+                "icon": ft.Icons.SMART_TOY_OUTLINED,
+                "selected": ft.Icons.SMART_TOY_ROUNDED,
+                "label": self.t("sidebar.agent", "Agent"),
+                "idx": 1,
+            },
+            {
+                "icon": ft.Icons.SETTINGS_OUTLINED,
+                "selected": ft.Icons.SETTINGS_ROUNDED,
+                "label": self.t("sidebar.settings", "Settings"),
+                "idx": 2,
+            },
         ]
 
         for item in nav_items:
@@ -78,7 +103,7 @@ class ModernSidebar:
                     selected_icon=item["selected"],
                     label=item["label"],
                     index=item["idx"],
-                    is_selected=self.selected_index == item["idx"]
+                    is_selected=self.selected_index == item["idx"],
                 )
             )
 
@@ -165,4 +190,3 @@ class ModernSidebar:
             tooltip=label,
             animate=ft.Animation(150, ft.AnimationCurve.EASE_OUT),
         )
-

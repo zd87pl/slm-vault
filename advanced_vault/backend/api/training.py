@@ -1,18 +1,19 @@
 """Training API endpoints - backend manages RunPod credentials."""
 
+import asyncio
+import base64
+import hashlib
+import logging
+import uuid
+from datetime import datetime
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 from middleware.auth import get_current_user
-from utils.supabase_client import get_supabase
 from utils.access_logger import log_access
 from config import settings
-import requests
-import uuid
-import hashlib
-import logging
-import base64
-from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
@@ -117,15 +118,15 @@ async def submit_training_job(
         payload = {"input": training_config}
         
         try:
-            runpod_response = requests.post(
-                runpod_url,
-                headers={
-                    "Authorization": f"Bearer {settings.runpod_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json=payload,
-                timeout=30
-            )
+            async with httpx.AsyncClient(timeout=30) as client:
+                runpod_response = await client.post(
+                    runpod_url,
+                    headers={
+                        "Authorization": f"Bearer {settings.runpod_api_key}",
+                        "Content-Type": "application/json"
+                    },
+                    json=payload,
+                )
             
             if runpod_response.status_code != 200:
                 logger.error(f"RunPod API error: {runpod_response.status_code} {runpod_response.text}")
@@ -177,7 +178,7 @@ async def submit_training_job(
                 "submitted_at": datetime.now().isoformat()
             }
             
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Network error submitting to RunPod: {e}")
             raise HTTPException(
                 status_code=502,
@@ -253,13 +254,13 @@ async def get_training_status(
         # Query RunPod for current status
         try:
             runpod_url = f"https://api.runpod.ai/v2/{settings.runpod_endpoint_id}/status/{runpod_job_id}"
-            runpod_response = requests.get(
-                runpod_url,
-                headers={
-                    "Authorization": f"Bearer {settings.runpod_api_key}"
-                },
-                timeout=10
-            )
+            async with httpx.AsyncClient(timeout=10) as client:
+                runpod_response = await client.get(
+                    runpod_url,
+                    headers={
+                        "Authorization": f"Bearer {settings.runpod_api_key}"
+                    },
+                )
             
             if runpod_response.status_code != 200:
                 logger.warning(f"Failed to get RunPod status: {runpod_response.status_code}")
@@ -318,7 +319,7 @@ async def get_training_status(
                 "updated_at": datetime.now().isoformat()
             }
             
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPError as e:
             logger.warning(f"Network error querying RunPod: {e}")
             # Return stored status
             return {
@@ -519,13 +520,13 @@ async def run_inference(
             try:
                 # Query RunPod for current status
                 runpod_url = f"https://api.runpod.ai/v2/{settings.runpod_endpoint_id}/status/{runpod_job_id}"
-                runpod_response = requests.get(
-                    runpod_url,
-                    headers={
-                        "Authorization": f"Bearer {settings.runpod_api_key}"
-                    },
-                    timeout=10
-                )
+                async with httpx.AsyncClient(timeout=10) as client:
+                    runpod_response = await client.get(
+                        runpod_url,
+                        headers={
+                            "Authorization": f"Bearer {settings.runpod_api_key}"
+                        },
+                    )
                 
                 if runpod_response.status_code == 200:
                     runpod_data = runpod_response.json()
@@ -589,91 +590,91 @@ async def run_inference(
         payload = {"input": inference_config}
         
         try:
-            runpod_response = requests.post(
-                runpod_url,
-                headers={
-                    "Authorization": f"Bearer {settings.runpod_api_key}",
-                    "Content-Type": "application/json"
-                },
-                json=payload,
-                timeout=60  # Increased: RunPod submission can take time during cold start
-            )
-            
-            if runpod_response.status_code != 200:
-                logger.error(f"RunPod inference error: {runpod_response.status_code} {runpod_response.text}")
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Failed to submit inference job: {runpod_response.status_code}"
-                )
-            
-            runpod_data = runpod_response.json()
-            runpod_job_id = runpod_data.get('id')
-            
-            if not runpod_job_id:
-                raise HTTPException(
-                    status_code=502,
-                    detail="No job ID returned from RunPod"
-                )
-            
-            # Wait for inference to complete (polling)
-            import time
-            max_wait = 180  # 3 minutes max (cold start 30-60s + inference 10-30s + buffer)
-            poll_interval = 2  # Check every 2 seconds
-            start_time = time.time()
-            
-            while time.time() - start_time < max_wait:
-                status_url = f"https://api.runpod.ai/v2/{settings.runpod_endpoint_id}/status/{runpod_job_id}"
-                status_response = requests.get(
-                    status_url,
+            async with httpx.AsyncClient(timeout=60) as client:
+                runpod_response = await client.post(
+                    runpod_url,
                     headers={
-                        "Authorization": f"Bearer {settings.runpod_api_key}"
+                        "Authorization": f"Bearer {settings.runpod_api_key}",
+                        "Content-Type": "application/json"
                     },
-                    timeout=10
+                    json=payload,
                 )
-                
-                if status_response.status_code == 200:
-                    status_data = status_response.json()
-                    status = status_data.get("status")
-                    
-                    if status == "COMPLETED":
-                        output = status_data.get("output", {})
-                        response_text = output.get("response", "")
-                        
-                        if not response_text:
+
+                if runpod_response.status_code != 200:
+                    logger.error(f"RunPod inference error: {runpod_response.status_code} {runpod_response.text}")
+                    raise HTTPException(
+                        status_code=502,
+                        detail=f"Failed to submit inference job: {runpod_response.status_code}"
+                    )
+
+                runpod_data = runpod_response.json()
+                runpod_job_id = runpod_data.get('id')
+
+                if not runpod_job_id:
+                    raise HTTPException(
+                        status_code=502,
+                        detail="No job ID returned from RunPod"
+                    )
+
+                # Wait for inference to complete (polling)
+                max_wait = 180  # 3 minutes max (cold start 30-60s + inference 10-30s + buffer)
+                poll_interval = 2  # Check every 2 seconds
+                waited = 0
+
+                while waited < max_wait:
+                    status_url = f"https://api.runpod.ai/v2/{settings.runpod_endpoint_id}/status/{runpod_job_id}"
+                    status_response = await client.get(
+                        status_url,
+                        headers={
+                            "Authorization": f"Bearer {settings.runpod_api_key}"
+                        },
+                        timeout=10,
+                    )
+
+                    if status_response.status_code == 200:
+                        status_data = status_response.json()
+                        status = status_data.get("status")
+
+                        if status == "COMPLETED":
+                            output = status_data.get("output", {})
+                            response_text = output.get("response", "")
+
+                            if not response_text:
+                                raise HTTPException(
+                                    status_code=502,
+                                    detail="Inference completed but no response returned"
+                                )
+
+                            # Log access
+                            await log_access(
+                                user_id=user_id,
+                                operation="inference_query",
+                                request=request,
+                                success=True,
+                                metadata={"adapter_id": adapter_id, "prompt_length": len(data.prompt)}
+                            )
+
+                            return {
+                                "success": True,
+                                "response": response_text,
+                                "adapter_id": adapter_id
+                            }
+                        elif status == "FAILED":
+                            error = status_data.get("error", "Unknown error")
                             raise HTTPException(
                                 status_code=502,
-                                detail="Inference completed but no response returned"
+                                detail=f"Inference failed: {error}"
                             )
-                        
-                        # Log access
-                        await log_access(
-                            user_id=user_id,
-                            operation="inference_query",
-                            request=request,
-                            success=True,
-                            metadata={"adapter_id": adapter_id, "prompt_length": len(data.prompt)}
-                        )
-                        
-                        return {
-                            "success": True,
-                            "response": response_text,
-                            "adapter_id": adapter_id
-                        }
-                    elif status == "FAILED":
-                        error = status_data.get("error", "Unknown error")
-                        raise HTTPException(
-                            status_code=502,
-                            detail=f"Inference failed: {error}"
-                        )
-                
-                time.sleep(poll_interval)
+
+                    await asyncio.sleep(poll_interval)
+                    waited += poll_interval
+
+                raise HTTPException(
+                    status_code=504,
+                    detail="Inference timeout - job took too long"
+                )
             
-            raise HTTPException(
-                status_code=504,
-                detail="Inference timeout - job took too long"
-            )
-            
-        except requests.exceptions.RequestException as e:
+        except httpx.HTTPError as e:
             logger.error(f"Network error during inference: {e}")
             raise HTTPException(
                 status_code=502,

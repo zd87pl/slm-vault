@@ -1,281 +1,207 @@
-"""
-Welcome Screen for First-Time Users
+"""Onboarding wizard for first-time users."""
 
-Shows onboarding flow with tutorial and sample data options.
-"""
-
-import flet as ft
-from sleek_theme import SleekTheme
-from light_theme import LightTheme
 from typing import Callable, Optional
 
-logger = None
+import flet as ft
+
+from light_theme import LightTheme
+from localization import get_text
 
 
 class WelcomeScreen:
-    """Welcome screen for first-time users."""
-    
+    """Step-by-step onboarding view."""
+
     def __init__(
         self,
         page: ft.Page,
         on_start: Callable[[], None],
-        on_add_sample: Optional[Callable[[], None]] = None
+        on_add_sample: Optional[Callable[[], None]] = None,
+        on_step_action: Optional[Callable[[str], None]] = None,
+        translate: Optional[Callable[..., str]] = None,
     ):
-        """
-        Initialize welcome screen.
-        
-        Args:
-            page: Flet page instance
-            on_start: Callback when user clicks "Get Started"
-            on_add_sample: Optional callback to add sample data
-        """
         self.page = page
         self.on_start = on_start
         self.on_add_sample = on_add_sample
-        self.skip_tutorial = False
-        
+        self.on_step_action = on_step_action
+        self.translate = translate
+        self.completed_steps = set()
+        self._step_defs = [
+            {"id": "connect", "icon": ft.Icons.CABLE_ROUNDED},
+            {"id": "encrypt", "icon": ft.Icons.LOCK_ROUNDED},
+            {"id": "train", "icon": ft.Icons.PSYCHOLOGY_ROUNDED},
+            {"id": "ask", "icon": ft.Icons.CHAT_ROUNDED},
+        ]
+
+    def t(self, key: str, **kwargs) -> str:
+        """Translate key (falls back to EN)."""
+        if self.translate:
+            try:
+                return self.translate(key, **kwargs)
+            except Exception:
+                return self.translate(key)
+        return get_text("en", key, **kwargs)
+
     def get_view(self) -> ft.Container:
-        """Get the welcome screen view - ProtonVPN-style modern design."""
+        completed = len(self.completed_steps)
+        progress = completed / len(self._step_defs)
+
+        step_cards = [self._build_step_card(step) for step in self._step_defs]
+
         return ft.Container(
+            expand=True,
+            bgcolor=LightTheme.BG_PRIMARY,
+            padding=ft.padding.symmetric(horizontal=56, vertical=40),
             content=ft.Column(
                 [
-                    # Hero section - centered, prominent
-                    ft.Container(
-                        content=ft.Column(
-                            [
-                                # Icon with glow effect
-                                ft.Container(
-                                    content=ft.Icon(
-                                        ft.Icons.LOCK_ROUNDED,
-                                        size=96,
-                                        color=LightTheme.ACCENT_PRIMARY,
-                                    ),
-                                    padding=32,
-                                    border_radius=24,
-                                    bgcolor=LightTheme.BG_ELEVATED,
-                                    border=ft.border.all(2, LightTheme.ACCENT_PRIMARY + "40"),
-                                    # Subtle shadow effect (via elevated background)
-                                ),
-                                ft.Container(height=40),
-                                ft.Text(
-                                    "Welcome to Enclave",
-                                    size=42,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=LightTheme.TEXT_PRIMARY,
-                                    text_align=ft.TextAlign.CENTER,
-                                ),
-                                ft.Container(height=16),
-                                ft.Text(
-                                    "Your encrypted vault with AI-powered knowledge extraction",
-                                    size=17,
-                                    color=LightTheme.TEXT_SECONDARY,
-                                    text_align=ft.TextAlign.CENTER,
-                                ),
-                                ft.Container(height=64),
-                            ],
-                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                            spacing=0,
-                        ),
-                        alignment=ft.alignment.center,
-                        padding=ft.padding.symmetric(horizontal=40),
+                    ft.Text(
+                        self.t("onboarding.title"),
+                        size=34,
+                        weight=ft.FontWeight.BOLD,
+                        color=LightTheme.TEXT_PRIMARY,
                     ),
-                    
-                    # Features list - clean, spaced out
-                    ft.Container(
-                        content=ft.Column(
-                            [
-                                self._create_feature_item(
-                                    ft.Icons.LOCK_ROUNDED,
-                                    "End-to-End Encryption",
-                                    "Your data is encrypted before it leaves your device"
-                                ),
-                                ft.Container(height=24),
-                                self._create_feature_item(
-                                    ft.Icons.PSYCHOLOGY_ROUNDED,
-                                    "AI-Powered Knowledge",
-                                    "Train personalized models on your documents"
-                                ),
-                                ft.Container(height=24),
-                                self._create_feature_item(
-                                    ft.Icons.CLOUD_DONE_ROUNDED,
-                                    "Cloud Sync",
-                                    "Sync across devices securely"
-                                ),
-                                ft.Container(height=24),
-                                self._create_feature_item(
-                                    ft.Icons.SEARCH_ROUNDED,
-                                    "Smart Search",
-                                    "Find anything instantly with tags and full-text search"
-                                ),
-                            ],
-                            spacing=0,
-                        ),
-                        padding=ft.padding.symmetric(horizontal=60),
+                    ft.Text(
+                        self.t("onboarding.subtitle"),
+                        size=14,
+                        color=LightTheme.TEXT_SECONDARY,
                     ),
-                    
-                    ft.Container(height=56),
-                    
-                    # Action buttons - prominent, well-spaced
-                    ft.Container(
-                        content=ft.Column(
-                            [
-                                # Primary CTA - large, prominent
-                                ft.ElevatedButton(
-                                    "Get Started",
-                                    icon=ft.Icons.ARROW_FORWARD_ROUNDED,
-                                    on_click=self._on_get_started,
-                                    style=ft.ButtonStyle(
-                                        bgcolor=LightTheme.ACCENT_PRIMARY,
-                                        color="white",
-                                        padding=ft.padding.symmetric(horizontal=48, vertical=20),
-                                        shape=ft.RoundedRectangleBorder(radius=12),
-                                        elevation=2,
-                                    ),
-                                    height=56,
-                                ),
-                                ft.Container(height=20),
-                                
-                                # Secondary: Add sample data
-                                ft.ElevatedButton(
-                                    "Add Sample Data",
-                                    icon=ft.Icons.AUTO_AWESOME_ROUNDED,
-                                    on_click=self._on_add_sample,
-                                    style=ft.ButtonStyle(
-                                        bgcolor=LightTheme.BG_ELEVATED,
-                                        color=LightTheme.TEXT_PRIMARY,
-                                        padding=ft.padding.symmetric(horizontal=40, vertical=16),
-                                        shape=ft.RoundedRectangleBorder(radius=12),
-                                        side=ft.BorderSide(1.5, LightTheme.BORDER_COLOR),
-                                    ),
-                                    height=52,
-                                ),
-                                
-                                ft.Container(height=32),
-                                
-                                # Skip tutorial checkbox - subtle
-                                ft.Container(
-                                    content=ft.Row(
-                                        [
-                                            ft.Checkbox(
-                                                value=False,
-                                                on_change=self._on_checkbox_change,
-                                                label=None,
-                                                fill_color=LightTheme.ACCENT_PRIMARY,
-                                            ),
-                                            ft.Text(
-                                                "Skip tutorial",
-                                                size=13,
-                                                color=LightTheme.TEXT_SECONDARY,
-                                            ),
-                                        ],
-                                        spacing=8,
-                                        tight=True,
-                                    ),
-                                    alignment=ft.alignment.center,
-                                ),
-                            ],
-                            horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                            spacing=0,
-                        ),
-                        padding=ft.padding.symmetric(horizontal=60),
-                    ),
-                ],
-                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                scroll=ft.ScrollMode.AUTO,  # Allow scroll only if content exceeds viewport
-                spacing=0,
-            ),
-            bgcolor=LightTheme.BG_PRIMARY,
-            padding=80,  # More padding for breathing room
-            expand=True,
-            alignment=ft.alignment.center,
-        )
-    
-    def _create_feature_item(self, icon, title: str, description: str) -> ft.Container:
-        """Create a feature item row - clean, modern design."""
-        return ft.Container(
-            content=ft.Row(
-                [
-                    ft.Container(
-                        content=ft.Icon(
-                            icon,
-                            size=28,
-                            color=LightTheme.ACCENT_PRIMARY,
-                        ),
-                        padding=14,
-                        border_radius=12,
-                        bgcolor=LightTheme.ACCENT_PRIMARY + "20",  # Slightly more visible
-                    ),
-                    ft.Container(width=20),
-                    ft.Column(
+                    ft.Container(height=16),
+                    ft.Row(
                         [
                             ft.Text(
-                                title,
-                                size=16,
-                                weight=ft.FontWeight.BOLD,
-                                color=LightTheme.TEXT_PRIMARY,
+                                self.t(
+                                    "onboarding.progress",
+                                    completed=completed,
+                                    total=len(self._step_defs),
+                                ),
+                                size=12,
+                                color=LightTheme.TEXT_MUTED,
                             ),
-                            ft.Container(height=6),
+                            ft.Container(expand=True),
                             ft.Text(
-                                description,
-                                size=14,
-                                color=LightTheme.TEXT_SECONDARY,
+                                self.t("onboarding.ttfv"),
+                                size=12,
+                                color=LightTheme.TEXT_MUTED,
                             ),
                         ],
-                        spacing=0,
-                        expand=True,
+                    ),
+                    ft.ProgressBar(
+                        value=progress,
+                        color=LightTheme.ACCENT_PRIMARY,
+                        bgcolor=LightTheme.BORDER_COLOR,
+                        height=8,
+                    ),
+                    ft.Container(height=18),
+                    ft.Column(step_cards, spacing=12),
+                    ft.Container(height=18),
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                self.t("onboarding.continue"),
+                                icon=ft.Icons.ARROW_FORWARD_ROUNDED,
+                                on_click=self._on_continue,
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                                    color="white",
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                    padding=ft.padding.symmetric(horizontal=26, vertical=14),
+                                ),
+                            ),
+                            ft.OutlinedButton(
+                                self.t("onboarding.add_sample"),
+                                icon=ft.Icons.AUTO_AWESOME_ROUNDED,
+                                on_click=self._on_add_sample,
+                                style=ft.ButtonStyle(
+                                    color=LightTheme.TEXT_PRIMARY,
+                                    side=ft.BorderSide(1, LightTheme.BORDER_COLOR),
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                ),
+                            ),
+                        ],
+                        spacing=12,
+                    ),
+                ],
+                scroll=ft.ScrollMode.AUTO,
+                spacing=0,
+            ),
+        )
+
+    def _build_step_card(self, step: dict) -> ft.Container:
+        step_id = step["id"]
+        step_done = step_id in self.completed_steps
+        status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if step_done else ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED
+        status_color = LightTheme.ACCENT_SUCCESS if step_done else LightTheme.TEXT_MUTED
+
+        def _run_step(_):
+            self.completed_steps.add(step_id)
+            if self.on_step_action:
+                self.on_step_action(step_id)
+                return
+            self.page.update()
+
+        return ft.Container(
+            bgcolor=LightTheme.BG_ELEVATED,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            border_radius=12,
+            padding=16,
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Container(
+                                width=34,
+                                height=34,
+                                border_radius=9,
+                                bgcolor=LightTheme.ACCENT_PRIMARY + "20",
+                                alignment=ft.alignment.center,
+                                content=ft.Icon(step["icon"], size=18, color=LightTheme.ACCENT_PRIMARY),
+                            ),
+                            ft.Container(width=10),
+                            ft.Text(
+                                self.t(f"onboarding.step.{step_id}.title"),
+                                size=16,
+                                weight=ft.FontWeight.W_600,
+                                color=LightTheme.TEXT_PRIMARY,
+                                expand=True,
+                            ),
+                            ft.Icon(status_icon, size=18, color=status_color),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(height=8),
+                    ft.Text(
+                        self.t(f"onboarding.step.{step_id}.description"),
+                        size=13,
+                        color=LightTheme.TEXT_SECONDARY,
+                    ),
+                    ft.Container(height=8),
+                    ft.Text(
+                        self.t(f"onboarding.step.{step_id}.value"),
+                        size=12,
+                        color=LightTheme.ACCENT_SUCCESS,
+                    ),
+                    ft.Container(height=10),
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                self.t(f"onboarding.step.{step_id}.cta"),
+                                icon=ft.Icons.ARROW_RIGHT_ALT_ROUNDED,
+                                on_click=_run_step,
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.BG_SECONDARY,
+                                    color=LightTheme.TEXT_PRIMARY,
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                ),
+                            ),
+                        ],
                     ),
                 ],
                 spacing=0,
-                vertical_alignment=ft.CrossAxisAlignment.START,
             ),
-            padding=ft.padding.symmetric(vertical=12),
         )
-    
-    def _on_get_started(self, e):
-        """Handle Get Started button click."""
-        if not self.skip_tutorial:
-            # Show tutorial overlay
-            self._show_tutorial()
-        else:
-            # Skip directly to main app
-            self.on_start()
-    
-    def _on_add_sample(self, e):
-        """Handle Add Sample Data button click."""
-        if self.on_add_sample:
-            self.on_add_sample()
-        # Then show tutorial or go to main app
-        if not self.skip_tutorial:
-            self._show_tutorial()
-        else:
-            self.on_start()
-    
-    def _on_checkbox_change(self, e):
-        """Handle skip tutorial checkbox change."""
-        self.skip_tutorial = e.control.value
-    
-    def _show_tutorial(self):
-        """Show interactive tutorial overlay."""
-        tutorial_steps = [
-            {
-                "title": "Step 1: Add Your First Secret",
-                "description": "Click the ➕ button in the top-right to add a secret or upload a document.",
-                "target": "add_button",
-            },
-            {
-                "title": "Step 2: Upload a PDF",
-                "description": "Go to the Knowledge tab to upload PDFs and train AI models on your documents.",
-                "target": "knowledge_tab",
-            },
-            {
-                "title": "Step 3: Ask Questions",
-                "description": "Your trained models can answer questions about your documents via MCP integration.",
-                "target": None,
-            },
-        ]
-        
-        # Store tutorial state for later use
-        # For now, just proceed to main app
-        # TODO: Implement tutorial overlay with highlights
+
+    def _on_continue(self, _):
         self.on_start()
 
+    def _on_add_sample(self, _):
+        if self.on_add_sample:
+            self.on_add_sample()

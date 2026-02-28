@@ -10,6 +10,7 @@ import logging
 
 from config import settings
 from api import auth, vault, logs, devices, keys, adapters, training, langchain
+from utils.supabase_client import reset_request_jwt, set_request_jwt
 
 # Configure logging
 logging.basicConfig(
@@ -47,8 +48,21 @@ app.add_middleware(
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     """Log all requests."""
+    auth_header = request.headers.get("authorization", "")
+    request_jwt = None
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        # API keys use the same header but should not be used as Supabase JWT.
+        if token and not token.startswith("vlt_"):
+            request_jwt = token
+
+    jwt_context = set_request_jwt(request_jwt)
     logger.info(f"{request.method} {request.url.path}")
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    finally:
+        reset_request_jwt(jwt_context)
+
     logger.info(f"Response status: {response.status_code}")
     return response
 
@@ -67,11 +81,11 @@ async def root():
 @app.get("/health")
 async def health():
     """Detailed health check."""
-    from utils.supabase_client import get_supabase
+    from utils.supabase_client import get_supabase_service
 
     try:
         # Test Supabase connection
-        supabase = get_supabase()
+        supabase = get_supabase_service()
         result = supabase.table("profiles").select("count").limit(1).execute()
 
         return {

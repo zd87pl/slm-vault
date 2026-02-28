@@ -15,7 +15,7 @@ import base64
 import tempfile
 import shutil
 from pathlib import Path
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime
 import time
 
@@ -47,6 +47,7 @@ from error_helper import make_user_friendly, format_error_snackbar
 from mcp_setup import MCPSetupHelper
 from modern_sidebar import ModernSidebar
 from config_loader import apply_config, validate_config, show_config_status
+from localization import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, get_text
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +141,9 @@ class VaultApp:
 
         self.key_path = self.vault_path / "master.key"
         self.db_path = self.vault_path / "vault.db"
+        self.onboarding_state_path = self.vault_path / ".onboarding_v1_complete"
+        self.language_pref_path = self.vault_path / ".language_pref"
+        self.language = self._load_language_preference()
         
         # Question history file
         self.question_history_path = self.vault_path / "question_history.json"
@@ -153,11 +157,11 @@ class VaultApp:
         self.selected_type = "all"
         # Track component status for UI
         self._component_status = {
-            "ocr": {"status": "checking", "message": "Checking..."},  # checking, ready, installing, error
-            "vault": {"status": "ready", "message": "Ready"},
-            "cloud_sync": {"status": "ready", "message": "Ready"},
-            "training": {"status": "ready", "message": "Ready"},
-            "qa": {"status": "checking", "message": "Checking..."},  # checking, ready, installing, error
+            "ocr": {"status": "checking", "message": self.tr("settings.status.checking")},  # checking, ready, installing, error
+            "vault": {"status": "ready", "message": self.tr("settings.status.ready")},
+            "cloud_sync": {"status": "ready", "message": self.tr("settings.status.ready")},
+            "training": {"status": "ready", "message": self.tr("settings.status.ready")},
+            "qa": {"status": "checking", "message": self.tr("settings.status.checking")},  # checking, ready, installing, error
         }
         # Flag to prevent infinite refresh loops
         self._refreshing_settings = False
@@ -185,6 +189,79 @@ class VaultApp:
         # Check for existing session
         self.check_authentication()
 
+    def _load_language_preference(self) -> str:
+        """Load persisted UI language (defaults to English)."""
+        try:
+            if self.language_pref_path.exists():
+                value = self.language_pref_path.read_text().strip().lower()
+                if value in SUPPORTED_LANGUAGES:
+                    return value
+        except Exception as e:
+            logger.debug(f"Failed to load language preference: {e}")
+        return DEFAULT_LANGUAGE
+
+    def _save_language_preference(self) -> None:
+        """Persist UI language preference."""
+        try:
+            self.language_pref_path.write_text(self.language)
+        except Exception as e:
+            logger.debug(f"Failed to save language preference: {e}")
+
+    def tr(self, key: str, **kwargs) -> str:
+        """Translate key based on active language."""
+        return get_text(self.language, key, **kwargs)
+
+    def set_language(self, language: str, refresh: bool = True) -> None:
+        """Set UI language and optionally refresh current settings page."""
+        lang = (language or DEFAULT_LANGUAGE).lower()
+        if lang not in SUPPORTED_LANGUAGES:
+            lang = DEFAULT_LANGUAGE
+        if lang == self.language:
+            return
+
+        self.language = lang
+        self._save_language_preference()
+
+        for status_info in self._component_status.values():
+            if status_info.get("status") == "ready":
+                status_info["message"] = self.tr("settings.status.ready")
+            elif status_info.get("status") == "checking" and status_info.get("message") in {"Checking...", "Sprawdzanie..."}:
+                status_info["message"] = self.tr("settings.status.checking")
+
+        self._show_user_message(
+            self.tr("language.changed", language=SUPPORTED_LANGUAGES.get(lang, lang)),
+            level="info",
+        )
+        if hasattr(self, "sidebar") and self.sidebar is not None:
+            self.sidebar.translate = self.tr
+            self._refresh_sidebar_language()
+
+        if not refresh:
+            return
+
+        if self.current_view == "settings":
+            self.show_settings()
+        elif self.current_view == "landing":
+            self.show_landing_page()
+        else:
+            self._refresh_sidebar_language()
+
+    def _refresh_sidebar_language(self) -> None:
+        """Refresh sidebar labels without changing current content view."""
+        if not hasattr(self, "sidebar") or self.sidebar is None:
+            return
+
+        try:
+            sidebar_container = self.sidebar.build()
+            if not self.page.controls:
+                return
+            layout = self.page.controls[0]
+            if layout and isinstance(layout, ft.Row) and len(layout.controls) > 0:
+                layout.controls[0] = sidebar_container
+                self.page.update()
+        except Exception as e:
+            logger.debug(f"Failed to refresh sidebar language: {e}")
+
     def check_authentication(self):
         """Check if user is authenticated."""
         # Try to load existing session
@@ -193,10 +270,10 @@ class VaultApp:
         if self.session_data:
             # User is authenticated, initialize vault
             self.initialize_vault()
-            
-            # Show chat-first landing page (not the old secrets view)
-            self.show_landing_page()
-            
+
+            # Show onboarding for first-time users, otherwise open dashboard.
+            self._show_initial_authenticated_view()
+
             # Initialize PDF processor after GUI is ready
             self._initialize_pdf_processor()
         else:
@@ -208,7 +285,9 @@ class VaultApp:
         auth_screen = AuthScreen(
             page=self.page,
             backend_url=self.backend_url,
-            on_auth_success=self.on_auth_success
+            on_auth_success=self.on_auth_success,
+            language=self.language,
+            translate=self.tr,
         )
 
         self.page.clean()
@@ -225,8 +304,8 @@ class VaultApp:
         # Sync from cloud on login
         self.sync_from_cloud()
 
-        # Always show landing page first
-        self.show_landing_page()
+        # Show onboarding for first-time users, otherwise open dashboard.
+        self._show_initial_authenticated_view()
         
         # Check if setup is needed and show overlay if necessary
         def check_and_setup():
@@ -354,8 +433,8 @@ class VaultApp:
             return
         
         progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
-            "🔧 Setting up Q&A Generation",
-            "Preparing Q&A Generation..."
+            self.tr("settings.qa_setup.dialog_title"),
+            self.tr("settings.qa_setup.preparing"),
         )
         
         self.page.overlay.append(progress_dialog)
@@ -379,7 +458,7 @@ class VaultApp:
                     
                     if time_remaining_text:
                         if time_remaining:
-                            time_remaining_text.value = f"⏱️ {time_remaining} remaining"
+                            time_remaining_text.value = self.tr("settings.setup.time_remaining", time=time_remaining)
                     
                     self.page.update()
                     
@@ -393,18 +472,18 @@ class VaultApp:
                             if percent is not None:
                                 self._component_status["qa"]["message"] = f"Downloading AI model... {percent:.1f}%"
                             else:
-                                self._component_status["qa"]["message"] = "Downloading optimized AI model..."
+                                self._component_status["qa"]["message"] = self.tr("settings.status.downloading.optimized_ai")
                         else:
                             if percent is not None:
                                 self._component_status["qa"]["message"] = f"Downloading TinyLlama... {percent:.1f}%"
                             else:
-                                self._component_status["qa"]["message"] = "Downloading TinyLlama..."
+                                self._component_status["qa"]["message"] = self.tr("settings.status.downloading.tinyllama")
                     elif "gotowe" in message.lower() or "ready" in message.lower() or "available" in message.lower():
                         self._component_status["qa"]["status"] = "ready"
                         if is_mlx:
-                            self._component_status["qa"]["message"] = "Ready (Optimized AI)"
+                            self._component_status["qa"]["message"] = self.tr("settings.status.ready.optimized_ai")
                         else:
-                            self._component_status["qa"]["message"] = "Ready (Local AI)"
+                            self._component_status["qa"]["message"] = self.tr("settings.status.ready.local_ai")
                     
                     # Refresh Settings if visible
                     if hasattr(self, 'current_view') and self.current_view == "settings" and not self._refreshing_settings:
@@ -431,16 +510,16 @@ class VaultApp:
                 qa_status = self.qa_generator.get_qa_status()
                 if qa_status.get("preferred_method") == "MLX":
                     self._component_status["qa"]["status"] = "ready"
-                    self._component_status["qa"]["message"] = "Ready (MLX Qwen2.5-3B)"
+                    self._component_status["qa"]["message"] = self.tr("settings.status.ready.mlx")
                 else:
                     self._component_status["qa"]["status"] = "ready"
-                    self._component_status["qa"]["message"] = "Ready (Ollama TinyLlama)"
-                progress_text.value = "✅ Q&A Generation ready!"
+                    self._component_status["qa"]["message"] = self.tr("settings.status.ready.ollama")
+                progress_text.value = self.tr("settings.qa_setup.ready")
                 progress_bar.value = 1.0
                 progress_percent.value = "100%"
                 time_remaining_text.value = ""
                 progress_dialog.actions = [
-                    ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                    ft.TextButton(self.tr("common.ok"), on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
                 ]
             else:
                 progress_text.value = f"❌ {message}"
@@ -450,7 +529,7 @@ class VaultApp:
                 self._component_status["qa"]["status"] = "error"
                 self._component_status["qa"]["message"] = message
                 progress_dialog.actions = [
-                    ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                    ft.TextButton(self.tr("common.ok"), on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
                 ]
         except Exception as e:
             logger.error(f"Error setting up Q&A model: {e}")
@@ -461,7 +540,7 @@ class VaultApp:
             self._component_status["qa"]["status"] = "error"
             self._component_status["qa"]["message"] = f"Error: {str(e)}"
             progress_dialog.actions = [
-                ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
+                ft.TextButton(self.tr("common.ok"), on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
             ]
         
         self.page.update()
@@ -469,23 +548,23 @@ class VaultApp:
     def _get_qa_setup_tooltip(self) -> str:
         """Get tooltip text for Q&A setup button based on available method."""
         if not self.qa_generator:
-            return "Setup Q&A Generation"
+            return self.tr("settings.qa_setup.tooltip.setup")
         
         qa_status = self.qa_generator.get_qa_status()
         if qa_status.get("mlx_available") and not qa_status.get("mlx_initialized"):
-            return "Download optimized AI model (~3GB)"
+            return self.tr("settings.qa_setup.tooltip.download_optimized")
         elif qa_status.get("preferred_method") == "MLX":
-            return "Optimized AI model ready"
+            return self.tr("settings.qa_setup.tooltip.optimized_ready")
         else:
-            return "Download TinyLlama model"
+            return self.tr("settings.qa_setup.tooltip.download_tinyllama")
 
     def _setup_ollama_with_progress(self):
         """
         Setup Ollama OCR with visible progress dialog showing percentage and time remaining.
         """
         progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
-            "🔧 Setting up AI Knowledge Extraction",
-            "Preparing OCR..."
+            self.tr("settings.ocr_setup.dialog_title"),
+            self.tr("settings.ocr_setup.preparing"),
         )
         
         self.page.overlay.append(progress_dialog)
@@ -512,7 +591,7 @@ class VaultApp:
                     # Update time remaining - only update if we have a value
                     # Keep previous value if None to prevent flickering
                     if time_remaining:
-                        time_remaining_text.value = f"⏱️ {time_remaining} remaining"
+                        time_remaining_text.value = self.tr("settings.setup.time_remaining", time=time_remaining)
                     
                     self.page.update()
             except Exception as e:
@@ -842,13 +921,77 @@ class VaultApp:
         except Exception as e:
             logger.warning(f"Error checking first-time user status: {e}")
             return True  # Default to showing welcome screen on error
-    
+
+    def _is_onboarding_completed(self) -> bool:
+        """Check if onboarding was already completed."""
+        return self.onboarding_state_path.exists()
+
+    def _mark_onboarding_completed(self) -> None:
+        """Persist onboarding completion marker."""
+        try:
+            self.onboarding_state_path.write_text(datetime.now().isoformat())
+        except Exception as e:
+            logger.warning(f"Failed to persist onboarding marker: {e}")
+
+    def _should_show_onboarding(self) -> bool:
+        """Decide if onboarding should be shown."""
+        if self._is_onboarding_completed():
+            return False
+        return self._is_first_time_user()
+
+    def _show_initial_authenticated_view(self):
+        """Show onboarding or landing view after successful authentication."""
+        if self._should_show_onboarding():
+            self.current_view = "welcome"
+            self.show_welcome_screen()
+            return
+        self.show_landing_page()
+
+    def _handle_onboarding_step_action(self, step_id: str) -> None:
+        """Route onboarding step CTAs to high-value product actions."""
+        try:
+            self._mark_onboarding_completed()
+            self.show_landing_page()
+
+            if step_id == "connect":
+                self.on_nav_change(5)
+                self._show_user_message(
+                    self.tr("onboarding.info.connect"),
+                    level="info",
+                )
+                return
+
+            if step_id == "encrypt":
+                self.on_nav_change(0)
+                self.show_add_dialog(None, default_type="secret")
+                return
+
+            if step_id == "train":
+                self.on_nav_change(7)
+                return
+
+            if step_id == "ask":
+                self._open_test_agent_chat()
+                return
+
+            self.show_landing_page()
+        except Exception as e:
+            self._show_actionable_error(
+                e,
+                title=self.tr("onboarding.error.open_step"),
+                context="auth",
+                fix_label="Open dashboard",
+                fix_action=self.show_landing_page,
+            )
+
     def show_welcome_screen(self):
         """Show welcome screen for first-time users."""
         welcome = WelcomeScreen(
             page=self.page,
             on_start=self._on_welcome_complete,
-            on_add_sample=self._add_sample_data
+            on_add_sample=self._add_sample_data,
+            on_step_action=self._handle_onboarding_step_action,
+            translate=self.tr,
         )
         
         self.page.clean()
@@ -857,6 +1000,7 @@ class VaultApp:
     
     def _on_welcome_complete(self):
         """Called when welcome screen is dismissed."""
+        self._mark_onboarding_completed()
         # Always go to landing page after welcome screen
         self.show_landing_page()
     
@@ -864,8 +1008,7 @@ class VaultApp:
         """Add sample data for first-time users."""
         try:
             if not self.vault:
-                logger.error("Vault not initialized")
-                return
+                raise RuntimeError("Vault not initialized")
             
             sample_secrets = [
                 {
@@ -905,22 +1048,323 @@ class VaultApp:
             logger.info(f"Added {added_count} sample secrets")
             
             # Show success message
-            self.page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"✅ Added {added_count} sample secrets!"),
-                bgcolor=LightTheme.ACCENT_SUCCESS,
+            self._show_user_message(
+                self.tr("onboarding.success.sample", count=added_count),
+                level="success",
             )
-            self.page.snack_bar.open = True
-            self.page.update()
             
         except Exception as e:
-            logger.error(f"Error adding sample data: {e}")
-            self.page.snack_bar = ft.SnackBar(
-                content=ft.Text(f"❌ Error adding sample data: {str(e)}"),
-                bgcolor=LightTheme.ACCENT_ERROR,
+            self._show_actionable_error(
+                e,
+                title=self.tr("onboarding.error.add_sample"),
+                context="vault",
+                fix_label=self.tr("onboarding.fix.add_secret"),
+                fix_action=lambda: self.show_add_dialog(None, default_type="secret"),
             )
-            self.page.snack_bar.open = True
+
+    def _show_user_message(self, message: str, level: str = "info") -> None:
+        """Show a short status message with consistent styling."""
+        colors = {
+            "info": LightTheme.ACCENT_PRIMARY,
+            "success": LightTheme.ACCENT_SUCCESS,
+            "warning": LightTheme.ACCENT_WARNING,
+            "error": LightTheme.ACCENT_ERROR,
+        }
+        self.page.snack_bar = ft.SnackBar(
+            content=ft.Text(message, color="white"),
+            bgcolor=colors.get(level, LightTheme.ACCENT_PRIMARY),
+        )
+        self.page.snack_bar.open = True
+        self.page.update()
+
+    def _show_actionable_error(
+        self,
+        error: Exception,
+        title: str = "Something went wrong",
+        context: Optional[str] = None,
+        fix_label: Optional[str] = None,
+        fix_action: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """
+        Show user-friendly error with optional repair action.
+
+        Uses error_helper to translate technical failures into clear next steps.
+        """
+        technical_error = str(error)
+        user_msg, help_link = make_user_friendly(technical_error, context=context)
+        logger.error(f"{title}: {technical_error}")
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            bgcolor=LightTheme.BG_ELEVATED,
+            title=ft.Row(
+                [
+                    ft.Icon(ft.Icons.ERROR_OUTLINE_ROUNDED, color=LightTheme.ACCENT_ERROR, size=22),
+                    ft.Text(title, size=17, weight=ft.FontWeight.W_600),
+                ],
+                spacing=10,
+            ),
+            content=ft.Container(
+                width=420,
+                content=ft.Column(
+                    [
+                        ft.Text(user_msg, size=14, color=LightTheme.TEXT_PRIMARY),
+                        ft.Container(height=8),
+                        ft.Text(
+                            "Technical details are logged locally for troubleshooting.",
+                            size=12,
+                            color=LightTheme.TEXT_MUTED,
+                        ),
+                        ft.Container(height=8, visible=bool(help_link and help_link != "SESSION_EXPIRED")),
+                        ft.Text(
+                            f"Help: {help_link}",
+                            size=12,
+                            color=LightTheme.ACCENT_PRIMARY,
+                            visible=bool(help_link and help_link != "SESSION_EXPIRED"),
+                        ),
+                    ],
+                    spacing=0,
+                    tight=True,
+                ),
+            ),
+            actions_alignment=ft.MainAxisAlignment.END,
+        )
+
+        def close_dialog(_):
+            dialog.open = False
             self.page.update()
-    
+
+        actions = [ft.TextButton("Close", on_click=close_dialog)]
+
+        if help_link == "SESSION_EXPIRED":
+            def relogin(_):
+                close_dialog(None)
+                self.logout()
+
+            actions.append(
+                ft.ElevatedButton(
+                    "Log in again",
+                    icon=ft.Icons.LOGOUT_ROUNDED,
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                    color="white",
+                    on_click=relogin,
+                )
+            )
+        elif fix_action:
+            def run_fix(_):
+                close_dialog(None)
+                try:
+                    fix_action()
+                except Exception as fix_error:
+                    self._show_user_message(
+                        format_error_snackbar(str(fix_error)),
+                        level="error",
+                    )
+
+            actions.append(
+                ft.ElevatedButton(
+                    fix_label or "Fix now",
+                    icon=ft.Icons.BUILD_ROUNDED,
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                    color="white",
+                    on_click=run_fix,
+                )
+            )
+
+        dialog.actions = actions
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+
+    def _collect_readiness_steps(
+        self,
+        rag_document_count: int,
+        adapter_count: int,
+        backend_connected: bool,
+    ) -> List[Dict[str, Any]]:
+        """Evaluate top-level app readiness states for first-value tasks."""
+        qa_ready = self._component_status.get("qa", {}).get("status") == "ready"
+        inference_ready = backend_connected if self.inference_mode == "cloud" else qa_ready
+        sync_ready = bool(self.backend_url) and self.cloud_sync is not None and backend_connected
+
+        return [
+            {
+                "id": "key",
+                "label": self.tr("readiness.step.key.label"),
+                "ready": self.key_path.exists(),
+                "hint": self.tr("readiness.step.key.hint"),
+                "fix_label": self.tr("readiness.step.key.fix"),
+            },
+            {
+                "id": "dataset",
+                "label": self.tr("readiness.step.dataset.label"),
+                "ready": rag_document_count > 0,
+                "hint": self.tr("readiness.step.dataset.hint"),
+                "fix_label": self.tr("readiness.step.dataset.fix"),
+            },
+            {
+                "id": "adapter",
+                "label": self.tr("readiness.step.adapter.label"),
+                "ready": adapter_count > 0,
+                "hint": self.tr("readiness.step.adapter.hint"),
+                "fix_label": self.tr("readiness.step.adapter.fix"),
+            },
+            {
+                "id": "inference",
+                "label": self.tr("readiness.step.inference.label"),
+                "ready": inference_ready,
+                "hint": self.tr("readiness.step.inference.hint"),
+                "fix_label": self.tr("readiness.step.inference.fix"),
+            },
+            {
+                "id": "sync",
+                "label": self.tr("readiness.step.sync.label"),
+                "ready": sync_ready,
+                "hint": self.tr("readiness.step.sync.hint"),
+                "fix_label": self.tr("readiness.step.sync.fix"),
+            },
+        ]
+
+    def _run_readiness_fix(self, step_id: str) -> None:
+        """Execute contextual fix action for the first incomplete readiness step."""
+        try:
+            if step_id == "key":
+                self.on_nav_change(0)
+                self.show_add_dialog(None, default_type="secret")
+                return
+
+            if step_id == "dataset":
+                self._on_upload_click(None)
+                return
+
+            if step_id == "adapter":
+                self.on_nav_change(7)
+                return
+
+            if step_id == "inference":
+                if self.inference_mode == "local":
+                    self._setup_qa_model_with_progress()
+                else:
+                    self.check_backend_connectivity()
+                    self.on_nav_change(5)
+                return
+
+            if step_id == "sync":
+                self.on_nav_change(5)
+                return
+        except Exception as e:
+            self._show_actionable_error(
+                e,
+                title=self.tr("readiness.error.fix"),
+                context="sync",
+                fix_label=self.tr("readiness.fix.open_setup"),
+                fix_action=lambda: self.on_nav_change(5),
+            )
+
+    def _build_readiness_strip(
+        self,
+        rag_document_count: int,
+        adapter_count: int,
+        backend_connected: bool,
+    ) -> ft.Container:
+        """Build landing-page readiness strip with one-click recovery action."""
+        steps = self._collect_readiness_steps(
+            rag_document_count=rag_document_count,
+            adapter_count=adapter_count,
+            backend_connected=backend_connected,
+        )
+        next_incomplete = next((step for step in steps if not step["ready"]), None)
+
+        chips = []
+        for step in steps:
+            ready = step["ready"]
+            chips.append(
+                ft.Container(
+                    padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                    border_radius=20,
+                    bgcolor=(LightTheme.ACCENT_SUCCESS + "18") if ready else (LightTheme.ACCENT_WARNING + "12"),
+                    border=ft.border.all(
+                        1,
+                        (LightTheme.ACCENT_SUCCESS + "50") if ready else (LightTheme.ACCENT_WARNING + "40"),
+                    ),
+                    content=ft.Row(
+                        [
+                            ft.Icon(
+                                ft.Icons.CHECK_CIRCLE_ROUNDED if ready else ft.Icons.PENDING_ROUNDED,
+                                size=14,
+                                color=LightTheme.ACCENT_SUCCESS if ready else LightTheme.ACCENT_WARNING,
+                            ),
+                            ft.Text(
+                                step["label"],
+                                size=11,
+                                weight=ft.FontWeight.W_500,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                        ],
+                        spacing=5,
+                        tight=True,
+                    ),
+                )
+            )
+
+        return ft.Container(
+            padding=ft.padding.symmetric(horizontal=16, vertical=12),
+            border_radius=10,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Text(
+                                self.tr("readiness.title"),
+                                size=13,
+                                weight=ft.FontWeight.W_600,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                            ft.Container(expand=True),
+                            ft.Text(
+                                self.tr("readiness.all_ready")
+                                if next_incomplete is None
+                                else self.tr("readiness.next", hint=next_incomplete["hint"]),
+                                size=12,
+                                color=LightTheme.TEXT_MUTED,
+                            ),
+                        ],
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(height=8),
+                    ft.Row(
+                        [
+                            ft.Wrap(chips, spacing=8, run_spacing=8, expand=True),
+                            ft.ElevatedButton(
+                                self.tr("readiness.action.ready")
+                                if next_incomplete is None
+                                else next_incomplete["fix_label"],
+                                icon=ft.Icons.CHECK_ROUNDED
+                                if next_incomplete is None
+                                else ft.Icons.BUILD_ROUNDED,
+                                disabled=next_incomplete is None,
+                                on_click=(
+                                    (lambda e, sid=next_incomplete["id"]: self._run_readiness_fix(sid))
+                                    if next_incomplete
+                                    else None
+                                ),
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                                    color="white",
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                ),
+                            ),
+                        ],
+                        alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                ],
+                spacing=0,
+            ),
+        )
+
     def _set_inference_mode(self, mode: str):
         """Set inference mode (cloud or local)."""
         if mode not in ["cloud", "local"]:
@@ -932,9 +1376,9 @@ class VaultApp:
         
         # Show feedback
         if mode == "cloud":
-            msg = "☁️ Cloud inference: Better quality, uses secure cloud"
+            msg = f"☁️ {self.tr('inference.cloud')}"
         else:
-            msg = "💻 Local inference: Private, works offline"
+            msg = f"💻 {self.tr('inference.local')}"
         
         self.page.snack_bar = ft.SnackBar(
             content=ft.Text(msg, color="white"),
@@ -2225,9 +2669,14 @@ class VaultApp:
 
         # Initialize sidebar with new structure
         if not hasattr(self, 'sidebar') or self.sidebar is None:
-            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=-1)
+            self.sidebar = ModernSidebar(
+                on_nav_change=self.on_nav_change,
+                selected_index=-1,
+                translate=self.tr,
+            )
         else:
             self.sidebar.selected_index = -1
+            self.sidebar.translate = self.tr
 
         sidebar_container = self.sidebar.build()
 
@@ -4350,17 +4799,17 @@ class VaultApp:
                 ft.Container(width=8),
                 ft.PopupMenuButton(
                     icon=ft.Icons.ADD_CIRCLE_ROUNDED,
-                    tooltip="Add Entry",
+                    tooltip=self.tr("ui.add_entry.tooltip"),
                     icon_size=28,
                     icon_color=LightTheme.ACCENT_PRIMARY,
                     items=[
                         ft.PopupMenuItem(
-                            text="Add Secret",
+                            text=self.tr("ui.add_secret"),
                             icon=ft.Icons.LOCK_ROUNDED,
                             on_click=lambda e: self.show_add_dialog(e, default_type="secret"),
                         ),
                         ft.PopupMenuItem(
-                            text="Upload PDF (Knowledge)",
+                            text=self.tr("ui.upload_pdf_knowledge"),
                             icon=ft.Icons.UPLOAD_FILE_ROUNDED,
                             on_click=lambda e: self._on_upload_click(e),
                         ),
@@ -4368,21 +4817,21 @@ class VaultApp:
                 ),
                 ft.IconButton(
                     ft.Icons.CREATE_NEW_FOLDER_ROUNDED,
-                    tooltip="New Folder",
+                    tooltip=self.tr("ui.new_folder"),
                     on_click=lambda _: self._show_create_folder_dialog(),
                     icon_size=28,
                     icon_color=LightTheme.ACCENT_PRIMARY,
                 ),
                 ft.IconButton(
                     ft.Icons.REFRESH_ROUNDED,
-                    tooltip="Refresh",
+                    tooltip=self.tr("ui.refresh"),
                     on_click=lambda _: self.load_secrets(),
                     icon_size=28,
                     icon_color=LightTheme.TEXT_SECONDARY,
                 ),
                 ft.IconButton(
                     ft.Icons.LOGOUT_ROUNDED,
-                    tooltip="Logout",
+                    tooltip=self.tr("ui.logout"),
                     on_click=lambda _: self.logout(),
                     icon_size=28,
                     icon_color=LightTheme.ACCENT_ERROR,
@@ -4395,7 +4844,7 @@ class VaultApp:
 
         # Sleek search bar
         self.search_field = ft.TextField(
-            hint_text="Search secrets...",
+            hint_text=self.tr("ui.search_secrets"),
             prefix_icon=ft.Icons.SEARCH_ROUNDED,
             border_radius=8,
             filled=True,
@@ -4414,9 +4863,9 @@ class VaultApp:
             width=120,
             value="all",
             options=[
-                ft.dropdown.Option("all", "All"),
-                ft.dropdown.Option("secret", "Secrets"),
-                ft.dropdown.Option("knowledge", "Knowledge"),
+                ft.dropdown.Option("all", self.tr("ui.filter.all")),
+                ft.dropdown.Option("secret", self.tr("sidebar.secrets")),
+                ft.dropdown.Option("knowledge", self.tr("sidebar.knowledge")),
             ],
             on_change=self.on_filter_change,
             border_radius=8,
@@ -4448,7 +4897,8 @@ class VaultApp:
         # Modern sidebar navigation
         self.sidebar = ModernSidebar(
             on_nav_change=self.on_nav_change,
-            selected_index=-1  # Start with Home selected
+            selected_index=-1,  # Start with Home selected
+            translate=self.tr,
         )
         sidebar_container = self.sidebar.build()
 
@@ -4493,7 +4943,7 @@ class VaultApp:
                 icon=ft.Icons.AUTO_AWESOME_ROUNDED,
                 bgcolor=LightTheme.ACCENT_PRIMARY,
                 foreground_color="white",
-                tooltip="💬 Chat with AI",
+                tooltip=self.tr("ui.chat_with_ai"),
                 on_click=lambda e: self.show_landing_page(),
                 mini=False,
             ),
@@ -10486,32 +10936,64 @@ class VaultApp:
         # Build settings content
         settings_items = [
             ft.Text(
-                "⚙️ Settings",
+                self.tr("settings.title"),
                 size=24,
                 weight=ft.FontWeight.BOLD,
                 color=LightTheme.TEXT_PRIMARY,
             ),
             ft.Divider(color=LightTheme.BORDER_COLOR),
-            
-            # Vault Info Section
             ft.Text(
-                "Vault Information",
+                self.tr("language.selector.title"),
                 size=18,
                 weight=ft.FontWeight.BOLD,
                 color=LightTheme.TEXT_PRIMARY,
             ),
             ft.Text(
-                f"Vault Path: {self.vault_path}",
+                self.tr("language.selector.description"),
+                size=12,
+                color=LightTheme.TEXT_MUTED,
+            ),
+            ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Dropdown(
+                            value=self.language,
+                            width=220,
+                            options=[
+                                ft.dropdown.Option(code, label)
+                                for code, label in SUPPORTED_LANGUAGES.items()
+                            ],
+                            on_change=lambda e: self.set_language(e.control.value),
+                            border_radius=8,
+                            bgcolor=LightTheme.BG_ELEVATED,
+                            border_color=LightTheme.BORDER_COLOR,
+                            focused_border_color=LightTheme.ACCENT_PRIMARY,
+                        ),
+                    ],
+                ),
+                padding=ft.padding.only(top=6, bottom=8),
+            ),
+            ft.Divider(color=LightTheme.BORDER_COLOR),
+            
+            # Vault Info Section
+            ft.Text(
+                self.tr("settings.vault_info.title"),
+                size=18,
+                weight=ft.FontWeight.BOLD,
+                color=LightTheme.TEXT_PRIMARY,
+            ),
+            ft.Text(
+                self.tr("settings.vault_info.path", path=self.vault_path),
                 size=14,
                 color=LightTheme.TEXT_SECONDARY,
             ),
             ft.Text(
-                f"Master Key: {self.key_path}",
+                self.tr("settings.vault_info.master_key", path=self.key_path),
                 size=14,
                 color=LightTheme.TEXT_SECONDARY,
             ),
             ft.Text(
-                f"Database: {self.db_path}",
+                self.tr("settings.vault_info.database", path=self.db_path),
                 size=14,
                 color=LightTheme.TEXT_SECONDARY,
             ),
@@ -10519,12 +11001,12 @@ class VaultApp:
             
             # Encryption Info
             ft.Text(
-                "Encryption: XChaCha20-Poly1305",
+                self.tr("settings.encryption.algorithm"),
                 size=14,
                 color=LightTheme.TEXT_SECONDARY,
             ),
             ft.Text(
-                "Key Size: 32 bytes (256-bit)",
+                self.tr("settings.encryption.key_size"),
                 size=14,
                 color=LightTheme.TEXT_SECONDARY,
             ),
@@ -10532,13 +11014,13 @@ class VaultApp:
             
             # Component Status Section
             ft.Text(
-                "🔧 Component Status",
+                self.tr("settings.components.title"),
                 size=18,
                 weight=ft.FontWeight.BOLD,
                 color=LightTheme.TEXT_PRIMARY,
             ),
             ft.Text(
-                "Status of Enclave components and services",
+                self.tr("settings.components.subtitle"),
                 size=12,
                 color=LightTheme.TEXT_MUTED,
             ),
@@ -10548,32 +11030,32 @@ class VaultApp:
         # Add component status cards
         components = [
             {
-                "name": "AI Knowledge Extraction",
-                "description": "Extracts text from scanned documents",
+                "name": self.tr("settings.components.ocr.name"),
+                "description": self.tr("settings.components.ocr.description"),
                 "status_key": "ocr",
                 "icon": ft.Icons.DOCUMENT_SCANNER_ROUNDED,
             },
             {
-                "name": "Q&A Generation",
-                "description": "Generates Q&A pairs from documents using optimized AI models",
+                "name": self.tr("settings.components.qa.name"),
+                "description": self.tr("settings.components.qa.description"),
                 "status_key": "qa",
                 "icon": ft.Icons.QUESTION_ANSWER_ROUNDED,
             },
             {
-                "name": "Secure Vault",
-                "description": "Encrypted local storage",
+                "name": self.tr("settings.components.vault.name"),
+                "description": self.tr("settings.components.vault.description"),
                 "status_key": "vault",
                 "icon": ft.Icons.LOCK_ROUNDED,
             },
             {
-                "name": "Cloud Sync",
-                "description": "Secure cloud backup",
+                "name": self.tr("settings.components.sync.name"),
+                "description": self.tr("settings.components.sync.description"),
                 "status_key": "cloud_sync",
                 "icon": ft.Icons.CLOUD_DONE_ROUNDED,
             },
             {
-                "name": "AI Training",
-                "description": "Personal AI model training",
+                "name": self.tr("settings.components.training.name"),
+                "description": self.tr("settings.components.training.description"),
                 "status_key": "training",
                 "icon": ft.Icons.PSYCHOLOGY_ROUNDED,
             },
@@ -10585,42 +11067,43 @@ class VaultApp:
                 try:
                     qa_status = self.qa_generator.get_qa_status()
                     if qa_status.get("mlx_initialized"):
-                        status_info = {"status": "ready", "message": "Ready (Optimized AI)"}
+                        status_info = {"status": "ready", "message": self.tr("settings.status.ready.optimized_ai"), "requires_setup": False}
                     elif qa_status.get("qa_model_available"):
-                        status_info = {"status": "ready", "message": "Ready (Local AI)"}
+                        status_info = {"status": "ready", "message": self.tr("settings.status.ready.local_ai"), "requires_setup": False}
                     elif qa_status.get("mlx_available"):
-                        status_info = {"status": "checking", "message": "Setup required (download AI model)"}
+                        status_info = {"status": "checking", "message": self.tr("settings.status.setup_required_ai"), "requires_setup": True}
                     else:
-                        status_info = {"status": "checking", "message": "Q&A model not downloaded"}
+                        status_info = {"status": "checking", "message": self.tr("settings.status.qa_model_missing"), "requires_setup": True}
                     # Update cache
                     self._component_status["qa"] = status_info
                 except Exception as e:
                     logger.debug(f"Could not get Q&A status: {e}")
-                    status_info = self._component_status.get(component["status_key"], {"status": "unknown", "message": "Unknown"})
+                    status_info = self._component_status.get(component["status_key"], {"status": "unknown", "message": self.tr("settings.status.unknown")})
             else:
-                status_info = self._component_status.get(component["status_key"], {"status": "unknown", "message": "Unknown"})
+                status_info = self._component_status.get(component["status_key"], {"status": "unknown", "message": self.tr("settings.status.unknown")})
             
             # Determine status color and icon
             if status_info["status"] == "ready":
                 status_color = LightTheme.ACCENT_SUCCESS
                 status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED
-                status_text = "Ready"
+                status_text = self.tr("settings.status.ready")
             elif status_info["status"] == "installing":
                 status_color = LightTheme.ACCENT_PRIMARY
                 status_icon = ft.Icons.DOWNLOADING_ROUNDED
                 status_text = status_info["message"]
             elif status_info["status"] == "checking":
-                status_color = LightTheme.ACCENT_WARNING if "Setup required" in status_info.get("message", "") else LightTheme.TEXT_MUTED
-                status_icon = ft.Icons.DOWNLOAD_ROUNDED if "Setup required" in status_info.get("message", "") else ft.Icons.HOURGLASS_EMPTY_ROUNDED
+                requires_setup = bool(status_info.get("requires_setup"))
+                status_color = LightTheme.ACCENT_WARNING if requires_setup else LightTheme.TEXT_MUTED
+                status_icon = ft.Icons.DOWNLOAD_ROUNDED if requires_setup else ft.Icons.HOURGLASS_EMPTY_ROUNDED
                 status_text = status_info["message"]
             elif status_info["status"] == "error":
                 status_color = LightTheme.ACCENT_ERROR
                 status_icon = ft.Icons.ERROR_ROUNDED
-                status_text = "Error"
+                status_text = self.tr("settings.status.error")
             else:
                 status_color = LightTheme.TEXT_MUTED
                 status_icon = ft.Icons.HELP_OUTLINE_ROUNDED
-                status_text = "Unknown"
+                status_text = self.tr("settings.status.unknown")
             
             # Create component card
             component_card = ft.Card(
@@ -10690,13 +11173,13 @@ class VaultApp:
         # MCP Server Section
         settings_items.extend([
             ft.Text(
-                "🔌 MCP Server Integration",
+                self.tr("settings.mcp.title"),
                 size=18,
                 weight=ft.FontWeight.BOLD,
                 color=LightTheme.TEXT_PRIMARY,
             ),
             ft.Text(
-                "Connect your vault to Claude Desktop or ChatGPT",
+                self.tr("settings.mcp.subtitle"),
                 size=12,
                 color=LightTheme.TEXT_MUTED,
             ),
@@ -10707,14 +11190,14 @@ class VaultApp:
         if mcp_status["claude_installed"]:
             status_color = LightTheme.ACCENT_SUCCESS if mcp_status["mcp_configured"] else LightTheme.ACCENT_WARNING
             status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if mcp_status["mcp_configured"] else ft.Icons.WARNING_ROUNDED
-            status_text = "Configured" if mcp_status["mcp_configured"] else "Not Configured"
+            status_text = self.tr("settings.mcp.status.configured") if mcp_status["mcp_configured"] else self.tr("settings.mcp.status.not_configured")
             
             settings_items.append(
                 ft.Row(
                     [
                         ft.Icon(status_icon, color=status_color, size=20),
                         ft.Text(
-                            f"Claude Desktop: {status_text}",
+                            self.tr("settings.mcp.claude_status", status=status_text),
                             size=14,
                             color=status_color,
                             weight=ft.FontWeight.W_500,
@@ -10729,7 +11212,7 @@ class VaultApp:
                     [
                         ft.Icon(ft.Icons.INFO_ROUNDED, color=LightTheme.TEXT_MUTED, size=20),
                         ft.Text(
-                            "Claude Desktop: Not Detected",
+                            self.tr("settings.mcp.claude_not_detected"),
                             size=14,
                             color=LightTheme.TEXT_MUTED,
                         ),
@@ -10745,7 +11228,7 @@ class VaultApp:
                     [
                         ft.Icon(ft.Icons.CHECK_CIRCLE_ROUNDED, color=LightTheme.ACCENT_SUCCESS, size=16),
                         ft.Text(
-                            f"MCP Server: {mcp_status['test_message']}",
+                            self.tr("settings.mcp.test_result", message=mcp_status["test_message"]),
                             size=12,
                             color=LightTheme.ACCENT_SUCCESS,
                         ),
@@ -10759,7 +11242,7 @@ class VaultApp:
                     [
                         ft.Icon(ft.Icons.ERROR_ROUNDED, color=LightTheme.ACCENT_ERROR, size=16),
                         ft.Text(
-                            f"MCP Server: {mcp_status['test_message']}",
+                            self.tr("settings.mcp.test_result", message=mcp_status["test_message"]),
                             size=12,
                             color=LightTheme.ACCENT_ERROR,
                         ),
@@ -10778,7 +11261,7 @@ class VaultApp:
             config_json = self.mcp_setup.get_merged_config_json()
             self.page.set_clipboard(config_json)
             self.page.snack_bar = ft.SnackBar(
-                content=ft.Text("📋 Config copied to clipboard! Paste into Claude Desktop config file."),
+                content=ft.Text(self.tr("settings.mcp.copied")),
                 bgcolor=LightTheme.ACCENT_SUCCESS,
             )
             self.page.snack_bar.open = True
@@ -10786,7 +11269,7 @@ class VaultApp:
         
         mcp_buttons.append(
             ft.ElevatedButton(
-                "📋 Copy Config to Clipboard",
+                self.tr("settings.mcp.copy_config"),
                 icon=ft.Icons.COPY_ROUNDED,
                 on_click=copy_config,
                 style=ft.ButtonStyle(
@@ -10806,12 +11289,12 @@ class VaultApp:
                     
                     if self.mcp_setup.write_config(merged):
                         self.page.snack_bar = ft.SnackBar(
-                            content=ft.Text("✅ MCP server configured! Restart Claude Desktop to activate."),
+                            content=ft.Text(self.tr("settings.mcp.auto_configure.success")),
                             bgcolor=LightTheme.ACCENT_SUCCESS,
                         )
                     else:
                         self.page.snack_bar = ft.SnackBar(
-                            content=ft.Text("❌ Failed to write config. Check permissions."),
+                            content=ft.Text(self.tr("settings.mcp.auto_configure.failed")),
                             bgcolor=LightTheme.ACCENT_ERROR,
                         )
                     
@@ -10827,7 +11310,7 @@ class VaultApp:
                 except Exception as ex:
                     logger.error(f"Auto-configure failed: {ex}")
                     self.page.snack_bar = ft.SnackBar(
-                        content=ft.Text(f"❌ Error: {str(ex)}"),
+                        content=ft.Text(self.tr("settings.mcp.auto_configure.error", error=str(ex))),
                         bgcolor=LightTheme.ACCENT_ERROR,
                     )
                     self.page.snack_bar.open = True
@@ -10835,7 +11318,7 @@ class VaultApp:
             
             mcp_buttons.append(
                 ft.ElevatedButton(
-                    "🚀 Auto-Configure Claude Desktop",
+                    self.tr("settings.mcp.auto_configure.button"),
                     icon=ft.Icons.AUTO_AWESOME_ROUNDED,
                     on_click=auto_configure,
                     style=ft.ButtonStyle(
@@ -10856,7 +11339,7 @@ class VaultApp:
                 content=ft.Row(
                     [
                         ft.Icon(icon, color=color, size=20),
-                        ft.Text(f"MCP Server: {message}"),
+                        ft.Text(self.tr("settings.mcp.test_result", message=message)),
                     ],
                     spacing=8,
                 ),
@@ -10868,7 +11351,7 @@ class VaultApp:
         
         mcp_buttons.append(
             ft.ElevatedButton(
-                "🧪 Test Connection",
+                self.tr("settings.mcp.test.button"),
                 icon=ft.Icons.PLAY_ARROW_ROUNDED,
                 on_click=test_connection,
                 style=ft.ButtonStyle(
@@ -10893,34 +11376,34 @@ class VaultApp:
                 ft.Container(height=12),
                 ft.Divider(color=LightTheme.BORDER_COLOR),
                 ft.Text(
-                    "Setup Instructions",
+                    self.tr("settings.mcp.instructions.title"),
                     size=16,
                     weight=ft.FontWeight.BOLD,
                     color=LightTheme.TEXT_PRIMARY,
                 ),
                 ft.Text(
-                    f"1. Config file location:\n   {mcp_status['config_path']}",
+                    self.tr("settings.mcp.instructions.step1", path=mcp_status["config_path"]),
                     size=12,
                     color=LightTheme.TEXT_SECONDARY,
                 ),
                 ft.Text(
-                    "2. Click 'Auto-Configure' to set it up (or 'Copy Config' to paste manually)",
+                    self.tr("settings.mcp.instructions.step2"),
                     size=12,
                     color=LightTheme.TEXT_SECONDARY,
                 ),
                 ft.Text(
-                    "3. ⚠️ IMPORTANT: Completely quit and restart Claude Desktop",
+                    self.tr("settings.mcp.instructions.step3"),
                     size=12,
                     color=LightTheme.ACCENT_WARNING,
                     weight=ft.FontWeight.BOLD,
                 ),
                 ft.Text(
-                    "4. After restart, look for 'Enclave' in your Connectors/Extensions list",
+                    self.tr("settings.mcp.instructions.step4"),
                     size=12,
                     color=LightTheme.TEXT_SECONDARY,
                 ),
                 ft.Text(
-                    "5. Test by asking Claude: 'What tools do you have access to?'",
+                    self.tr("settings.mcp.instructions.step5"),
                     size=12,
                     color=LightTheme.TEXT_SECONDARY,
                 ),
@@ -10930,13 +11413,13 @@ class VaultApp:
         settings_items.extend([
             ft.Container(height=12),
             ft.Divider(color=LightTheme.BORDER_COLOR),
-            ft.Text("Cloud Inference (Opt-in)", size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-            ft.Text("Use cloud models for higher quality responses. Data is encrypted before transmission.", size=12, color=LightTheme.TEXT_MUTED),
+            ft.Text(self.tr("settings.inference.title"), size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+            ft.Text(self.tr("settings.inference.subtitle"), size=12, color=LightTheme.TEXT_MUTED),
             ft.Container(height=8),
             ft.Container(
                 content=ft.Row(
                     [
-                        ft.Text("Enable Cloud Inference", size=14, color=LightTheme.TEXT_PRIMARY),
+                        ft.Text(self.tr("settings.inference.enable"), size=14, color=LightTheme.TEXT_PRIMARY),
                         ft.Container(expand=True),
                         ft.Switch(
                             value=getattr(self, 'inference_mode', 'local') == "cloud",
@@ -10953,9 +11436,9 @@ class VaultApp:
             ft.Container(
                 content=ft.Column(
                     [
-                        ft.Row([ft.Icon(ft.Icons.LOCK_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Data encrypted with ChaCha20-Poly1305 before transmission", size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
-                        ft.Row([ft.Icon(ft.Icons.VISIBILITY_OFF_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Cloud server never sees plaintext data", size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
-                        ft.Row([ft.Icon(ft.Icons.DELETE_SWEEP_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Processed data deleted immediately after response", size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
+                        ft.Row([ft.Icon(ft.Icons.LOCK_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text(self.tr("settings.inference.bullet1"), size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
+                        ft.Row([ft.Icon(ft.Icons.VISIBILITY_OFF_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text(self.tr("settings.inference.bullet2"), size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
+                        ft.Row([ft.Icon(ft.Icons.DELETE_SWEEP_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text(self.tr("settings.inference.bullet3"), size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
                     ],
                     spacing=4,
                 ),
@@ -10969,11 +11452,11 @@ class VaultApp:
         settings_items.extend([
             ft.Container(height=12),
             ft.Divider(color=LightTheme.BORDER_COLOR),
-            ft.Text("Agent Permissions", size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-            ft.Text("Manage which AI agents can access your data", size=12, color=LightTheme.TEXT_MUTED),
+            ft.Text(self.tr("settings.permissions.title"), size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+            ft.Text(self.tr("settings.permissions.subtitle"), size=12, color=LightTheme.TEXT_MUTED),
             ft.Container(height=8),
             ft.ElevatedButton(
-                "Manage Permissions",
+                self.tr("settings.permissions.button"),
                 icon=ft.Icons.SHIELD_ROUNDED,
                 on_click=lambda e: self.on_nav_change(8),
                 style=ft.ButtonStyle(bgcolor=LightTheme.BG_ELEVATED, color=LightTheme.TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8)),
