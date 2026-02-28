@@ -179,9 +179,8 @@ class VaultApp:
         # Key: filename, Value: {status, step, progress, message, error}
         self.processing_documents: Dict[str, Dict[str, Any]] = {}
         
-        # Inference mode: "cloud" or "local"
-        # Cloud uses RunPod endpoint, Local uses MLX/Ollama on device
-        self.inference_mode = "cloud"  # Default to cloud for better quality
+        # Inference mode: local-only for now (cloud disabled in current deployment)
+        self.inference_mode = "local"
         
         # Selected adapter for focused querying (None = all adapters)
         self.selected_adapter_id = None
@@ -1369,25 +1368,31 @@ class VaultApp:
         """Set inference mode (cloud or local)."""
         if mode not in ["cloud", "local"]:
             return
-        
-        old_mode = self.inference_mode
-        self.inference_mode = mode
-        logger.info(f"Inference mode changed: {old_mode} -> {mode}")
-        
-        # Show feedback
+
+        # Cloud mode is intentionally disabled in current deployment.
         if mode == "cloud":
-            msg = f"☁️ {self.tr('inference.cloud')}"
-        else:
-            msg = f"💻 {self.tr('inference.local')}"
-        
+            self.inference_mode = "local"
+            self.page.snack_bar = ft.SnackBar(
+                content=ft.Text("Cloud inference is disabled. Using local inference only.", color="white"),
+                bgcolor=LightTheme.ACCENT_WARNING,
+                duration=2500,
+            )
+            self.page.snack_bar.open = True
+            self.page.update()
+            return
+
+        old_mode = self.inference_mode
+        self.inference_mode = "local"
+        logger.info(f"Inference mode changed: {old_mode} -> local")
+
         self.page.snack_bar = ft.SnackBar(
-            content=ft.Text(msg, color="white"),
-            bgcolor=LightTheme.ACCENT_PRIMARY if mode == "cloud" else LightTheme.ACCENT_SUCCESS,
-            duration=2000,
+            content=ft.Text(f"💻 {self.tr('inference.local')}", color="white"),
+            bgcolor=LightTheme.ACCENT_SUCCESS,
+            duration=1500,
         )
         self.page.snack_bar.open = True
-        
-        # Refresh landing page to update toggle state
+
+        # Refresh landing page to update state
         self.show_landing_page()
     
     def _show_adapter_selector(self, adapters: List[Dict]):
@@ -3118,33 +3123,19 @@ class VaultApp:
         )
         self.chat_input = chat_input  # Store reference
         
-        # Create inference mode toggle
+        # Inference mode indicator (local-only)
         inference_toggle = ft.Container(
             content=ft.Row(
                 [
-                    # Cloud mode button
                     ft.Container(
                         content=ft.Row([
-                            ft.Icon(ft.Icons.CLOUD_ROUNDED, size=14, color="white" if self.inference_mode == "cloud" else LightTheme.TEXT_MUTED),
-                            ft.Text("Cloud", size=11, color="white" if self.inference_mode == "cloud" else LightTheme.TEXT_MUTED),
+                            ft.Icon(ft.Icons.COMPUTER_ROUNDED, size=14, color="white"),
+                            ft.Text("Local", size=11, color="white"),
                         ], spacing=4),
                         padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                        bgcolor=LightTheme.ACCENT_PRIMARY if self.inference_mode == "cloud" else "transparent",
-                        border_radius=ft.border_radius.only(top_left=8, bottom_left=8),
-                        on_click=lambda e: self._set_inference_mode("cloud"),
-                        tooltip="Use cloud inference (better quality, requires internet)",
-                    ),
-                    # Local mode button
-                    ft.Container(
-                        content=ft.Row([
-                            ft.Icon(ft.Icons.COMPUTER_ROUNDED, size=14, color="white" if self.inference_mode == "local" else LightTheme.TEXT_MUTED),
-                            ft.Text("Local", size=11, color="white" if self.inference_mode == "local" else LightTheme.TEXT_MUTED),
-                        ], spacing=4),
-                        padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                        bgcolor=LightTheme.ACCENT_SUCCESS if self.inference_mode == "local" else "transparent",
-                        border_radius=ft.border_radius.only(top_right=8, bottom_right=8),
-                        on_click=lambda e: self._set_inference_mode("local"),
-                        tooltip="Use local inference (private, works offline)",
+                        bgcolor=LightTheme.ACCENT_SUCCESS,
+                        border_radius=8,
+                        tooltip="Local inference only (cloud disabled)",
                     ),
                 ],
                 spacing=0,
@@ -3980,7 +3971,7 @@ class VaultApp:
         input_field: ft.TextField,
         adapters: list,
         mode_override: Optional[str] = None,
-        allow_cloud_fallback: bool = True,
+        allow_cloud_fallback: bool = False,
     ):
         """Send a chat message and get AI response."""
         query = input_field.value.strip() if input_field.value else ""
@@ -4121,7 +4112,7 @@ class VaultApp:
                     else:
                         response_text = (
                             "Local agent is unavailable right now.\n\n"
-                            "Try again after local model setup, or use cloud inference from the main chat."
+                            "Try again after local model setup."
                         )
                         doc_name = "Local Agent"
                 
@@ -10089,8 +10080,8 @@ class VaultApp:
         except Exception as e:
             logger.debug(f"Local inference not available: {e}")
         
-        # Inference mode toggle (cloud vs local)
-        inference_mode = {"value": "cloud"}  # Use dict for mutable state in closure
+        # Inference mode: local-only in current deployment.
+        inference_mode = {"value": "local"}  # Use dict for mutable state in closure
         
         def on_mode_change(e):
             inference_mode["value"] = e.control.value
@@ -10100,19 +10091,19 @@ class VaultApp:
                 submit_button.icon = ft.Icons.COMPUTER_ROUNDED
                 mode_hint.value = "🏠 Runs on your device - private & offline"
             else:
-                submit_button.text = "Ask"
-                submit_button.icon = ft.Icons.SEND_ROUNDED
-                mode_hint.value = "☁️ Uses cloud inference endpoint"
+                # Cloud is disabled; force local mode.
+                inference_mode["value"] = "local"
+                mode_dropdown.value = "local"
+                submit_button.text = "Ask Locally"
+                submit_button.icon = ft.Icons.COMPUTER_ROUNDED
+                mode_hint.value = "🏠 Runs on your device - private & offline"
             self.page.update()
         
         mode_dropdown = ft.Dropdown(
             label="Inference Mode",
-            value="cloud",
+            value="local",
             options=[
-                ft.dropdown.Option("cloud", "☁️ Cloud (RunPod)"),
                 ft.dropdown.Option("local", "🏠 Local (Your Device)"),
-            ] if local_available else [
-                ft.dropdown.Option("cloud", "☁️ Cloud (RunPod)"),
             ],
             on_change=on_mode_change,
             width=200,
@@ -10120,10 +10111,11 @@ class VaultApp:
             bgcolor=LightTheme.BG_ELEVATED,
             border_color=LightTheme.BORDER_COLOR,
             focused_border_color=LightTheme.ACCENT_PRIMARY,
+            disabled=True,
         )
         
         mode_hint = ft.Text(
-            "☁️ Uses cloud inference endpoint",
+            "🏠 Runs on your device - private & offline",
             size=11,
             color=LightTheme.TEXT_MUTED,
             italic=True,
@@ -10244,7 +10236,7 @@ class VaultApp:
         loading_text = loading_indicator.content.controls[0].controls[1].controls[0]  # Reference for updating text
         
         def ask_query(e):
-            """Send query to inference endpoint (cloud or local)."""
+            """Send query to local inference endpoint."""
             query = query_field.value.strip()
             if not query:
                 self.page.snack_bar = ft.SnackBar(
@@ -10263,24 +10255,14 @@ class VaultApp:
             mode_dropdown.disabled = True
             self.page.update()
             
-            use_local = inference_mode["value"] == "local"
-            
             def run_inference():
                 try:
-                    if use_local:
-                        # LOCAL INFERENCE - runs entirely on device
-                        self._run_local_inference(
-                            query, knowledge_id, encryption_key_hex, filename,
-                            loading_text, loading_indicator, response_text, 
-                            response_container, query_field, submit_button, mode_dropdown
-                        )
-                    else:
-                        # CLOUD INFERENCE - uses RunPod endpoint
-                        self._run_cloud_inference(
-                            query, knowledge_id, encryption_key_hex, filename,
-                            loading_indicator, response_text, response_container,
-                            query_field, submit_button, mode_dropdown
-                        )
+                    # LOCAL INFERENCE - runs entirely on device
+                    self._run_local_inference(
+                        query, knowledge_id, encryption_key_hex, filename,
+                        loading_text, loading_indicator, response_text,
+                        response_container, query_field, submit_button, mode_dropdown
+                    )
                     
                 except Exception as ex:
                     logger.error(f"Demo query error: {ex}")
@@ -10508,7 +10490,7 @@ class VaultApp:
                 query_field.disabled = False
                 submit_button.disabled = False
                 mode_dropdown.disabled = False
-                response_text.value = f"Local inference error: {str(ex)}\n\nTry using Cloud inference instead."
+                response_text.value = f"Local inference error: {str(ex)}"
                 response_container.visible = True
                 self.page.update()
             
@@ -11454,22 +11436,22 @@ class VaultApp:
                 ),
             ])
         
-        # Cloud Inference Section
+        # Inference section (local-only)
         settings_items.extend([
             ft.Container(height=12),
             ft.Divider(color=LightTheme.BORDER_COLOR),
-            ft.Text(self.tr("settings.inference.title"), size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-            ft.Text(self.tr("settings.inference.subtitle"), size=12, color=LightTheme.TEXT_MUTED),
+            ft.Text("Inference Mode", size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Local inference only (cloud mode currently disabled).", size=12, color=LightTheme.TEXT_MUTED),
             ft.Container(height=8),
             ft.Container(
                 content=ft.Row(
                     [
-                        ft.Text(self.tr("settings.inference.enable"), size=14, color=LightTheme.TEXT_PRIMARY),
+                        ft.Text("Use Local Inference", size=14, color=LightTheme.TEXT_PRIMARY),
                         ft.Container(expand=True),
-                        ft.Switch(
-                            value=getattr(self, 'inference_mode', 'local') == "cloud",
-                            on_change=lambda e: self._set_inference_mode("cloud" if e.control.value else "local"),
-                            active_color=LightTheme.ACCENT_PRIMARY,
+                        ft.Icon(
+                            ft.Icons.CHECK_CIRCLE_ROUNDED,
+                            color=LightTheme.ACCENT_SUCCESS,
+                            size=18,
                         ),
                     ],
                 ),
@@ -11481,9 +11463,9 @@ class VaultApp:
             ft.Container(
                 content=ft.Column(
                     [
-                        ft.Row([ft.Icon(ft.Icons.LOCK_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text(self.tr("settings.inference.bullet1"), size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
-                        ft.Row([ft.Icon(ft.Icons.VISIBILITY_OFF_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text(self.tr("settings.inference.bullet2"), size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
-                        ft.Row([ft.Icon(ft.Icons.DELETE_SWEEP_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text(self.tr("settings.inference.bullet3"), size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
+                        ft.Row([ft.Icon(ft.Icons.COMPUTER_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Runs on your device", size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
+                        ft.Row([ft.Icon(ft.Icons.VISIBILITY_OFF_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("No cloud endpoint required", size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
+                        ft.Row([ft.Icon(ft.Icons.WIFI_OFF_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Works offline after local model setup", size=12, color=LightTheme.TEXT_SECONDARY)], spacing=6),
                     ],
                     spacing=4,
                 ),
