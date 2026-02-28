@@ -7545,8 +7545,10 @@ class VaultApp:
             if self._sheriff_last_summary is None:
                 return
             self._sheriff_summary_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self._sheriff_summary_path, "w", encoding="utf-8") as f:
+            tmp_path = self._sheriff_summary_path.with_suffix(".tmp")
+            with open(tmp_path, "w", encoding="utf-8") as f:
                 json.dump(self._sheriff_last_summary, f, indent=2)
+            tmp_path.replace(self._sheriff_summary_path)
         except Exception as e:
             logger.debug(f"Could not persist sheriff summary cache: {e}")
 
