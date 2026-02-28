@@ -765,6 +765,8 @@ class TrainingManager:
                         json=payload,
                         timeout=240  # Increased timeout for retry
                     )
+                else:
+                    raise ValueError("Session expired. Please sign in again to continue cloud inference.")
             
             if response.status_code == 404:
                 raise ValueError("Adapter not found or access denied")
@@ -776,6 +778,8 @@ class TrainingManager:
             elif response.status_code != 200:
                 error_text = response.text
                 logger.error(f"Backend API error: {response.status_code} {error_text}")
+                if response.status_code == 401:
+                    raise ValueError("Session expired. Please sign in again to continue cloud inference.")
                 raise ValueError(f"Failed to run inference: {response.status_code}")
             
             result = response.json()
@@ -795,5 +799,4 @@ class TrainingManager:
         except Exception as e:
             logger.error(f"Error running inference: {e}")
             raise ValueError(f"Failed to run inference: {str(e)}")
-
 

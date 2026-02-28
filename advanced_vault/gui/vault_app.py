@@ -3588,7 +3588,13 @@ class VaultApp:
             focused_border_color=LightTheme.ACCENT_PRIMARY,
             content_padding=ft.padding.symmetric(horizontal=20, vertical=14),
             expand=True,
-            on_submit=lambda e: self._send_chat_message(e, chat_input, trained_adapters),
+            on_submit=lambda e: self._send_chat_message(
+                e,
+                chat_input,
+                trained_adapters,
+                mode_override="local",
+                allow_cloud_fallback=False,
+            ),
         )
         self.chat_input = chat_input
         self.trained_adapters = trained_adapters
@@ -3605,7 +3611,13 @@ class VaultApp:
                                 ft.Icons.SEND_ROUNDED,
                                 icon_color="white",
                                 bgcolor=LightTheme.ACCENT_PRIMARY,
-                                on_click=lambda e: self._send_chat_message(e, chat_input, trained_adapters),
+                                on_click=lambda e: self._send_chat_message(
+                                    e,
+                                    chat_input,
+                                    trained_adapters,
+                                    mode_override="local",
+                                    allow_cloud_fallback=False,
+                                ),
                             ),
                         ], spacing=8),
                         padding=ft.padding.only(top=8),
@@ -3962,7 +3974,14 @@ class VaultApp:
         self.page.snack_bar.open = True
         self.page.update()
     
-    def _send_chat_message(self, e, input_field: ft.TextField, adapters: list):
+    def _send_chat_message(
+        self,
+        e,
+        input_field: ft.TextField,
+        adapters: list,
+        mode_override: Optional[str] = None,
+        allow_cloud_fallback: bool = True,
+    ):
         """Send a chat message and get AI response."""
         query = input_field.value.strip() if input_field.value else ""
         if not query:
@@ -4032,7 +4051,7 @@ class VaultApp:
             else:
                 adapter = adapters[0]
         
-        inference_mode = self.inference_mode  # Capture current mode
+        inference_mode = mode_override or self.inference_mode  # Capture current mode
         
         def run_inference():
             try:
@@ -4082,7 +4101,7 @@ class VaultApp:
 
                 # PRIORITY 3: Cloud inference (opt-in fallback)
                 if response_text is None:
-                    if adapter:
+                    if allow_cloud_fallback and adapter:
                         response = self.training_manager.inference_with_adapter(
                             adapter_id=adapter["adapter_id"],
                             query=query,
@@ -4090,7 +4109,7 @@ class VaultApp:
                         )
                         response_text = response.get("response", "I couldn't generate a response.") if response else "No response received."
                         doc_name = adapter["name"]
-                    else:
+                    elif allow_cloud_fallback:
                         response_text = (
                             "Welcome to Enclave — your privacy-first AI agent.\n\n"
                             "To get started:\n"
@@ -4099,6 +4118,12 @@ class VaultApp:
                             "3. **Connect Claude Desktop** for seamless MCP integration\n\n"
                             "Your data stays local. External AIs never see your raw documents."
                         )
+                    else:
+                        response_text = (
+                            "Local agent is unavailable right now.\n\n"
+                            "Try again after local model setup, or use cloud inference from the main chat."
+                        )
+                        doc_name = "Local Agent"
                 
                 # Add AI response
                 ai_msg = {"role": "assistant", "content": response_text, "document": doc_name}
@@ -4123,7 +4148,14 @@ class VaultApp:
                 
             except Exception as ex:
                 logger.error(f"Chat inference error: {ex}")
-                error_msg = f"Sorry, I encountered an error: {str(ex)}"
+                ex_str = str(ex)
+                if "session expired" in ex_str.lower() or "401" in ex_str:
+                    error_msg = (
+                        "Your cloud session expired. Please sign in again in Enclave "
+                        "to continue cloud inference."
+                    )
+                else:
+                    error_msg = f"Sorry, I encountered an error: {ex_str}"
                 
                 def show_error():
                     if hasattr(self, 'chat_messages_list') and self.chat_messages_list.controls:
