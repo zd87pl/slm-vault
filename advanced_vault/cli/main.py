@@ -16,6 +16,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from advanced_vault.core import HybridVault
 from advanced_vault.encrypted_kv import QueryFilter
+from advanced_vault.sheriff.core import SheriffCore
+from advanced_vault.sheriff.models import AccessDecision
 
 
 class VaultCLI:
@@ -69,6 +71,11 @@ def cli(ctx, vault_path):
     """
     ctx.ensure_object(dict)
     ctx.obj['vault_path'] = vault_path
+
+
+def _get_sheriff(vault_path: str) -> SheriffCore:
+    """Create sheriff core for CLI commands."""
+    return SheriffCore(vault_path=vault_path)
 
 
 @cli.command()
@@ -166,12 +173,12 @@ def get(ctx, service):
         vault_cli.close()
 
 
-@cli.command()
+@cli.command(name="list")
 @click.option('--tag', help='Filter by tag')
 @click.option('--service', help='Filter by service')
 @click.option('--json', 'output_json', is_flag=True, help='Output as JSON')
 @click.pass_context
-def list(ctx, tag, service, output_json):
+def list_entries(ctx, tag, service, output_json):
     """
     List all vault entries.
 
@@ -394,6 +401,219 @@ def query(ctx, query):
             click.echo(f"   ❓ No results found")
     finally:
         vault_cli.close()
+
+
+@cli.group()
+def sheriff():
+    """Local Data Sheriff commands (scan, protect, consent/lease, audit)."""
+
+
+@sheriff.command("scan")
+@click.argument('paths', nargs=-1)
+@click.option('--max-files', default=2000, type=int, show_default=True, help='Maximum files to scan')
+@click.option('--json', 'output_json', is_flag=True, help='Output as JSON')
+@click.pass_context
+def sheriff_scan(ctx, paths, max_files, output_json):
+    """Scan local files and classify risk."""
+    sheriff_core = _get_sheriff(ctx.obj['vault_path'])
+    summary = sheriff_core.scan_risk(paths=list(paths) if paths else None, max_files=max_files)
+
+    if output_json:
+        click.echo(json.dumps(summary.model_dump(mode="json"), indent=2))
+        return
+
+    click.echo("\n🛡️ Data Sheriff Risk Summary\n")
+    click.echo(f"Scanned files: {summary.total_files}")
+    click.echo(f"Critical: {summary.critical_count}")
+    click.echo(f"Sensitive: {summary.sensitive_count}")
+    click.echo(f"Normal: {summary.normal_count}")
+
+    if summary.recommendations:
+        click.echo("\nRecommendations:")
+        for rec in summary.recommendations:
+            click.echo(f"  • {rec}")
+
+    top = summary.findings[:10]
+    if top:
+        click.echo("\nTop findings:")
+        for finding in top:
+            click.echo(f"  • [{finding.label}] score={finding.score} {finding.path}")
+            if finding.detected_secrets:
+                click.echo(f"    secrets: {', '.join(finding.detected_secrets)}")
+
+
+@sheriff.command("protect")
+@click.argument('paths', nargs=-1)
+@click.option('--json', 'output_json', is_flag=True, help='Output as JSON')
+@click.pass_context
+def sheriff_protect(ctx, paths, output_json):
+    """Enable consent barrier rules for selected paths."""
+    if not paths:
+        click.echo("❌ Error: provide at least one path to protect.", err=True)
+        sys.exit(1)
+    sheriff_core = _get_sheriff(ctx.obj['vault_path'])
+    rules = sheriff_core.protect_now(paths=list(paths))
+    payload = {"count": len(rules), "rules": [r.model_dump(mode="json") for r in rules]}
+
+    if output_json:
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    click.echo(f"✅ Enabled consent barrier for {payload['count']} path(s):")
+    for rule in rules:
+        click.echo(f"  • {rule.path_scope} ({rule.decision})")
+
+
+@sheriff.command("access")
+@click.argument('resource')
+@click.argument('purpose')
+@click.option('--ttl', 'ttl_seconds', default=900, type=int, show_default=True, help='Lease duration in seconds')
+@click.option('--allow-consent', is_flag=True, help='Auto-approve consent when prompt is required')
+@click.option('--json', 'output_json', is_flag=True, help='Output as JSON')
+@click.pass_context
+def sheriff_access(ctx, resource, purpose, ttl_seconds, allow_consent, output_json):
+    """Request access and receive lease token when allowed."""
+    sheriff_core = _get_sheriff(ctx.obj['vault_path'])
+    subject_app = "vault-cli"
+    result = sheriff_core.request_access(
+        subject_app=subject_app,
+        resource=resource,
+        purpose=purpose,
+        ttl_seconds=ttl_seconds,
+    )
+
+    if result.decision == AccessDecision.PROMPT:
+        approved = allow_consent or click.confirm(
+            f"Consent required for {resource}. Approve {ttl_seconds}s lease?",
+            default=False,
+        )
+        result = sheriff_core.consent_decide(
+            subject_app=subject_app,
+            resource=resource,
+            purpose=purpose,
+            allow=approved,
+            ttl_seconds=ttl_seconds,
+        )
+
+    payload = result.model_dump(mode="json")
+    if output_json:
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    click.echo(f"Decision: {result.decision}")
+    click.echo(f"Reason: {result.reason}")
+    click.echo(f"Label: {result.label}")
+    if result.lease:
+        click.echo(f"Lease ID: {result.lease.lease_id}")
+        click.echo(f"Expires: {result.lease.expires_at.isoformat()}")
+
+
+@sheriff.command("read")
+@click.argument('resource')
+@click.argument('lease_id')
+@click.option('--redact/--no-redact', default=True, show_default=True, help='Apply content redaction')
+@click.pass_context
+def sheriff_read(ctx, resource, lease_id, redact):
+    """Read file content using active lease."""
+    sheriff_core = _get_sheriff(ctx.obj['vault_path'])
+    try:
+        content = sheriff_core.read_with_lease(
+            subject_app="vault-cli",
+            resource=resource,
+            lease_id=lease_id,
+            redact=redact,
+        )
+    except PermissionError as e:
+        click.echo(f"❌ Access denied: {e}", err=True)
+        sys.exit(1)
+    except FileNotFoundError:
+        click.echo(f"❌ File not found: {resource}", err=True)
+        sys.exit(1)
+
+    click.echo(content)
+
+
+@sheriff.command("revoke")
+@click.argument('lease_id')
+@click.pass_context
+def sheriff_revoke(ctx, lease_id):
+    """Revoke lease token immediately."""
+    sheriff_core = _get_sheriff(ctx.obj['vault_path'])
+    ok = sheriff_core.revoke_lease(lease_id=lease_id, actor="user")
+    if ok:
+        click.echo(f"✅ Revoked lease: {lease_id}")
+    else:
+        click.echo(f"❌ Lease not found: {lease_id}", err=True)
+        sys.exit(1)
+
+
+@sheriff.command("audit")
+@click.option('--limit', default=50, type=int, show_default=True, help='Max events')
+@click.option('--subject', default=None, help='Filter by subject/app')
+@click.option('--resource', default=None, help='Filter by resource substring')
+@click.option('--decision', type=click.Choice(["ALLOW", "DENY", "PROMPT", "ALLOW_WITH_LEASE"]), default=None)
+@click.option('--json', 'output_json', is_flag=True, help='Output as JSON')
+@click.pass_context
+def sheriff_audit(ctx, limit, subject, resource, decision, output_json):
+    """Show audit events."""
+    sheriff_core = _get_sheriff(ctx.obj['vault_path'])
+    decision_filter = AccessDecision(decision) if decision else None
+    events = sheriff_core.audit_events(
+        limit=limit,
+        subject=subject,
+        resource=resource,
+        decision=decision_filter,
+    )
+
+    if output_json:
+        click.echo(json.dumps({"items": events}, indent=2))
+        return
+
+    if not events:
+        click.echo("No audit events.")
+        return
+
+    click.echo(f"Audit events ({len(events)}):")
+    for event in events:
+        click.echo(
+            f"  • {event.get('timestamp')} | {event.get('decision')} | {event.get('subject')} | {event.get('action')} | {event.get('resource')}"
+        )
+
+
+@sheriff.command("hardening")
+@click.option('--json', 'output_json', is_flag=True, help='Output as JSON')
+@click.pass_context
+def sheriff_hardening(ctx, output_json):
+    """Check MCP configuration hardening alerts."""
+    sheriff_core = _get_sheriff(ctx.obj['vault_path'])
+    alerts = sheriff_core.hardening_report()
+    if output_json:
+        click.echo(json.dumps({"alerts": alerts}, indent=2))
+        return
+
+    click.echo(f"Hardening alerts: {len(alerts)}")
+    for alert in alerts:
+        click.echo(f"  • [{alert.get('severity', 'info')}] {alert.get('message')}")
+        if alert.get("path"):
+            click.echo(f"    path: {alert['path']}")
+
+
+@sheriff.command("status")
+@click.option('--json', 'output_json', is_flag=True, help='Output as JSON')
+@click.pass_context
+def sheriff_status(ctx, output_json):
+    """Show system enforcement backend status."""
+    sheriff_core = _get_sheriff(ctx.obj['vault_path'])
+    status = sheriff_core.enforcement_status()
+
+    if output_json:
+        click.echo(json.dumps(status, indent=2))
+        return
+
+    click.echo(f"Backend: {status['backend']}")
+    click.echo(f"Enabled: {status['enabled']}")
+    click.echo(f"Mode: {status['mode']}")
+    click.echo(f"Message: {status['message']}")
 
 
 if __name__ == '__main__':
