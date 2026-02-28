@@ -627,6 +627,78 @@ class VaultApp:
             ]
         
         self.page.update()
+
+    def _setup_ocr_with_progress(self):
+        """Setup OCR stack (SmolDocling preferred, Ollama fallback)."""
+        try:
+            if self.pdf_processor is None:
+                self._initialize_pdf_processor()
+
+            if self.pdf_processor and self.pdf_processor.smoldocling_available:
+                self._component_status["ocr"]["status"] = "ready"
+                self._component_status["ocr"]["message"] = "Ready (SmolDocling ~500MB)"
+                self._show_user_message("Local OCR is ready (SmolDocling).", level="info")
+                return
+
+            # Fallback path when SmolDocling is unavailable.
+            self._setup_ollama_with_progress()
+
+            if self.pdf_processor and self.pdf_processor.ollama_available:
+                self._component_status["ocr"]["status"] = "ready"
+                self._component_status["ocr"]["message"] = "Ready (Ollama)"
+        except Exception as e:
+            logger.error(f"OCR setup failed: {e}")
+            self._component_status["ocr"]["status"] = "error"
+            self._component_status["ocr"]["message"] = f"Error: {str(e)}"
+            self._show_user_message(f"OCR setup failed: {str(e)}", level="error")
+
+    def _run_local_setup(self):
+        """One-click local setup for first value (OCR + local QA)."""
+        try:
+            ran_any_step = False
+
+            # Ensure processors exist.
+            if self.pdf_processor is None:
+                self._initialize_pdf_processor()
+
+            if self.qa_generator is None:
+                self.qa_generator = QAGenerator()
+
+            # OCR readiness.
+            ocr_ready = bool(
+                self.pdf_processor and
+                (self.pdf_processor.smoldocling_available or self.pdf_processor.ollama_available)
+            )
+            if not ocr_ready:
+                ran_any_step = True
+                self._setup_ocr_with_progress()
+
+            # QA readiness (MLX preferred if available).
+            qa_ready = False
+            if self.qa_generator:
+                qa_status = self.qa_generator.get_qa_status()
+                if qa_status.get("mlx_available"):
+                    qa_ready = bool(qa_status.get("mlx_initialized"))
+                else:
+                    qa_ready = bool(qa_status.get("qa_model_available"))
+
+            if not qa_ready:
+                ran_any_step = True
+                self._setup_qa_model_with_progress()
+
+            if ran_any_step:
+                self._show_user_message("Local setup completed. You can now index and ask immediately.", level="success")
+            else:
+                self._show_user_message("Local setup already ready.", level="info")
+        except Exception as e:
+            logger.error(f"Local setup failed: {e}")
+            self._show_actionable_error(
+                e,
+                title="Local setup failed",
+                context="setup",
+                fix_label="Open Settings",
+                fix_action=lambda: self.show_settings(),
+            )
     
     def _auto_setup_components(self):
         """Automatically setup components that need configuration."""
@@ -953,6 +1025,7 @@ class VaultApp:
             self.show_landing_page()
 
             if step_id == "connect":
+                self._run_local_setup()
                 self.on_nav_change(5)
                 self._show_user_message(
                     self.tr("onboarding.info.connect"),
@@ -1242,7 +1315,7 @@ class VaultApp:
 
             if step_id == "inference":
                 if self.inference_mode == "local":
-                    self._setup_qa_model_with_progress()
+                    self._run_local_setup()
                 else:
                     self.check_backend_connectivity()
                     self.on_nav_change(5)
@@ -3062,7 +3135,12 @@ class VaultApp:
         if self.chat_messages:
             for msg in self.chat_messages:
                 chat_messages_list.controls.append(
-                    self._create_chat_bubble(msg["role"], msg["content"], msg.get("document"))
+                    self._create_chat_bubble(
+                        msg["role"],
+                        msg["content"],
+                        msg.get("document"),
+                        msg.get("sources"),
+                    )
                 )
         else:
             # Welcome message
@@ -3556,7 +3634,12 @@ class VaultApp:
         if self.chat_messages:
             for msg in self.chat_messages:
                 chat_list.controls.append(
-                    self._create_chat_bubble(msg["role"], msg["content"], msg.get("document"))
+                    self._create_chat_bubble(
+                        msg["role"],
+                        msg["content"],
+                        msg.get("document"),
+                        msg.get("sources"),
+                    )
                 )
         else:
             chat_list.controls.append(
@@ -3634,9 +3717,50 @@ class VaultApp:
         input_field.value = question
         self.page.update()
     
-    def _create_chat_bubble(self, role: str, content: str, document: str = None) -> ft.Container:
+    def _create_chat_bubble(
+        self,
+        role: str,
+        content: str,
+        document: str = None,
+        sources: Optional[List[Dict[str, Any]]] = None,
+    ) -> ft.Container:
         """Create a chat message bubble."""
         is_user = role == "user"
+
+        source_controls: List[ft.Control] = []
+        if sources and not is_user:
+            source_controls.append(ft.Container(height=6))
+            source_controls.append(
+                ft.Text(
+                    "Sources:",
+                    size=11,
+                    color=LightTheme.TEXT_MUTED,
+                    weight=ft.FontWeight.W_600,
+                )
+            )
+            for source in sources[:3]:
+                doc = source.get("document", "Unknown")
+                score = source.get("score")
+                excerpt = source.get("excerpt")
+                confidence = f"{int(float(score) * 100)}%" if score is not None else "n/a"
+                source_controls.append(
+                    ft.Text(
+                        f"• {doc} ({confidence})",
+                        size=11,
+                        color=LightTheme.TEXT_MUTED,
+                        italic=True,
+                    )
+                )
+                if excerpt:
+                    source_controls.append(
+                        ft.Text(
+                            f"  \"{excerpt}\"",
+                            size=10,
+                            color=LightTheme.TEXT_MUTED,
+                            italic=True,
+                            max_lines=2,
+                        )
+                    )
         
         return ft.Container(
             content=ft.Row(
@@ -3653,11 +3777,12 @@ class VaultApp:
                         content=ft.Column(
                             [
                                 ft.Text(
-                        content,
+                                    content,
                                     size=14,
                                     color=LightTheme.TEXT_PRIMARY,
                                     selectable=True,
                                 ),
+                                *source_controls,
                                 ft.Container(height=4) if document and not is_user else ft.Container(),
                                 ft.Text(
                                     f"📄 Based on: {document}",
@@ -3665,8 +3790,8 @@ class VaultApp:
                                     color=LightTheme.TEXT_MUTED,
                                     italic=True,
                                 ) if document and not is_user else ft.Container(),
-                    ],
-                    spacing=0,
+                            ],
+                            spacing=0,
                         ),
                         padding=16,
                         bgcolor=LightTheme.ACCENT_PRIMARY + "10" if is_user else LightTheme.BG_ELEVATED,
@@ -4048,6 +4173,7 @@ class VaultApp:
             try:
                 response_text = None
                 doc_name = adapter["name"] if adapter else "Local Agent"
+                source_items: List[Dict[str, Any]] = []
 
                 # PRIORITY 1: Local RAG + LocalAgent (privacy-first)
                 if inference_mode == "local":
@@ -4060,6 +4186,7 @@ class VaultApp:
                             response_text = result.get("answer", "")
                             sources = result.get("sources", [])
                             if sources:
+                                source_items = sources
                                 doc_name = ", ".join(s["document"] for s in sources[:3])
                             elif result.get("rag_used"):
                                 doc_name = "Indexed Documents"
@@ -4117,7 +4244,12 @@ class VaultApp:
                         doc_name = "Local Agent"
                 
                 # Add AI response
-                ai_msg = {"role": "assistant", "content": response_text, "document": doc_name}
+                ai_msg = {
+                    "role": "assistant",
+                    "content": response_text,
+                    "document": doc_name,
+                    "sources": source_items,
+                }
                 self.chat_messages.append(ai_msg)
                 self._save_chat_history_to_file()
                 
@@ -4131,7 +4263,7 @@ class VaultApp:
                     
                     # Add response bubble
                     self.chat_messages_list.controls.append(
-                        self._create_chat_bubble("assistant", response_text, doc_name)
+                        self._create_chat_bubble("assistant", response_text, doc_name, source_items)
                     )
                     self.page.update()
                 
@@ -6185,6 +6317,19 @@ class VaultApp:
             self.show_agent_view()
         elif index == 2:  # Settings
             self.show_settings_hub()
+        # Backward compatibility for legacy nav indices used in older callbacks.
+        elif index == 3:  # Activity
+            self.show_agent_view(active_tab="activity")
+        elif index == 4:  # Statistics
+            self.show_settings_hub(active_tab="stats")
+        elif index == 5:  # Setup/Settings
+            self.show_settings_hub(active_tab="setup")
+        elif index == 6:  # LangChain policies
+            self.show_settings_hub(active_tab="policies")
+        elif index == 7:  # Library
+            self.show_my_data_view(active_tab="library")
+        elif index == 8:  # Permissions
+            self.show_agent_view(active_tab="permissions")
 
         self.page.update()
 
@@ -11442,6 +11587,17 @@ class VaultApp:
             ft.Divider(color=LightTheme.BORDER_COLOR),
             ft.Text("Inference Mode", size=18, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
             ft.Text("Local inference only (cloud mode currently disabled).", size=12, color=LightTheme.TEXT_MUTED),
+            ft.Container(height=6),
+            ft.ElevatedButton(
+                "Run Local Setup",
+                icon=ft.Icons.BOLT_ROUNDED,
+                on_click=lambda e: self._run_local_setup(),
+                style=ft.ButtonStyle(
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                    color="white",
+                    shape=ft.RoundedRectangleBorder(radius=8),
+                ),
+            ),
             ft.Container(height=8),
             ft.Container(
                 content=ft.Row(

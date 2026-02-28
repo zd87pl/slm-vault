@@ -195,9 +195,14 @@ class LocalAgent:
                         context_parts = []
                         for r in rag_results:
                             context_parts.append(r.chunk.content)
+                            excerpt = (r.chunk.content or "").replace("\n", " ").strip()
+                            if len(excerpt) > 180:
+                                excerpt = excerpt[:177] + "..."
                             result["sources"].append({
                                 "document": r.document_name,
-                                "score": round(r.score, 3)
+                                "score": round(r.score, 3),
+                                "chunk_index": r.chunk.index,
+                                "excerpt": excerpt,
                             })
 
                         context = "\n\n".join(context_parts)
