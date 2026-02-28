@@ -412,6 +412,56 @@ class VaultMCPServer:
                         },
                         "required": ["lease_id"]
                     }
+                ),
+                Tool(
+                    name="sheriff.risk_summary",
+                    description="Run local risk scan and return classification summary + recommendations.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "paths": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Optional scan root paths. Defaults to ~/Documents."
+                            },
+                            "max_files": {
+                                "type": "integer",
+                                "description": "Max files scanned (default: 2000).",
+                                "default": 2000
+                            }
+                        }
+                    }
+                ),
+                Tool(
+                    name="sheriff.protect_now",
+                    description="Create prompt-based protection rules for selected paths.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "paths": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Paths to protect with consent barrier."
+                            }
+                        },
+                        "required": ["paths"]
+                    }
+                ),
+                Tool(
+                    name="sheriff.hardening_report",
+                    description="Inspect Claude/Cursor MCP configs and return hardening alerts.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
+                    }
+                ),
+                Tool(
+                    name="sheriff.enforcement_status",
+                    description="Return status of system-level enforcement backend.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {}
+                    }
                 )
             ]
 
@@ -450,6 +500,15 @@ class VaultMCPServer:
                     query_preview = "List sheriff audit"
                 elif name == "sheriff.revoke":
                     query_preview = f"Revoke lease {args.get('lease_id', '')[:18]}"
+                elif name == "sheriff.risk_summary":
+                    query_preview = "Run risk summary scan"
+                elif name == "sheriff.protect_now":
+                    paths = args.get("paths", [])
+                    query_preview = f"Protect {len(paths) if isinstance(paths, list) else 0} paths"
+                elif name == "sheriff.hardening_report":
+                    query_preview = "Run hardening report"
+                elif name == "sheriff.enforcement_status":
+                    query_preview = "Check enforcement status"
 
                 # Get app identifier for logging
                 app_identifier = self.consent_manager._get_app_identifier()
@@ -530,6 +589,18 @@ class VaultMCPServer:
                 elif name == "sheriff.revoke":
                     result = await self._handle_sheriff_revoke(args)
                     result_summary = f"Sheriff lease revoked {args.get('lease_id', '')[:18]}"
+                elif name == "sheriff.risk_summary":
+                    result = await self._handle_sheriff_risk_summary(args)
+                    result_summary = "Sheriff risk summary generated"
+                elif name == "sheriff.protect_now":
+                    result = await self._handle_sheriff_protect_now(args)
+                    result_summary = "Sheriff protection rules created"
+                elif name == "sheriff.hardening_report":
+                    result = await self._handle_sheriff_hardening_report(args)
+                    result_summary = "Sheriff hardening report generated"
+                elif name == "sheriff.enforcement_status":
+                    result = await self._handle_sheriff_enforcement_status(args)
+                    result_summary = "Sheriff enforcement status checked"
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
@@ -1120,6 +1191,39 @@ class VaultMCPServer:
         if ok:
             return [TextContent(type="text", text=f"✅ Lease revoked: {lease_id}")]
         return [TextContent(type="text", text=f"❌ Lease not found: {lease_id}")]
+
+    async def _handle_sheriff_risk_summary(self, args: dict) -> Sequence[TextContent]:
+        """Handle sheriff.risk_summary tool call."""
+        paths = args.get("paths")
+        max_files = int(args.get("max_files", 2000))
+        if paths is not None and not isinstance(paths, list):
+            return [TextContent(type="text", text="❌ Error: 'paths' must be an array of strings.")]
+
+        summary = self.sheriff.scan_risk(paths=paths, max_files=max_files)
+        payload = summary.model_dump(mode="json")
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+    async def _handle_sheriff_protect_now(self, args: dict) -> Sequence[TextContent]:
+        """Handle sheriff.protect_now tool call."""
+        paths = args.get("paths")
+        if not isinstance(paths, list) or not paths:
+            return [TextContent(type="text", text="❌ Error: non-empty 'paths' array is required.")]
+
+        rules = self.sheriff.protect_now(paths=paths)
+        payload = {"rules": [rule.model_dump(mode="json") for rule in rules], "count": len(rules)}
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+    async def _handle_sheriff_hardening_report(self, args: dict) -> Sequence[TextContent]:
+        """Handle sheriff.hardening_report tool call."""
+        _ = args
+        alerts = self.sheriff.hardening_report()
+        return [TextContent(type="text", text=json.dumps({"alerts": alerts}, indent=2))]
+
+    async def _handle_sheriff_enforcement_status(self, args: dict) -> Sequence[TextContent]:
+        """Handle sheriff.enforcement_status tool call."""
+        _ = args
+        status = self.sheriff.enforcement_status()
+        return [TextContent(type="text", text=json.dumps(status, indent=2))]
 
 
 def create_vault_server(vault_path: str = "~/.vault") -> VaultMCPServer:

@@ -267,6 +267,38 @@ class TestVaultMCPServer:
         assert len(audit_payload["items"]) >= 1
         assert any(item["subject"] == "test-audit-app" for item in audit_payload["items"])
 
+    @pytest.mark.asyncio
+    async def test_sheriff_risk_summary_and_protect_now(self, server):
+        """Test risk scanning summary and rule creation handlers."""
+        scan_dir = Path(server.vault_path) / "scan-root"
+        scan_dir.mkdir(parents=True, exist_ok=True)
+        (scan_dir / "medical_notes.txt").write_text("basic note")
+
+        risk_result = await server._handle_sheriff_risk_summary(
+            {"paths": [str(scan_dir)], "max_files": 100}
+        )
+        risk_payload = json.loads(risk_result[0].text)
+        assert risk_payload["total_files"] >= 1
+        assert "recommendations" in risk_payload
+
+        protect_result = await server._handle_sheriff_protect_now({"paths": [str(scan_dir)]})
+        protect_payload = json.loads(protect_result[0].text)
+        assert protect_payload["count"] == 1
+        assert len(protect_payload["rules"]) == 1
+
+    @pytest.mark.asyncio
+    async def test_sheriff_hardening_and_enforcement_status(self, server):
+        """Test hardening/enforcement status handlers."""
+        hardening_result = await server._handle_sheriff_hardening_report({})
+        hardening_payload = json.loads(hardening_result[0].text)
+        assert "alerts" in hardening_payload
+        assert isinstance(hardening_payload["alerts"], list)
+
+        enforcement_result = await server._handle_sheriff_enforcement_status({})
+        enforcement_payload = json.loads(enforcement_result[0].text)
+        assert "backend" in enforcement_payload
+        assert "enabled" in enforcement_payload
+
 
 class TestMCPToolDefinitions:
     """Test MCP tool definitions are correct."""
@@ -297,6 +329,10 @@ class TestMCPToolDefinitions:
         assert hasattr(server, '_handle_sheriff_read')
         assert hasattr(server, '_handle_sheriff_list_audit')
         assert hasattr(server, '_handle_sheriff_revoke')
+        assert hasattr(server, '_handle_sheriff_risk_summary')
+        assert hasattr(server, '_handle_sheriff_protect_now')
+        assert hasattr(server, '_handle_sheriff_hardening_report')
+        assert hasattr(server, '_handle_sheriff_enforcement_status')
 
 
 class TestVaultIntegration:
