@@ -3432,6 +3432,19 @@ class VaultApp:
         except Exception:
             return {"document_count": 0, "chunk_count": 0, "embedding_dimension": 0}
 
+    def _get_rag_status(self) -> dict:
+        """Get normalized RAG status payload used by landing widgets."""
+        stats = self._get_rag_stats() or {}
+        deps = self._check_rag_dependencies()
+        return {
+            "document_count": int(stats.get("document_count", 0) or 0),
+            "chunk_count": int(stats.get("chunk_count", 0) or 0),
+            "embedding_dimension": int(stats.get("embedding_dimension", 0) or 0),
+            "ready": bool(deps.get("ready")),
+            "missing": deps.get("missing", []),
+            "error": deps.get("error"),
+        }
+
     def _check_rag_dependencies(self) -> dict:
         """Check if RAG dependencies are available."""
         result = {
