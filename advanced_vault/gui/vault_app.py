@@ -14,6 +14,7 @@ import logging
 import base64
 import tempfile
 import shutil
+import sqlite3
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
 from datetime import datetime
@@ -32,6 +33,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from advanced_vault.core import HybridVault
 from advanced_vault.encrypted_kv import QueryFilter, EntryType
 from advanced_vault.mcp_server.activity_logger import ActivityLogger
+from advanced_vault.sheriff.core import SheriffCore
 from auth_screen import AuthScreen
 from cloud_sync import CloudSyncService
 from pdf_processor import PDFProcessor
@@ -147,6 +149,16 @@ class VaultApp:
         
         # Question history file
         self.question_history_path = self.vault_path / "question_history.json"
+
+        # Data Sheriff core and UI state
+        self.sheriff_core = SheriffCore(vault_path=str(self.vault_path))
+        self._sheriff_last_summary: Optional[Dict[str, Any]] = None
+        self._sheriff_last_error: Optional[str] = None
+        self._sheriff_scan_in_progress = False
+        self._sheriff_scan_paths_text = str(Path.home() / "Documents")
+        self._sheriff_max_files = 2000
+        self._sheriff_summary_path = self.vault_path / "sheriff" / "last_scan_summary.json"
+        self._load_sheriff_scan_summary()
         
         # Initialize MCP setup helper (after vault_path is set)
         self.mcp_setup = MCPSetupHelper(vault_path=str(self.vault_path))
@@ -209,6 +221,19 @@ class VaultApp:
     def tr(self, key: str, **kwargs) -> str:
         """Translate key based on active language."""
         return get_text(self.language, key, **kwargs)
+
+    def _get_current_user_id(self) -> str:
+        """Return current user ID if available, otherwise 'unknown'."""
+        if not self.session_data:
+            return "unknown"
+
+        user_info = self.session_data.get("user", {})
+        return (
+            self.session_data.get("user_id")
+            or user_info.get("id")
+            or user_info.get("user_id")
+            or "unknown"
+        )
 
     def set_language(self, language: str, refresh: bool = True) -> None:
         """Set UI language and optionally refresh current settings page."""
@@ -1437,6 +1462,220 @@ class VaultApp:
             ),
         )
 
+    def _collect_sheriff_wizard_steps(self) -> List[Dict[str, Any]]:
+        """Collect progress for 3-step landing wizard (setup -> scan -> protect)."""
+        mcp_status = {
+            "claude_installed": False,
+            "cursor_installed": False,
+            "chatgpt_installed": False,
+            "mcp_configured": False,
+        }
+        try:
+            mcp_status = self.mcp_setup.get_setup_status()
+        except Exception as e:
+            logger.debug(f"Could not read MCP setup status for sheriff wizard: {e}")
+
+        claude_installed = bool(mcp_status.get("claude_installed"))
+        cursor_installed = bool(mcp_status.get("cursor_installed"))
+        chatgpt_installed = bool(mcp_status.get("chatgpt_installed"))
+        mcp_configured = bool(mcp_status.get("mcp_configured"))
+        setup_ready = mcp_configured or not (claude_installed or cursor_installed)
+        if mcp_configured:
+            setup_hint = "MCP broker configured."
+        elif claude_installed or cursor_installed:
+            setup_hint = "Auto-configure MCP broker for installed AI clients."
+        elif chatgpt_installed:
+            setup_hint = "ChatGPT desktop detected, but local MCP is currently unsupported."
+        else:
+            setup_hint = "No local client detected. You can still use Sheriff locally."
+
+        summary = self._sheriff_last_summary or {}
+        total_files = int(summary.get("total_files", 0) or 0)
+        scanned_at = summary.get("scanned_at")
+        scan_ready = total_files > 0
+        if scan_ready and scanned_at:
+            scan_hint = f"Last scan processed {total_files} files ({str(scanned_at)[:19]})."
+        elif scan_ready:
+            scan_hint = f"Last scan processed {total_files} files."
+        else:
+            scan_hint = "Run one-click risk scan to detect critical and sensitive files."
+
+        try:
+            rules_count = len(self.sheriff_core.policy.list_rules())
+        except Exception:
+            rules_count = 0
+        protect_ready = rules_count > 0
+        if protect_ready:
+            protect_hint = f"{rules_count} protection rule(s) active."
+        else:
+            protect_hint = "Enable deny-by-default consent barrier for risky paths."
+
+        return [
+            {
+                "id": "setup",
+                "title": "1. Install + Permissions",
+                "hint": setup_hint,
+                "ready": setup_ready,
+                "action_label": "Auto Configure MCP",
+            },
+            {
+                "id": "scan",
+                "title": "2. One-click Scan",
+                "hint": scan_hint,
+                "ready": scan_ready,
+                "action_label": "Run Risk Scan",
+            },
+            {
+                "id": "protect",
+                "title": "3. Protect Now",
+                "hint": protect_hint,
+                "ready": protect_ready,
+                "action_label": "Enable Protection",
+            },
+        ]
+
+    def _run_sheriff_wizard_action(self, step_id: str) -> None:
+        """Execute action for selected sheriff wizard step."""
+        if step_id == "setup":
+            try:
+                result = self.mcp_setup.auto_configure_all_clients()
+                configured_count = int(result.get("configured_count", 0))
+                if configured_count > 0:
+                    self._show_user_message(
+                        f"MCP ready for {configured_count} app(s). Restart them now.",
+                        level="success",
+                    )
+                else:
+                    self._show_user_message(
+                        "No supported app detected for auto-setup. Use manual setup.",
+                        level="info",
+                    )
+            except Exception as e:
+                logger.error(f"Auto-configure MCP clients failed: {e}")
+                self._show_user_message(f"MCP auto-configure failed: {e}", level="error")
+
+            if self.current_view == "landing":
+                self.show_landing_page()
+            return
+        if step_id == "scan":
+            self._start_sheriff_scan()
+            return
+        if step_id == "protect":
+            self._protect_sheriff_recommended()
+            return
+
+    def _build_sheriff_quickstart_wizard(self) -> ft.Container:
+        """Build landing quick-start wizard for Data Sheriff."""
+        steps = self._collect_sheriff_wizard_steps()
+        next_incomplete = next((step for step in steps if not step["ready"]), None)
+
+        cards: List[ft.Control] = []
+        for step in steps:
+            ready = bool(step["ready"])
+            cards.append(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Row(
+                                [
+                                    ft.Icon(
+                                        ft.Icons.CHECK_CIRCLE_ROUNDED if ready else ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED,
+                                        size=16,
+                                        color=LightTheme.ACCENT_SUCCESS if ready else LightTheme.ACCENT_WARNING,
+                                    ),
+                                    ft.Text(
+                                        step["title"],
+                                        size=13,
+                                        weight=ft.FontWeight.W_600,
+                                        color=LightTheme.TEXT_PRIMARY,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=8,
+                            ),
+                            ft.Text(
+                                step["hint"],
+                                size=12,
+                                color=LightTheme.TEXT_SECONDARY,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    padding=ft.padding.all(12),
+                    border_radius=10,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                    border=ft.border.all(
+                        1,
+                        (LightTheme.ACCENT_SUCCESS + "50") if ready else LightTheme.BORDER_COLOR,
+                    ),
+                    width=300,
+                )
+            )
+
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Row(
+                        [
+                            ft.Icon(ft.Icons.GPP_GOOD_ROUNDED, size=20, color=LightTheme.ACCENT_SUCCESS),
+                            ft.Text(
+                                "Data Sheriff Quick Start",
+                                size=16,
+                                weight=ft.FontWeight.W_700,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                            ft.Container(expand=True),
+                            ft.Text(
+                                "All critical access requires consent/lease" if next_incomplete is None else "3 steps to enable full protection",
+                                size=12,
+                                color=LightTheme.TEXT_MUTED,
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    ft.Container(height=10),
+                    ft.Wrap(cards, spacing=12, run_spacing=12),
+                    ft.Container(height=10),
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                "All Set" if next_incomplete is None else next_incomplete["action_label"],
+                                icon=ft.Icons.CHECK_ROUNDED if next_incomplete is None else ft.Icons.PLAY_ARROW_ROUNDED,
+                                disabled=next_incomplete is None or self._sheriff_scan_in_progress,
+                                on_click=(
+                                    (lambda e, sid=next_incomplete["id"]: self._run_sheriff_wizard_action(sid))
+                                    if next_incomplete
+                                    else None
+                                ),
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.ACCENT_SUCCESS if next_incomplete is None else LightTheme.ACCENT_PRIMARY,
+                                    color="white",
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                ),
+                            ),
+                            ft.OutlinedButton(
+                                "Open Sheriff Panel",
+                                icon=ft.Icons.SHIELD_ROUNDED,
+                                on_click=lambda e: self.show_settings_hub(active_tab="sheriff"),
+                                style=ft.ButtonStyle(
+                                    color=LightTheme.TEXT_PRIMARY,
+                                    side=ft.BorderSide(1, LightTheme.BORDER_COLOR),
+                                    shape=ft.RoundedRectangleBorder(radius=8),
+                                ),
+                            ),
+                        ],
+                        spacing=10,
+                    ),
+                ],
+                spacing=0,
+            ),
+            padding=18,
+            border_radius=12,
+            bgcolor=LightTheme.BG_ELEVATED,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+        )
+
     def _set_inference_mode(self, mode: str):
         """Set inference mode (cloud or local)."""
         if mode not in ["cloud", "local"]:
@@ -2284,10 +2523,10 @@ class VaultApp:
         dialog.open = True
         self.page.update()
     
-    def _configure_claude_mcp(self):
-        """Configure Claude Desktop MCP integration with one click."""
+    def _configure_mcp_target(self, target: str, label: str) -> None:
+        """Configure MCP target (claude/cursor/chatgpt) with feedback."""
         try:
-            if not hasattr(self, 'mcp_setup') or not self.mcp_setup:
+            if not hasattr(self, "mcp_setup") or not self.mcp_setup:
                 self.page.snack_bar = ft.SnackBar(
                     content=ft.Text("❌ MCP setup not available"),
                     bgcolor=LightTheme.ACCENT_ERROR,
@@ -2295,60 +2534,56 @@ class VaultApp:
                 self.page.snack_bar.open = True
                 self.page.update()
                 return
-            
-            # Check if Claude Desktop is installed
-            if not self.mcp_setup.detect_claude_desktop():
-                self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text("⚠️ Claude Desktop not detected. Please install it first from claude.ai/download"),
-                    bgcolor=LightTheme.ACCENT_WARNING,
-                    duration=5000,
-                )
-                self.page.snack_bar.open = True
-                self.page.update()
-                return
-            
-            # Auto-configure
+
             self.page.snack_bar = ft.SnackBar(
-                content=ft.Row([
-                    ft.ProgressRing(width=16, height=16, stroke_width=2, color="white"),
-                    ft.Text("Configuring Claude Desktop...", color="white"),
-                ], spacing=12),
+                content=ft.Row(
+                    [
+                        ft.ProgressRing(width=16, height=16, stroke_width=2, color="white"),
+                        ft.Text(f"Configuring {label}...", color="white"),
+                    ],
+                    spacing=12,
+                ),
                 bgcolor=LightTheme.ACCENT_PRIMARY,
             )
             self.page.snack_bar.open = True
             self.page.update()
-            
-            result = self.mcp_setup.auto_configure()
-            
+
+            result = self.mcp_setup.auto_configure(target=target)
             if result.get("success"):
                 self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text("✅ Claude Desktop configured! Restart Claude to activate."),
+                    content=ft.Text(f"✅ {label} ready. Restart {label}."),
                     bgcolor=LightTheme.ACCENT_SUCCESS,
                     duration=5000,
                 )
-                self.page.snack_bar.open = True
-                self.page.update()
-                
-                # Refresh landing page to show updated status
-                self.show_landing_page()
             else:
                 error = result.get("error", "Unknown error")
                 self.page.snack_bar = ft.SnackBar(
-                    content=ft.Text(f"❌ Configuration failed: {error}"),
-                    bgcolor=LightTheme.ACCENT_ERROR,
-                    duration=5000,
+                    content=ft.Text(f"❌ {label}: {error}"),
+                    bgcolor=LightTheme.ACCENT_ERROR if target != "chatgpt" else LightTheme.ACCENT_WARNING,
+                    duration=6000,
                 )
-                self.page.snack_bar.open = True
-                self.page.update()
-                
+
+            self.page.snack_bar.open = True
+            self.page.update()
+
+            if self.current_view == "landing":
+                self.show_landing_page()
+            elif self.current_view == "agent":
+                self.show_agent_view(active_tab="connections")
+            elif self.current_view == "settings_hub":
+                self.show_settings_hub(active_tab="sheriff")
         except Exception as e:
-            logger.error(f"Error configuring Claude MCP: {e}")
+            logger.error(f"Error configuring {label} MCP: {e}")
             self.page.snack_bar = ft.SnackBar(
                 content=ft.Text(f"❌ Error: {str(e)}"),
                 bgcolor=LightTheme.ACCENT_ERROR,
             )
             self.page.snack_bar.open = True
             self.page.update()
+
+    def _configure_claude_mcp(self):
+        """Configure Claude Desktop MCP integration with one click."""
+        self._configure_mcp_target("claude", "Claude Desktop")
     
     def show_landing_page(self):
         """Show the vault-first landing page - security is the hero, not chat."""
@@ -2530,6 +2765,8 @@ class VaultApp:
             border_radius=12,
             border=ft.border.all(1, LightTheme.ACCENT_SUCCESS + "30"),
         )
+
+        sheriff_wizard = self._build_sheriff_quickstart_wizard()
 
         # ===== RAG STATUS PANEL =====
         rag_status = self._get_rag_status()
@@ -2718,6 +2955,12 @@ class VaultApp:
                     # Encryption status banner
                     ft.Container(
                         content=encryption_banner,
+                        padding=ft.padding.symmetric(horizontal=64),
+                    ),
+                    ft.Container(height=16),
+                    # 3-step Data Sheriff wizard
+                    ft.Container(
+                        content=sheriff_wizard,
                         padding=ft.padding.symmetric(horizontal=64),
                     ),
                     ft.Container(height=16),
@@ -3030,6 +3273,17 @@ class VaultApp:
                                     border_radius=6,
                                     on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
                                     on_click=lambda e: self.show_settings(),
+                                    ink=True,
+                                ),
+                                ft.Container(
+                                    content=ft.Row([
+                                        ft.Icon(ft.Icons.GPP_GOOD_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
+                                        ft.Text("Data Sheriff", size=11, color=LightTheme.TEXT_SECONDARY),
+                                    ], spacing=8),
+                                    padding=ft.padding.symmetric(horizontal=12, vertical=6),
+                                    border_radius=6,
+                                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                                    on_click=lambda e: self.show_settings_hub(active_tab="sheriff"),
                                     ink=True,
                                 ),
                             ],
@@ -3490,15 +3744,44 @@ class VaultApp:
             logger.debug(f"Could not start landing status polling: {e}")
     
     def _get_rag_stats(self) -> dict:
-        """Get RAG index statistics for dashboard."""
+        """Get lightweight RAG index statistics for dashboard without loading models."""
+        db_path = self.vault_path / "rag.db"
+        if not db_path.exists():
+            return {"document_count": 0, "chunk_count": 0, "embedding_dimension": 0}
+
         try:
-            from advanced_vault.training import RAGIndex
-            rag = RAGIndex(
-                master_key=self.master_key,
-                db_path=str(self.vault_path / "rag.db")
-            )
-            return rag.stats()
-        except Exception:
+            with sqlite3.connect(db_path) as conn:
+                doc_count = conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0]
+                chunk_count = conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0]
+                total_encrypted_bytes = conn.execute(
+                    "SELECT COALESCE(SUM(LENGTH(content)), 0) FROM documents"
+                ).fetchone()[0]
+
+            # Prefer cached metadata from HNSW index, if present.
+            embedding_dimension = 0
+            embedding_model = "unknown"
+            meta_path = db_path.with_suffix(".meta.json")
+            if meta_path.exists():
+                try:
+                    import json
+                    with open(meta_path, "r") as f:
+                        meta = json.load(f)
+                    embedding_dimension = int(meta.get("dimension", 0) or 0)
+                except Exception as e:
+                    logger.debug(f"Could not read HNSW metadata: {e}")
+
+            return {
+                "document_count": int(doc_count),
+                "chunk_count": int(chunk_count),
+                "total_encrypted_bytes": int(total_encrypted_bytes),
+                "embedding_dimension": embedding_dimension,
+                "embedding_model": embedding_model,
+                "db_path": str(db_path),
+                "encrypted": True,
+                "hnsw_enabled": db_path.with_suffix(".hnsw").exists(),
+            }
+        except Exception as e:
+            logger.debug(f"Failed to read lightweight RAG stats: {e}")
             return {"document_count": 0, "chunk_count": 0, "embedding_dimension": 0}
 
     def _get_rag_status(self) -> dict:
@@ -6308,7 +6591,7 @@ class VaultApp:
         # -1: Vault (landing page with hero drop zone)
         #  0: My Data (Secrets + Knowledge + Library combined with tabs)
         #  1: Agent (Chat + Permissions + Activity combined with tabs)
-        #  2: Settings (Training + Stats + Policies + Setup combined with tabs)
+        #  2: Settings (Setup + Data Sheriff + Training + Stats + Policies tabs)
         if index == -1:  # Vault
             self.show_landing_page()
         elif index == 0:  # My Data
@@ -6330,6 +6613,8 @@ class VaultApp:
             self.show_my_data_view(active_tab="library")
         elif index == 8:  # Permissions
             self.show_agent_view(active_tab="permissions")
+        elif index == 9:  # Data Sheriff
+            self.show_settings_hub(active_tab="sheriff")
 
         self.page.update()
 
@@ -6685,32 +6970,66 @@ class VaultApp:
 
     def _build_connections_content(self) -> list:
         """Build MCP connections panel for one-click setup."""
-        mcp_configured = False
+        mcp_status = {}
         try:
             if hasattr(self, 'mcp_setup') and self.mcp_setup:
                 mcp_status = self.mcp_setup.get_setup_status()
-                mcp_configured = mcp_status.get("mcp_configured", False)
         except Exception:
-            pass
+            mcp_status = {}
 
-        def create_client_card(name, icon, color, configure_func, is_connected=False):
+        claude_configured = bool(mcp_status.get("claude_mcp_configured", mcp_status.get("mcp_configured", False)))
+        cursor_configured = bool(mcp_status.get("cursor_mcp_configured", False))
+        chatgpt_installed = bool(mcp_status.get("chatgpt_installed", False))
+        chatgpt_supported = bool(mcp_status.get("chatgpt_local_mcp_supported", False))
+        chatgpt_support_message = mcp_status.get(
+            "chatgpt_support_message",
+            "Local MCP setup for ChatGPT is not supported.",
+        )
+
+        def create_client_card(
+            name,
+            icon,
+            color,
+            configure_func,
+            is_connected=False,
+            is_available=True,
+            status_override: Optional[str] = None,
+            tooltip: Optional[str] = None,
+        ):
+            if status_override is not None:
+                status_text = status_override
+                status_color = LightTheme.TEXT_MUTED
+                border_color = LightTheme.BORDER_COLOR
+            elif is_connected:
+                status_text = "Connected"
+                status_color = LightTheme.ACCENT_SUCCESS
+                border_color = LightTheme.ACCENT_SUCCESS
+            elif is_available:
+                status_text = "Configure"
+                status_color = LightTheme.ACCENT_PRIMARY
+                border_color = LightTheme.BORDER_COLOR
+            else:
+                status_text = "Not detected"
+                status_color = LightTheme.TEXT_MUTED
+                border_color = LightTheme.BORDER_COLOR
+
             return ft.Container(
                 content=ft.Column([
                     ft.Icon(icon, size=32, color=color if not is_connected else LightTheme.ACCENT_SUCCESS),
                     ft.Text(name, size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
                     ft.Container(
-                        content=ft.Text("Connected" if is_connected else "Configure", size=11,
-                                       color=LightTheme.ACCENT_SUCCESS if is_connected else LightTheme.ACCENT_PRIMARY),
+                        content=ft.Text(status_text, size=11, color=status_color),
                         padding=ft.padding.symmetric(horizontal=12, vertical=6),
-                        bgcolor=(LightTheme.ACCENT_SUCCESS if is_connected else LightTheme.ACCENT_PRIMARY) + "15",
+                        bgcolor=(status_color if status_color != LightTheme.TEXT_MUTED else LightTheme.BORDER_COLOR) + "15",
                         border_radius=8,
                     ),
                 ], horizontal_alignment=ft.CrossAxisAlignment.CENTER, spacing=8),
                 padding=24,
                 bgcolor=LightTheme.BG_ELEVATED,
                 border_radius=12,
-                border=ft.border.all(1, LightTheme.ACCENT_SUCCESS if is_connected else LightTheme.BORDER_COLOR),
-                on_click=configure_func if not is_connected else None,
+                border=ft.border.all(1, border_color),
+                on_click=configure_func if (not is_connected and is_available and status_override is None) else None,
+                tooltip=tooltip,
                 width=150,
             )
 
@@ -6719,9 +7038,33 @@ class VaultApp:
             ft.Text("One-click setup for popular AI clients via MCP", size=13, color=LightTheme.TEXT_SECONDARY),
             ft.Container(height=16),
             ft.Row([
-                create_client_card("Claude", ft.Icons.SMART_TOY_ROUNDED, "#D97706", lambda e: self._configure_claude_mcp(), mcp_configured),
+                create_client_card(
+                    "Claude",
+                    ft.Icons.SMART_TOY_ROUNDED,
+                    "#D97706",
+                    lambda e: self._configure_claude_mcp(),
+                    is_connected=claude_configured,
+                    is_available=bool(mcp_status.get("claude_installed", False)),
+                ),
+                create_client_card(
+                    "Cursor",
+                    ft.Icons.EDIT_ROUNDED,
+                    "#000000",
+                    lambda e: self._configure_cursor_mcp(),
+                    is_connected=cursor_configured,
+                    is_available=bool(mcp_status.get("cursor_installed", False)),
+                ),
+                create_client_card(
+                    "ChatGPT",
+                    ft.Icons.CHAT_ROUNDED,
+                    "#10A37F",
+                    lambda e: self._configure_chatgpt_mcp(),
+                    is_connected=False,
+                    is_available=chatgpt_installed,
+                    status_override=("Unsupported" if chatgpt_installed and not chatgpt_supported else ("Not detected" if not chatgpt_installed else None)),
+                    tooltip=chatgpt_support_message if chatgpt_installed else "ChatGPT desktop not detected",
+                ),
                 create_client_card("VS Code", ft.Icons.CODE_ROUNDED, "#007ACC", lambda e: self._configure_vscode_mcp()),
-                create_client_card("Cursor", ft.Icons.EDIT_ROUNDED, "#000000", lambda e: self._configure_cursor_mcp()),
                 create_client_card("Other", ft.Icons.MORE_HORIZ_ROUNDED, LightTheme.TEXT_MUTED, lambda e: self._copy_mcp_json()),
             ], spacing=16, wrap=True),
             ft.Container(height=24),
@@ -6841,14 +7184,14 @@ class VaultApp:
         ] + items
 
     def show_settings_hub(self, active_tab: str = "setup"):
-        """Combined view for Training + Stats + Policies + Setup with tabs."""
+        """Combined view for Setup + Sheriff + Training + Stats + Policies."""
         self.current_view = "settings_hub"
         self.page.clean()
 
-        tab_index = {"setup": 0, "training": 1, "stats": 2, "policies": 3}.get(active_tab, 0)
+        tab_index = {"setup": 0, "sheriff": 1, "training": 2, "stats": 3, "policies": 4}.get(active_tab, 0)
 
         def on_tab_change(e):
-            tab_names = ["setup", "training", "stats", "policies"]
+            tab_names = ["setup", "sheriff", "training", "stats", "policies"]
             self.show_settings_hub(active_tab=tab_names[e.control.selected_index])
 
         tabs = ft.Tabs(
@@ -6856,6 +7199,7 @@ class VaultApp:
             animation_duration=200,
             tabs=[
                 ft.Tab(text="Setup", icon=ft.Icons.SETTINGS_ROUNDED),
+                ft.Tab(text="Data Sheriff", icon=ft.Icons.GPP_GOOD_ROUNDED),
                 ft.Tab(text="Training", icon=ft.Icons.PSYCHOLOGY_ROUNDED),
                 ft.Tab(text="Statistics", icon=ft.Icons.BAR_CHART_ROUNDED),
                 ft.Tab(text="Policies", icon=ft.Icons.SECURITY_ROUNDED),
@@ -6867,6 +7211,8 @@ class VaultApp:
         content_items = []
         if active_tab == "setup":
             content_items = self._build_setup_content()
+        elif active_tab == "sheriff":
+            content_items = self._build_sheriff_content()
         elif active_tab == "training":
             content_items = self._build_training_content()
         elif active_tab == "stats":
@@ -6910,12 +7256,405 @@ class VaultApp:
             ft.Text("Manage vault settings and components", size=13, color=LightTheme.TEXT_SECONDARY),
             ft.Container(height=16),
             ft.ElevatedButton(
+                "Open Data Sheriff",
+                icon=ft.Icons.GPP_GOOD_ROUNDED,
+                on_click=lambda e: self.show_settings_hub(active_tab="sheriff"),
+                style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_SUCCESS, color="white"),
+            ),
+            ft.ElevatedButton(
                 "Open Full Settings",
                 icon=ft.Icons.SETTINGS_ROUNDED,
                 on_click=lambda e: self.show_settings(),
                 style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
             ),
         ]
+
+    def _load_sheriff_scan_summary(self) -> None:
+        """Load cached sheriff scan summary from local metadata."""
+        try:
+            if not self._sheriff_summary_path.exists():
+                self._sheriff_last_summary = None
+                return
+            with open(self._sheriff_summary_path, "r", encoding="utf-8") as f:
+                self._sheriff_last_summary = json.load(f)
+        except Exception as e:
+            logger.debug(f"Could not load sheriff summary cache: {e}")
+            self._sheriff_last_summary = None
+
+    def _save_sheriff_scan_summary(self) -> None:
+        """Persist last sheriff scan summary for landing wizard continuity."""
+        try:
+            if self._sheriff_last_summary is None:
+                return
+            self._sheriff_summary_path.parent.mkdir(parents=True, exist_ok=True)
+            with open(self._sheriff_summary_path, "w", encoding="utf-8") as f:
+                json.dump(self._sheriff_last_summary, f, indent=2)
+        except Exception as e:
+            logger.debug(f"Could not persist sheriff summary cache: {e}")
+
+    def _parse_sheriff_scan_paths(self) -> List[str]:
+        """Parse comma/newline separated scan roots from UI field."""
+        raw = (self._sheriff_scan_paths_text or "").strip()
+        if not raw:
+            return [str(Path.home() / "Documents")]
+
+        chunks = raw.replace("\n", ",").split(",")
+        parsed = [str(Path(chunk.strip()).expanduser()) for chunk in chunks if chunk.strip()]
+        return parsed or [str(Path.home() / "Documents")]
+
+    def _start_sheriff_scan(self) -> None:
+        """Run risk scan in background and refresh Sheriff panel on completion."""
+        if self._sheriff_scan_in_progress:
+            return
+
+        paths = self._parse_sheriff_scan_paths()
+        max_files = max(1, int(self._sheriff_max_files or 2000))
+        self._sheriff_scan_in_progress = True
+        self._sheriff_last_error = None
+        if self.current_view == "settings_hub":
+            self.show_settings_hub(active_tab="sheriff")
+
+        def worker():
+            try:
+                summary = self.sheriff_core.scan_risk(paths=paths, max_files=max_files)
+                self._sheriff_last_summary = summary.model_dump(mode="json")
+                self._save_sheriff_scan_summary()
+                self._sheriff_last_error = None
+                self._show_user_message(
+                    f"Sheriff scan complete: {summary.critical_count} critical, {summary.sensitive_count} sensitive.",
+                    level="success",
+                )
+            except Exception as ex:
+                logger.error(f"Sheriff scan failed: {ex}")
+                self._sheriff_last_error = str(ex)
+                self._show_user_message(f"Sheriff scan failed: {ex}", level="error")
+            finally:
+                self._sheriff_scan_in_progress = False
+                if self.current_view == "settings_hub":
+                    try:
+                        self.show_settings_hub(active_tab="sheriff")
+                    except Exception:
+                        pass
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _protect_sheriff_recommended(self) -> None:
+        """Protect top-risk findings with consent barrier rules."""
+        summary = self._sheriff_last_summary or {}
+        findings = summary.get("findings", [])
+        candidate_paths: List[str] = []
+
+        for finding in findings:
+            label = finding.get("label")
+            if label in {"CRITICAL", "SENSITIVE"} and finding.get("path"):
+                candidate_paths.append(str(finding["path"]))
+            if len(candidate_paths) >= 25:
+                break
+
+        if not candidate_paths:
+            candidate_paths = self._parse_sheriff_scan_paths()
+
+        unique_paths: List[str] = []
+        seen = set()
+        for path in candidate_paths:
+            if path not in seen:
+                unique_paths.append(path)
+                seen.add(path)
+
+        if not unique_paths:
+            self._show_user_message("No paths selected for protection.", level="info")
+            return
+
+        try:
+            rules = self.sheriff_core.protect_now(paths=unique_paths)
+            self._show_user_message(f"Protected {len(rules)} path(s) with consent barrier.", level="success")
+        except Exception as ex:
+            logger.error(f"Failed to enable sheriff protection: {ex}")
+            self._show_user_message(f"Protection failed: {ex}", level="error")
+
+        if self.current_view == "settings_hub":
+            self.show_settings_hub(active_tab="sheriff")
+
+    def _revoke_sheriff_lease(self, lease_id: str) -> None:
+        """Revoke one active lease and refresh panel."""
+        ok = self.sheriff_core.revoke_lease(lease_id=lease_id, actor="user")
+        if ok:
+            self._show_user_message(f"Lease revoked: {lease_id[:8]}...", level="success")
+        else:
+            self._show_user_message("Lease not found or already revoked.", level="info")
+        if self.current_view == "settings_hub":
+            self.show_settings_hub(active_tab="sheriff")
+
+    def _build_sheriff_content(self) -> list:
+        """Build Data Sheriff control panel."""
+        enforcement = self.sheriff_core.enforcement_status()
+        hardening_alerts = self.sheriff_core.hardening_report()
+        active_leases = list(self.sheriff_core.leases.list_active().values())
+        recent_audit = self.sheriff_core.audit_events(limit=8)
+        rules_count = len(self.sheriff_core.policy.list_rules())
+        summary = self._sheriff_last_summary or {}
+
+        critical_count = int(summary.get("critical_count", 0))
+        sensitive_count = int(summary.get("sensitive_count", 0))
+
+        def update_paths(e):
+            self._sheriff_scan_paths_text = e.control.value
+
+        def update_max_files(e):
+            try:
+                self._sheriff_max_files = max(1, int((e.control.value or "2000").strip()))
+            except Exception:
+                pass
+
+        status_color = LightTheme.ACCENT_SUCCESS if enforcement.get("enabled") else LightTheme.ACCENT_WARNING
+        findings_controls: List[ft.Control] = []
+        for finding in summary.get("findings", [])[:12]:
+            label = finding.get("label", "NORMAL")
+            if label == "CRITICAL":
+                chip_color = LightTheme.ACCENT_ERROR
+            elif label == "SENSITIVE":
+                chip_color = LightTheme.ACCENT_WARNING
+            else:
+                chip_color = LightTheme.TEXT_MUTED
+
+            findings_controls.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Container(
+                                content=ft.Text(label, size=10, color="white"),
+                                bgcolor=chip_color,
+                                border_radius=12,
+                                padding=ft.padding.symmetric(horizontal=8, vertical=4),
+                            ),
+                            ft.Text(str(finding.get("path", "")), size=12, color=LightTheme.TEXT_PRIMARY, expand=True, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Text(finding.get("recommendation", ""), size=11, color=LightTheme.TEXT_SECONDARY),
+                        ],
+                        spacing=10,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    border_radius=8,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                )
+            )
+
+        lease_controls: List[ft.Control] = []
+        for lease in active_leases[:8]:
+            lease_controls.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Icon(ft.Icons.TIMER_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
+                            ft.Text(str(lease.subject_app), size=12, color=LightTheme.TEXT_PRIMARY, width=120),
+                            ft.Text(str(lease.resource_scope), size=11, color=LightTheme.TEXT_SECONDARY, expand=True, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Text(str(lease.expires_at), size=11, color=LightTheme.TEXT_MUTED, width=160, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.IconButton(
+                                icon=ft.Icons.CANCEL_ROUNDED,
+                                icon_color=LightTheme.ACCENT_ERROR,
+                                tooltip="Revoke lease",
+                                on_click=lambda e, lease_id=lease.lease_id: self._revoke_sheriff_lease(lease_id),
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    border_radius=8,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                )
+            )
+
+        audit_controls: List[ft.Control] = []
+        for event in recent_audit:
+            decision = str(event.get("decision", ""))
+            if decision == "DENY":
+                icon = ft.Icons.BLOCK_ROUNDED
+                icon_color = LightTheme.ACCENT_ERROR
+            elif decision in {"ALLOW", "ALLOW_WITH_LEASE"}:
+                icon = ft.Icons.CHECK_CIRCLE_ROUNDED
+                icon_color = LightTheme.ACCENT_SUCCESS
+            else:
+                icon = ft.Icons.HELP_OUTLINE_ROUNDED
+                icon_color = LightTheme.ACCENT_WARNING
+
+            audit_controls.append(
+                ft.Row(
+                    [
+                        ft.Icon(icon, size=15, color=icon_color),
+                        ft.Text(str(event.get("subject", "unknown")), size=12, color=LightTheme.TEXT_PRIMARY, width=120, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(str(event.get("action", "")), size=12, color=LightTheme.TEXT_SECONDARY, width=110, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(str(event.get("resource", "")), size=11, color=LightTheme.TEXT_MUTED, expand=True, overflow=ft.TextOverflow.ELLIPSIS),
+                    ],
+                    spacing=8,
+                )
+            )
+
+        hardening_controls: List[ft.Control] = []
+        for alert in hardening_alerts[:8]:
+            severity = str(alert.get("severity", "info"))
+            if severity in {"critical", "high"}:
+                color = LightTheme.ACCENT_ERROR
+                icon = ft.Icons.WARNING_ROUNDED
+            elif severity == "warning":
+                color = LightTheme.ACCENT_WARNING
+                icon = ft.Icons.INFO_ROUNDED
+            else:
+                color = LightTheme.TEXT_MUTED
+                icon = ft.Icons.CHECK_CIRCLE_ROUNDED
+
+            message = str(alert.get("message", ""))
+            path = str(alert.get("path", ""))
+            hardening_controls.append(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Row(
+                                [
+                                    ft.Icon(icon, size=15, color=color),
+                                    ft.Text(message, size=12, color=LightTheme.TEXT_PRIMARY, expand=True),
+                                ],
+                                spacing=8,
+                            ),
+                            ft.Text(path, size=11, color=LightTheme.TEXT_MUTED) if path else ft.Container(),
+                        ],
+                        spacing=4,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    border_radius=8,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                )
+            )
+
+        content: List[ft.Control] = [
+            ft.Text("Data Sheriff", size=18, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ft.Text(
+                "Deny-by-default controls for sensitive files, with lease-based consent and audit trail.",
+                size=13,
+                color=LightTheme.TEXT_SECONDARY,
+            ),
+            ft.Container(height=12),
+            ft.Row(
+                [
+                    self._stat_card("Critical", critical_count, ft.Icons.PRIORITY_HIGH_ROUNDED, LightTheme.ACCENT_ERROR),
+                    self._stat_card("Sensitive", sensitive_count, ft.Icons.REPORT_GMAILERRORRED_ROUNDED, LightTheme.ACCENT_WARNING),
+                    self._stat_card("Policy Rules", rules_count, ft.Icons.POLICY_ROUNDED, LightTheme.ACCENT_PRIMARY),
+                    self._stat_card("Active Leases", len(active_leases), ft.Icons.TIMER_ROUNDED, LightTheme.ACCENT_SUCCESS),
+                ],
+                spacing=16,
+            ),
+            ft.Container(height=16),
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Text("One-Click Scan", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                        ft.TextField(
+                            label="Scan roots (comma or newline separated)",
+                            value=self._sheriff_scan_paths_text,
+                            on_change=update_paths,
+                            border_radius=8,
+                            bgcolor=LightTheme.BG_ELEVATED,
+                            border_color=LightTheme.BORDER_COLOR,
+                        ),
+                        ft.Row(
+                            [
+                                ft.TextField(
+                                    label="Max files",
+                                    width=140,
+                                    value=str(self._sheriff_max_files),
+                                    on_change=update_max_files,
+                                    border_radius=8,
+                                    bgcolor=LightTheme.BG_ELEVATED,
+                                    border_color=LightTheme.BORDER_COLOR,
+                                ),
+                                ft.ElevatedButton(
+                                    "Run Scan",
+                                    icon=ft.Icons.PLAY_CIRCLE_ROUNDED,
+                                    on_click=lambda e: self._start_sheriff_scan(),
+                                    disabled=self._sheriff_scan_in_progress,
+                                    style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                                ),
+                                ft.ElevatedButton(
+                                    "Protect Now",
+                                    icon=ft.Icons.SHIELD_ROUNDED,
+                                    on_click=lambda e: self._protect_sheriff_recommended(),
+                                    style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_SUCCESS, color="white"),
+                                ),
+                                ft.ElevatedButton(
+                                    "Refresh",
+                                    icon=ft.Icons.REFRESH_ROUNDED,
+                                    on_click=lambda e: self.show_settings_hub(active_tab="sheriff"),
+                                    style=ft.ButtonStyle(bgcolor=LightTheme.BG_ELEVATED, color=LightTheme.TEXT_PRIMARY),
+                                ),
+                            ],
+                            spacing=10,
+                        ),
+                        ft.Row(
+                            [
+                                ft.Icon(ft.Icons.INFO_ROUNDED, size=16, color=status_color),
+                                ft.Text(
+                                    f"Enforcement backend: {enforcement.get('backend')} ({enforcement.get('mode')})",
+                                    size=12,
+                                    color=LightTheme.TEXT_SECONDARY,
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                        ft.Text(str(enforcement.get("message", "")), size=11, color=LightTheme.TEXT_MUTED),
+                        ft.ProgressRing(width=16, height=16, stroke_width=2, color=LightTheme.ACCENT_PRIMARY) if self._sheriff_scan_in_progress else ft.Container(),
+                        ft.Text(f"Last scan error: {self._sheriff_last_error}", size=12, color=LightTheme.ACCENT_ERROR) if self._sheriff_last_error else ft.Container(),
+                    ],
+                    spacing=10,
+                ),
+                padding=16,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                border_radius=10,
+                bgcolor=LightTheme.BG_ELEVATED,
+            ),
+            ft.Container(height=12),
+            ft.Text("Top Risk Findings", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ft.Text("Files are kept in place; only access is gated by policy and leases.", size=12, color=LightTheme.TEXT_SECONDARY),
+        ]
+
+        if findings_controls:
+            content.extend(findings_controls)
+        else:
+            content.append(
+                ft.Container(
+                    content=ft.Text("No scan results yet. Run Scan to generate recommendations.", size=12, color=LightTheme.TEXT_MUTED),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=12),
+                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    border_radius=8,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                )
+            )
+
+        content.extend(
+            [
+                ft.Container(height=12),
+                ft.Text("Hardening Alerts", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ]
+        )
+        content.extend(hardening_controls or [ft.Text("No hardening alerts.", size=12, color=LightTheme.TEXT_MUTED)])
+
+        content.extend(
+            [
+                ft.Container(height=12),
+                ft.Text("Active Leases", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ]
+        )
+        content.extend(lease_controls or [ft.Text("No active leases.", size=12, color=LightTheme.TEXT_MUTED)])
+
+        content.extend(
+            [
+                ft.Container(height=12),
+                ft.Text("Recent Sheriff Audit", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ]
+        )
+        content.extend(audit_controls or [ft.Text("No audit events yet.", size=12, color=LightTheme.TEXT_MUTED)])
+
+        return content
 
     def _build_training_content(self) -> list:
         """Build training management content."""
@@ -6998,24 +7737,20 @@ class VaultApp:
 
     def _configure_cursor_mcp(self):
         """Configure MCP for Cursor."""
-        self.page.snack_bar = ft.SnackBar(
-            content=ft.Text("Cursor MCP config copied to clipboard. Paste in ~/.cursor/mcp.json"),
-            bgcolor=LightTheme.ACCENT_SUCCESS,
-        )
-        self.page.snack_bar.open = True
-        self._copy_mcp_json()
+        self._configure_mcp_target("cursor", "Cursor")
+
+    def _configure_chatgpt_mcp(self):
+        """Attempt ChatGPT MCP setup (currently unsupported for local MCP)."""
+        self._configure_mcp_target("chatgpt", "ChatGPT")
 
     def _copy_mcp_json(self):
         """Copy MCP config JSON to clipboard."""
-        import json
-        config = {
+        config = self.mcp_setup.generate_mcp_config() if self.mcp_setup else {
             "mcpServers": {
-                "enclave-vault": {
+                "sheriff": {
                     "command": "python",
-                    "args": ["-m", "advanced_vault.mcp_server.server"],
-                    "env": {
-                        "VAULT_PATH": str(self.vault_path)
-                    }
+                    "args": ["-m", "advanced_vault.mcp_server"],
+                    "env": {"VAULT_PATH": str(self.vault_path)},
                 }
             }
         }
@@ -8797,6 +9532,7 @@ class VaultApp:
                 
                 if self.qa_generator and len(result['text_chunks']) > 0:
                     try:
+                        user_id = self._get_current_user_id()
                         # Try synthetic generation via RunPod first (better quality)
                         if hasattr(self.qa_generator, 'generate_synthetic_qa_via_runpod') and os.path.exists(str(safe_pdf_path)):
                             logger.info("Using cloud Q&A generation for better quality...")
@@ -8811,12 +9547,23 @@ class VaultApp:
                             # Fallback to local generation
                             logger.info("Using local Q&A generation...")
                             self._update_processing_status(filename, 1, "Generating Q&A (local)...", 0.35)
-                            qa_pairs = self.qa_generator.generate_qa_from_chunks(result['text_chunks'])
+                            qa_pairs = self.qa_generator.generate_from_chunks(
+                                text_chunks=result['text_chunks'],
+                                user_id=user_id
+                            )
                             
                         logger.info(f"Generated {len(qa_pairs)} Q&A pairs")
                     except Exception as qa_err:
-                        logger.warning(f"Q&A generation failed: {qa_err}, continuing without Q&A")
-                        # Continue without Q&A - we can still store the document
+                        logger.warning(f"Cloud Q&A generation failed: {qa_err}, trying local fallback")
+                        try:
+                            qa_pairs = self.qa_generator.generate_from_chunks(
+                                text_chunks=result['text_chunks'],
+                                user_id=self._get_current_user_id()
+                            )
+                            logger.info(f"Generated {len(qa_pairs)} Q&A pairs with local fallback")
+                        except Exception as local_qa_err:
+                            logger.warning(f"Local fallback Q&A generation failed: {local_qa_err}, continuing without Q&A")
+                            # Continue without Q&A - we can still store the document
                 
                 # === STEP 2: Encrypting data ===
                 self._update_processing_status(filename, 2, "Encrypting data...", 0.6)
@@ -8870,29 +9617,22 @@ class VaultApp:
                         )
                         
                         if dataset_path:
-                            # Upload and submit training
-                            dataset_url = self.training_manager._upload_dataset_to_supabase_storage(
-                                dataset_path=dataset_path
+                            training_result = self.training_manager.submit_training_job(
+                                dataset_path=dataset_path,
+                                encryption_key_hex=encryption_key_hex,
+                                model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
                             )
-                            
-                            if dataset_url:
-                                # Submit training job
-                                training_result = self.training_manager.submit_training_job(
-                                    dataset_url=dataset_url,
-                                    encryption_key_hex=encryption_key_hex,
-                                    filename=filename
+
+                            if training_result:
+                                # Update vault entry with training info
+                                self.vault.kv_store.update_tags(
+                                    filename,
+                                    ["pdf", "document", "knowledge",
+                                     f"training_job:{training_result['adapter_id']}",
+                                     f"training_key:{encryption_key_hex}",
+                                     "training_status:pending"]
                                 )
-                                
-                                if training_result:
-                                    # Update vault entry with training info
-                                    self.vault.kv_store.update_tags(
-                                        filename,
-                                        ["pdf", "document", "knowledge", 
-                                         f"training_job:{training_result['adapter_id']}",
-                                         f"encryption_key:{encryption_key_hex}",
-                                         "training_status:pending"]
-                                    )
-                                    logger.info(f"Training job submitted: {training_result['adapter_id']}")
+                                logger.info(f"Training job submitted: {training_result['adapter_id']}")
                     except Exception as train_err:
                         logger.warning(f"Training submission failed: {train_err}")
                         # Continue - document is still saved locally
@@ -11359,11 +12099,17 @@ class VaultApp:
         ])
         
         # MCP Status
-        if mcp_status["claude_installed"]:
-            status_color = LightTheme.ACCENT_SUCCESS if mcp_status["mcp_configured"] else LightTheme.ACCENT_WARNING
-            status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if mcp_status["mcp_configured"] else ft.Icons.WARNING_ROUNDED
-            status_text = self.tr("settings.mcp.status.configured") if mcp_status["mcp_configured"] else self.tr("settings.mcp.status.not_configured")
-            
+        claude_installed = bool(mcp_status.get("claude_installed"))
+        claude_configured = bool(mcp_status.get("claude_mcp_configured", mcp_status.get("mcp_configured")))
+        cursor_installed = bool(mcp_status.get("cursor_installed"))
+        cursor_configured = bool(mcp_status.get("cursor_mcp_configured"))
+        chatgpt_installed = bool(mcp_status.get("chatgpt_installed"))
+        chatgpt_supported = bool(mcp_status.get("chatgpt_local_mcp_supported"))
+
+        if claude_installed:
+            status_color = LightTheme.ACCENT_SUCCESS if claude_configured else LightTheme.ACCENT_WARNING
+            status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if claude_configured else ft.Icons.WARNING_ROUNDED
+            status_text = self.tr("settings.mcp.status.configured") if claude_configured else self.tr("settings.mcp.status.not_configured")
             settings_items.append(
                 ft.Row(
                     [
@@ -11392,6 +12138,40 @@ class VaultApp:
                     spacing=8,
                 )
             )
+
+        cursor_color = LightTheme.ACCENT_SUCCESS if cursor_configured else (LightTheme.ACCENT_WARNING if cursor_installed else LightTheme.TEXT_MUTED)
+        cursor_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if cursor_configured else (ft.Icons.WARNING_ROUNDED if cursor_installed else ft.Icons.INFO_ROUNDED)
+        cursor_text = (
+            "Cursor: configured"
+            if cursor_configured
+            else ("Cursor: detected, not configured" if cursor_installed else "Cursor: not detected")
+        )
+        settings_items.append(
+            ft.Row(
+                [
+                    ft.Icon(cursor_icon, color=cursor_color, size=20),
+                    ft.Text(cursor_text, size=14, color=cursor_color),
+                ],
+                spacing=8,
+            )
+        )
+
+        chatgpt_color = LightTheme.ACCENT_WARNING if chatgpt_installed else LightTheme.TEXT_MUTED
+        chatgpt_icon = ft.Icons.INFO_ROUNDED if chatgpt_installed else ft.Icons.INFO_OUTLINE_ROUNDED
+        chatgpt_text = (
+            "ChatGPT desktop detected; local MCP setup currently unsupported."
+            if chatgpt_installed and not chatgpt_supported
+            else ("ChatGPT: local MCP supported" if chatgpt_supported else "ChatGPT: not detected")
+        )
+        settings_items.append(
+            ft.Row(
+                [
+                    ft.Icon(chatgpt_icon, color=chatgpt_color, size=20),
+                    ft.Text(chatgpt_text, size=14, color=chatgpt_color),
+                ],
+                spacing=8,
+            )
+        )
         
         # MCP Test Status
         if mcp_status["test_success"]:
@@ -11452,22 +12232,22 @@ class VaultApp:
             )
         )
         
-        # Auto-Configure Button (if Claude Desktop detected)
-        if mcp_status["claude_installed"]:
+        # Auto-Configure Button (if at least one supported client is detected)
+        if mcp_status.get("claude_installed") or mcp_status.get("cursor_installed"):
             def auto_configure(e):
                 try:
-                    config = self.mcp_setup.generate_mcp_config()
-                    merged = self.mcp_setup.merge_config(config)
-                    
-                    if self.mcp_setup.write_config(merged):
+                    result = self.mcp_setup.auto_configure_all_clients()
+                    configured_count = int(result.get("configured_count", 0))
+
+                    if configured_count > 0:
                         self.page.snack_bar = ft.SnackBar(
-                            content=ft.Text(self.tr("settings.mcp.auto_configure.success")),
+                            content=ft.Text(f"Configured MCP for {configured_count} client(s). Restart apps to apply."),
                             bgcolor=LightTheme.ACCENT_SUCCESS,
                         )
                     else:
                         self.page.snack_bar = ft.SnackBar(
-                            content=ft.Text(self.tr("settings.mcp.auto_configure.failed")),
-                            bgcolor=LightTheme.ACCENT_ERROR,
+                            content=ft.Text("No supported client detected for auto-config."),
+                            bgcolor=LightTheme.ACCENT_WARNING,
                         )
                     
                     self.page.snack_bar.open = True
@@ -11710,82 +12490,173 @@ class VaultApp:
             raise ValueError("No text extracted from PDF")
         
         progress_callback(15.0, "Generating Q&A pairs...")
-        
-        # Check if we should use synthetic Q&A (cloud) or local
+
+        if not self.qa_generator:
+            raise ValueError("QA generator not available")
+
+        user_id = self._get_current_user_id()
+        local_training_mode = self._use_local_training_mode()
+        qa_pairs: List[Dict[str, str]] = []
+
+        # Try cloud synthetic generation first when endpoint credentials are present.
         runpod_api_key = os.getenv("RUNPOD_API_KEY")
         qa_api_key = os.getenv("RUNPOD_QA_API_KEY")
         qa_endpoint_id = os.getenv("RUNPOD_QA_ENDPOINT_ID")
-        
         api_key = qa_api_key or runpod_api_key
-        
-        if api_key and qa_endpoint_id and self.qa_generator:
-            # Use cloud endpoint
-            progress_callback(20.0, "Generating Q&A (cloud)...")
-            qa_pairs, encryption_key_hex = self.qa_generator.generate_synthetic_qa_via_runpod(
-                pdf_path=file_path,
-                target_samples=100,
-                encryption_key_hex=None
-            )
-        else:
-            # Use local generation
+
+        if (not local_training_mode) and api_key and qa_endpoint_id:
+            try:
+                progress_callback(20.0, "Generating Q&A (cloud)...")
+                qa_pairs, _ = self.qa_generator.generate_synthetic_qa_via_runpod(
+                    pdf_path=file_path,
+                    target_samples=100,
+                    encryption_key_hex=None
+                )
+            except Exception as e:
+                logger.warning(f"Cloud Q&A generation failed, using local fallback: {e}")
+
+        if not qa_pairs:
             progress_callback(20.0, "Generating Q&A (local)...")
-            if not self.qa_generator:
-                raise ValueError("QA generator not available")
-            qa_pairs = self.qa_generator.generate_qa_pairs(text_chunks, max_pairs=100)
-            encryption_key_hex = None
-        
-        if not qa_pairs or len(qa_pairs) == 0:
+            qa_pairs = self.qa_generator.generate_from_chunks(
+                text_chunks=text_chunks,
+                user_id=user_id,
+                num_pairs_per_chunk=3
+            )
+
+        qa_pairs = qa_pairs[:100]
+        if not qa_pairs:
             raise ValueError("Failed to generate Q&A pairs")
         
         progress_callback(50.0, f"Generated {len(qa_pairs)} Q&A pairs")
-        
-        # Encrypt and save dataset
+
+        if local_training_mode:
+            return self._train_document_locally(filename, qa_pairs, progress_callback)
+
+        if not self.training_manager:
+            raise ValueError("Training manager unavailable. Enable ENCLAVE_LOCAL_TRAINING=true for local training.")
+
+        # Cloud training path
         progress_callback(55.0, "Encrypting dataset...")
-        
         dataset_name = Path(filename).stem + "_" + datetime.now().strftime("%Y%m%d_%H%M%S")
-        encryption_key_hex = self.training_manager.encrypt_dataset(qa_pairs, dataset_name)
-        
-        progress_callback(60.0, "Uploading dataset...")
-        
-        # Upload dataset
-        local_path = self.training_manager.datasets_dir / f"{dataset_name}.encrypted"
-        signed_url = self.training_manager._upload_dataset_to_supabase_storage(str(local_path))
-        
-        if not signed_url:
-            raise ValueError("Failed to upload dataset")
-        
-        progress_callback(70.0, "Submitting training job...")
-        
-        # Submit training job
-        adapter_id = self.training_manager.submit_training_job(
-            dataset_url=signed_url,
-            encryption_key_hex=encryption_key_hex,
-            adapter_name=dataset_name,
+        encryption_key = os.urandom(32)
+        encryption_key_hex = encryption_key.hex()
+
+        dataset_path = self.training_manager.save_dataset(
+            qa_pairs=qa_pairs,
+            filename=dataset_name,
+            encryption_key=encryption_key,
         )
-        
+
+        progress_callback(70.0, "Submitting training job...")
+        submit_result = self.training_manager.submit_training_job(
+            dataset_path=dataset_path,
+            encryption_key_hex=encryption_key_hex,
+            epochs=3,
+            batch_size=4,
+        )
+        adapter_id = submit_result.get("adapter_id") or submit_result.get("job_id")
         if not adapter_id:
-            raise ValueError("Failed to submit training job")
-        
-        progress_callback(80.0, "Training submitted...")
-        
+            raise ValueError("Training service did not return adapter_id")
+
+        progress_callback(85.0, "Training submitted to cloud")
+
         # Store or update entry in vault (avoid duplicates)
         entry_tags = [
             "data_type:knowledge",
             "source:pdf",
-            f"training_status:pending",
+            "training_mode:cloud",
+            "training_status:pending",
             f"training_job:{adapter_id}",
             f"training_key:{encryption_key_hex}",
         ]
-        
+
         self._store_or_update_knowledge_entry(
             filename=filename,
             adapter_id=adapter_id,
             tags=entry_tags,
-            description=f"Knowledge adapter trained from {filename}. Adapter ID: {adapter_id}",
+            description=f"Knowledge adapter training submitted for {filename}. Adapter ID: {adapter_id}",
         )
-        
+
         progress_callback(100.0, "Complete!")
-        
+        return adapter_id, encryption_key_hex
+
+    def _use_local_training_mode(self) -> bool:
+        """
+        Decide whether training queue should use local MLX training.
+
+        ENCLAVE_LOCAL_TRAINING values:
+        - true/1/yes/on: force local mode
+        - false/0/no/off: force cloud mode
+        - unset/auto: local on Apple Silicon, cloud otherwise
+        """
+        setting = os.getenv("ENCLAVE_LOCAL_TRAINING", "auto").strip().lower()
+        if setting in {"1", "true", "yes", "on"}:
+            return True
+        if setting in {"0", "false", "no", "off"}:
+            return False
+        return platform.machine() == "arm64"
+
+    def _train_document_locally(self, filename: str, qa_pairs: List[Dict[str, str]], progress_callback) -> tuple:
+        """Run local MLX LoRA/DoRA training and store adapter metadata in the vault."""
+        progress_callback(60.0, "Starting local MLX training...")
+
+        from advanced_vault.training import MLXTrainer, check_mlx_available
+
+        if not check_mlx_available():
+            raise ValueError("Local MLX training requires Apple Silicon MLX runtime (pip install mlx mlx-lm)")
+
+        # Keep queue jobs responsive on laptops.
+        qa_pairs = qa_pairs[: min(len(qa_pairs), 100)]
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"{Path(filename).stem}_{timestamp}"
+        adapter_name = "".join(c if (c.isalnum() or c in {"-", "_"}) else "_" for c in base_name).strip("_")
+        output_dir = self.vault_path / "local_adapters"
+
+        trainer = MLXTrainer(
+            output_dir=str(output_dir),
+            config={
+                "epochs": 2,
+                "batch_size": 2,
+                "max_seq_length": 512,
+                "use_dora": True,
+            },
+        )
+
+        def _local_progress(progress: float, message: str):
+            # Map trainer's 0..1 progress to queue phase segment 60..95.
+            mapped = 60.0 + (max(0.0, min(progress, 1.0)) * 35.0)
+            progress_callback(mapped, message)
+
+        training_result = trainer.train_from_qa_pairs(
+            qa_pairs=qa_pairs,
+            adapter_name=adapter_name,
+            progress_callback=_local_progress,
+        )
+
+        adapter_id = f"local:{adapter_name}"
+        encryption_key_hex = os.urandom(32).hex()
+
+        entry_tags = [
+            "data_type:knowledge",
+            "source:pdf",
+            "training_mode:local",
+            "training_status:completed",
+            f"local_adapter:{adapter_name}",
+        ]
+        self._store_or_update_knowledge_entry(
+            filename=filename,
+            adapter_id=adapter_id,
+            tags=entry_tags,
+            description=(
+                f"Local MLX adapter trained from {filename}. "
+                f"Path: {training_result.adapter_path}. "
+                f"Examples: {training_result.num_examples}. "
+                f"Final loss: {training_result.final_loss:.4f}"
+            ),
+        )
+
+        progress_callback(100.0, "Local training complete")
         return adapter_id, encryption_key_hex
     
     def _refresh_library_view(self):
