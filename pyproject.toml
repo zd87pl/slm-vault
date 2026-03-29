@@ -85,6 +85,18 @@ gui = [
     "flet>=0.21.0",
 ]
 
+# Optional layout-aware parsing / OCR wrapper
+liteparse = [
+    "liteparse>=1.2.1",
+]
+
+# macOS local performance profile (RAG + embeddings)
+mac-performance = [
+    "hnswlib>=0.8.0",
+    "fastembed>=0.3.6",
+    "hf_transfer>=0.1.8",
+]
+
 # Build/packaging
 build = [
     "pyinstaller>=6.0.0",
@@ -103,7 +115,7 @@ dev = [
 
 # All optional dependencies
 all = [
-    "enclave-vault[mlx,gui,dev]",
+    "enclave-vault[mlx,gui,dev,mac-performance,liteparse]",
 ]
 
 [project.urls]

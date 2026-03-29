@@ -3,6 +3,7 @@ PDF processing service for extracting text and metadata from PDF files.
 
 Features:
 - Text extraction using PyPDF2 (for text-based PDFs)
+- Optional LiteParse backend for layout-aware parsing and OCR
 - OCR fallback using Ollama Vision models (local, for scanned PDFs)
 - Optional SmolDocling OCR (Apple Silicon only, ~500MB vs 1-2GB)
 - Intelligent chunking for training
@@ -16,9 +17,22 @@ import base64
 import platform
 import subprocess
 from pathlib import Path
-from typing import Dict, List, Any, Optional, Callable
+from typing import Dict, List, Any, Optional, Callable, Tuple
 import PyPDF2
 import requests
+
+from advanced_vault.parsing import extract_pdf_text, has_liteparse_backend, is_text_quality_good
+
+# Try to import LiteParse (Python wrapper around Node CLI)
+LITEPARSE_PYTHON_AVAILABLE = False
+LiteParse = None
+LiteParseError = RuntimeError
+try:
+    from liteparse import LiteParse
+    from liteparse.types import ParseError as LiteParseError
+    LITEPARSE_PYTHON_AVAILABLE = True
+except ImportError:
+    LITEPARSE_PYTHON_AVAILABLE = False
 
 # Try to import SmolDocling (MLX - Apple Silicon only)
 SMOLDOCLING_AVAILABLE = False
@@ -52,6 +66,53 @@ except (ImportError, ValueError):
         raise ImportError("Could not import ollama_setup")
 
 logger = logging.getLogger(__name__)
+
+
+def _env_flag(name: str, default: bool) -> bool:
+    """Parse boolean environment variables safely."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
+def _env_int(name: str, default: int) -> int:
+    """Parse integer environment variables safely."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning(f"Invalid integer for {name}: {value!r}. Using default {default}.")
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    """Parse float environment variables safely."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning(f"Invalid float for {name}: {value!r}. Using default {default}.")
+        return default
+
+
+def probe_liteparse_backend(
+    cli_path: Optional[str] = None,
+    install_if_not_available: Optional[bool] = None,
+) -> bool:
+    """
+    Check whether LiteParse is usable in the current environment.
+
+    This validates both the Python wrapper and the backing CLI without
+    triggering an implicit global install unless explicitly requested.
+    """
+    _ = cli_path
+    _ = install_if_not_available
+    return has_liteparse_backend(cli_path=cli_path)
 
 
 def _is_apple_silicon() -> bool:
@@ -186,7 +247,34 @@ class PDFProcessor:
         self.ollama_base_url = ollama_base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
         self.ollama_model = ollama_model or os.getenv("OLLAMA_OCR_MODEL", "llama3.2-vision:1b")
         self.ollama_setup = OllamaSetup(base_url=self.ollama_base_url, model=self.ollama_model)
-        
+
+        self.parser_backend_preference = os.getenv(
+            "ENCLAVE_PARSER_BACKEND",
+            os.getenv("ENCLAVE_PDF_BACKEND", "auto"),
+        ).strip().lower()
+        if self.parser_backend_preference == "native":
+            self.parser_backend_preference = "legacy"
+        if self.parser_backend_preference not in {"auto", "legacy", "liteparse", "pypdf"}:
+            logger.warning(
+                f"Unknown ENCLAVE_PARSER_BACKEND={self.parser_backend_preference!r}. Falling back to 'auto'."
+            )
+            self.parser_backend_preference = "auto"
+
+        self.liteparse_auto_install = _env_flag("ENCLAVE_LITEPARSE_AUTO_INSTALL", False)
+        self.liteparse_allow_npx = _env_flag("ENCLAVE_LITEPARSE_ALLOW_NPX", True)
+        self.liteparse_cli_path = os.getenv("ENCLAVE_LITEPARSE_CLI_PATH")
+        self.liteparse_ocr_enabled = _env_flag("ENCLAVE_LITEPARSE_OCR_ENABLED", True)
+        self.liteparse_ocr_server_url = os.getenv("ENCLAVE_LITEPARSE_OCR_SERVER_URL")
+        self.liteparse_ocr_language = os.getenv("ENCLAVE_LITEPARSE_OCR_LANGUAGE", "en")
+        self.liteparse_dpi = _env_int("ENCLAVE_LITEPARSE_DPI", 180)
+        self.liteparse_timeout = _env_float("ENCLAVE_LITEPARSE_TIMEOUT", 180.0)
+        self.liteparse_precise_bounding_box = _env_flag("ENCLAVE_LITEPARSE_PRECISE_BBOX", True)
+        self.liteparse_preserve_small_text = _env_flag("ENCLAVE_LITEPARSE_PRESERVE_SMALL_TEXT", True)
+        self.liteparse_available = False
+        self.liteparse_last_error = None
+
+        self._initialize_liteparse_backend(progress_callback=progress_callback)
+
         # Check if SmolDocling should be preferred (Apple Silicon)
         self.prefer_smoldocling = (
             _is_apple_silicon() and 
@@ -279,6 +367,179 @@ class PDFProcessor:
                 logger.info("OCR not available. SmolDocling setup failed. Check logs for details.")
             else:
                 logger.info(f"OCR not available. Install manually: ollama pull {self.ollama_model}")
+
+    def _initialize_liteparse_backend(
+        self, progress_callback: Optional[Callable[[str], None]] = None
+    ) -> None:
+        """Initialize the optional LiteParse backend."""
+        if self.parser_backend_preference not in {"auto", "liteparse"}:
+            return
+
+        try:
+            self.liteparse_available = probe_liteparse_backend(
+                cli_path=self.liteparse_cli_path,
+                install_if_not_available=self.liteparse_auto_install,
+            )
+            if self.liteparse_available:
+                logger.info("LiteParse backend ready (OCR=%s)", self.liteparse_ocr_enabled)
+                if progress_callback:
+                    progress_callback("LiteParse parser ready")
+            else:
+                logger.info("LiteParse backend unavailable; continuing with legacy PDF pipeline.")
+        except Exception as exc:
+            self.liteparse_last_error = str(exc)
+            logger.warning(f"LiteParse backend unavailable, falling back to legacy parser: {exc}")
+
+    def has_document_extraction_backend(self) -> bool:
+        """Return whether any enhanced document extraction backend is ready."""
+        return self.liteparse_available or self.smoldocling_available or self.ollama_available
+
+    def get_backend_status_label(self) -> str:
+        """Return a short UI-friendly label for the active extraction stack."""
+        if self.parser_backend_preference == "liteparse" and self.liteparse_available:
+            return "LiteParse"
+        if self.parser_backend_preference == "auto" and self.liteparse_available:
+            return "LiteParse + fallback"
+        if self.smoldocling_available:
+            return "SmolDocling ~500MB"
+        if self.ollama_available:
+            return "Ollama"
+        return "PyPDF2"
+
+    def _extract_pdf_metadata(self, pdf_path: str) -> Dict[str, Any]:
+        """Extract PDF metadata without changing the public return shape."""
+        pdf_path_obj = Path(pdf_path)
+        metadata = {
+            "filename": pdf_path_obj.name,
+            "page_count": 0,
+            "title": None,
+            "author": None,
+        }
+
+        with open(pdf_path, "rb") as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+            metadata["page_count"] = len(pdf_reader.pages)
+            if pdf_reader.metadata:
+                metadata["title"] = pdf_reader.metadata.get("/Title")
+                metadata["author"] = pdf_reader.metadata.get("/Author")
+
+        return metadata
+
+    def _chunk_text(self, full_text: str) -> List[str]:
+        """Split extracted text into stable training/query chunks."""
+        text_chunks: List[str] = []
+        chunk_size = 512
+        chunk_overlap = 100
+
+        paragraphs = full_text.split("\n\n")
+        current_chunk = ""
+
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+
+            if current_chunk and len(current_chunk) + len(para) > chunk_size:
+                text_chunks.append(current_chunk.strip())
+                overlap_text = (
+                    current_chunk[-chunk_overlap:]
+                    if len(current_chunk) > chunk_overlap
+                    else current_chunk
+                )
+                current_chunk = overlap_text + "\n\n" + para if overlap_text else para
+            else:
+                current_chunk += "\n\n" + para if current_chunk else para
+
+        if current_chunk.strip():
+            text_chunks.append(current_chunk.strip())
+
+        return text_chunks
+
+    def _extract_text_with_liteparse(self, pdf_path: str) -> Tuple[str, int]:
+        """Extract text using LiteParse, preserving page boundaries."""
+        if not self.liteparse_available:
+            return "", 0
+
+        original_env = {
+            "ENCLAVE_LITEPARSE_NO_OCR": os.getenv("ENCLAVE_LITEPARSE_NO_OCR"),
+            "ENCLAVE_LITEPARSE_DPI": os.getenv("ENCLAVE_LITEPARSE_DPI"),
+            "ENCLAVE_LITEPARSE_TIMEOUT_SECONDS": os.getenv("ENCLAVE_LITEPARSE_TIMEOUT_SECONDS"),
+            "ENCLAVE_LITEPARSE_MAX_PAGES": os.getenv("ENCLAVE_LITEPARSE_MAX_PAGES"),
+        }
+        os.environ["ENCLAVE_LITEPARSE_NO_OCR"] = "false" if self.liteparse_ocr_enabled else "true"
+        os.environ["ENCLAVE_LITEPARSE_DPI"] = str(self.liteparse_dpi)
+        os.environ["ENCLAVE_LITEPARSE_TIMEOUT_SECONDS"] = str(int(self.liteparse_timeout))
+        logger.info("Parsing PDF with LiteParse...")
+        try:
+            result = extract_pdf_text(
+                pdf_path,
+                backend="liteparse",
+                ocr_language=self.liteparse_ocr_language,
+                ocr_server_url=self.liteparse_ocr_server_url,
+                allow_npx=self.liteparse_allow_npx,
+                cli_path=self.liteparse_cli_path,
+                quiet=True,
+            )
+        finally:
+            for key, value in original_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        full_text = result.text
+
+        logger.info("LiteParse extraction complete: %s chars", len(full_text))
+        return full_text, int(result.metadata.get("page_count", 0))
+
+    def _extract_text_with_legacy_pipeline(
+        self, pdf_path: str, metadata: Dict[str, Any]
+    ) -> Tuple[str, Dict[str, Any], str]:
+        """Extract text using the existing PyPDF2 + OCR fallback pipeline."""
+        with open(pdf_path, "rb") as file:
+            pdf_reader = PyPDF2.PdfReader(file)
+
+            metadata["page_count"] = len(pdf_reader.pages)
+            if pdf_reader.metadata:
+                metadata["title"] = pdf_reader.metadata.get("/Title")
+                metadata["author"] = pdf_reader.metadata.get("/Author")
+
+            full_text = ""
+            selected_backend = "pypdf"
+            for page_num, page in enumerate(pdf_reader.pages):
+                page_text = page.extract_text()
+                if page_text:
+                    full_text += f"\n\n--- Page {page_num + 1} ---\n\n"
+                    full_text += page_text
+
+            if not self._is_text_quality_good(full_text):
+                logger.warning(
+                    "PyPDF2 extracted text quality is poor (length: %s). Trying OCR fallback...",
+                    len(full_text),
+                )
+
+                ocr_text = ""
+                ocr_backend = selected_backend
+                if self.smoldocling_available:
+                    ocr_text = self._extract_text_with_smoldocling(pdf_path)
+                    if ocr_text:
+                        ocr_backend = "smoldocling"
+
+                if not ocr_text and self.ollama_available:
+                    ocr_text = self._extract_text_with_ollama_ocr(pdf_path)
+                    if ocr_text:
+                        ocr_backend = "ollama"
+
+                if ocr_text and len(ocr_text) > len(full_text) * 1.5:
+                    logger.info("Using OCR text (better quality than PyPDF2)")
+                    full_text = ocr_text
+                    selected_backend = ocr_backend
+                elif not full_text or len(full_text.strip()) < 100:
+                    if ocr_text:
+                        logger.info("Using OCR text (PyPDF2 extracted minimal text)")
+                        full_text = ocr_text
+                        selected_backend = ocr_backend
+
+        return full_text, metadata, selected_backend
     
     def _test_ollama_connection(self) -> bool:
         """Test if Ollama is running and accessible."""
@@ -310,23 +571,7 @@ class PDFProcessor:
         Returns:
             True if text quality is acceptable
         """
-        if not text or len(text.strip()) < 50:
-            return False
-        
-        # Check for high proportion of special characters (OCR artifacts)
-        special_chars = '!\"#$%&*()+=[]{}|;:,.<>?/@\\^_`~'
-        if len(text) > 100:
-            sample = text[:500] if len(text) > 500 else text
-            special_char_ratio = sum(1 for c in sample if c in special_chars) / len(sample)
-            if special_char_ratio > 0.15:  # More than 15% special chars suggests OCR artifacts
-                return False
-        
-        # Check for meaningful words (at least some Polish/English words)
-        words = text.split()
-        if len(words) < 10:
-            return False
-        
-        return True
+        return is_text_quality_good(text)
     
     def _convert_pdf_to_images(self, pdf_path: str) -> List[bytes]:
         """
@@ -544,85 +789,58 @@ class PDFProcessor:
             pdf_path_obj = Path(pdf_path)
             if not pdf_path_obj.exists():
                 raise FileNotFoundError(f"PDF file not found: {pdf_path}")
-            
-            text_chunks = []
-            metadata = {
-                "filename": pdf_path_obj.name,
-                "page_count": 0,
-                "title": None,
-                "author": None
-            }
-            
-            # Open PDF
-            with open(pdf_path, 'rb') as file:
-                pdf_reader = PyPDF2.PdfReader(file)
-                
-                # Extract metadata
-                metadata["page_count"] = len(pdf_reader.pages)
-                if pdf_reader.metadata:
-                    metadata["title"] = pdf_reader.metadata.get("/Title")
-                    metadata["author"] = pdf_reader.metadata.get("/Author")
-                
-                # Extract text from each page
-                full_text = ""
-                for page_num, page in enumerate(pdf_reader.pages):
-                    page_text = page.extract_text()
-                    if page_text:
-                        full_text += f"\n\n--- Page {page_num + 1} ---\n\n"
-                        full_text += page_text
-                
-                # Check text quality - if poor, try OCR fallback
-                if not self._is_text_quality_good(full_text):
-                    logger.warning(f"PyPDF2 extracted text quality is poor (length: {len(full_text)}). Trying OCR fallback...")
-                    
-                    # Try SmolDocling first if available (Apple Silicon)
-                    ocr_text = ""
-                    if self.smoldocling_available:
-                        ocr_text = self._extract_text_with_smoldocling(pdf_path)
-                    
-                    # Fallback to Ollama if SmolDocling not available or failed
-                    if not ocr_text and self.ollama_available:
-                        ocr_text = self._extract_text_with_ollama_ocr(pdf_path)
-                    
-                    if ocr_text and len(ocr_text) > len(full_text) * 1.5:  # OCR gives significantly more text
-                        logger.info("Using OCR text (better quality than PyPDF2)")
-                        full_text = ocr_text
-                    elif not full_text or len(full_text.strip()) < 100:
-                        # If PyPDF2 got almost nothing, use OCR even if shorter
-                        if ocr_text:
-                            logger.info("Using OCR text (PyPDF2 extracted minimal text)")
-                            full_text = ocr_text
-                
-                # Split into chunks (optimal size: 512 chars for MLX Q&A generation)
-                # MLX models (Qwen2.5-3B) work best with smaller, focused chunks
-                # Old size: 1200 chars (too large, caused incomplete Q&A pairs)
-                # New size: 512 chars (optimal for 3 complete Q&A pairs per chunk)
-                chunk_size = 512
-                chunk_overlap = 100  # 20% overlap for context preservation
-                
-                paragraphs = full_text.split("\n\n")
-                current_chunk = ""
-                
-                for para in paragraphs:
-                    para = para.strip()
-                    if not para:
-                        continue
-                    
-                    # If adding this paragraph would exceed chunk_size, save current chunk
-                    if current_chunk and len(current_chunk) + len(para) > chunk_size:
-                        text_chunks.append(current_chunk.strip())
-                        # Start new chunk with overlap (last 100 chars of previous chunk)
-                        overlap_text = current_chunk[-chunk_overlap:] if len(current_chunk) > chunk_overlap else current_chunk
-                        current_chunk = overlap_text + "\n\n" + para if overlap_text else para
+
+            metadata = self._extract_pdf_metadata(pdf_path)
+            full_text = ""
+            backend_used = "pypdf"
+
+            if self.parser_backend_preference == "liteparse" and self.liteparse_available:
+                try:
+                    full_text, liteparse_page_count = self._extract_text_with_liteparse(pdf_path)
+                    if liteparse_page_count:
+                        metadata["page_count"] = liteparse_page_count
+                    if self._is_text_quality_good(full_text):
+                        backend_used = "liteparse"
                     else:
-                        current_chunk += "\n\n" + para if current_chunk else para
-                
-                # Add final chunk
-                if current_chunk.strip():
-                    text_chunks.append(current_chunk.strip())
-            
-            logger.info(f"Processed PDF: {len(text_chunks)} chunks, {metadata['page_count']} pages")
-            
+                        logger.warning("LiteParse text quality was weak. Falling back to legacy pipeline.")
+                        full_text = ""
+                except Exception as exc:
+                    logger.warning(f"LiteParse parsing failed. Falling back to legacy pipeline: {exc}")
+                    full_text = ""
+
+            if not full_text:
+                full_text, metadata, backend_used = self._extract_text_with_legacy_pipeline(
+                    pdf_path,
+                    metadata,
+                )
+
+                if (
+                    self.parser_backend_preference == "auto"
+                    and self.liteparse_available
+                    and not self._is_text_quality_good(full_text)
+                ):
+                    try:
+                        liteparse_text, liteparse_page_count = self._extract_text_with_liteparse(pdf_path)
+                        if liteparse_page_count:
+                            metadata["page_count"] = liteparse_page_count
+                        liteparse_good = self._is_text_quality_good(liteparse_text)
+                        if liteparse_text and (liteparse_good or len(liteparse_text) > len(full_text) * 1.2):
+                            logger.info("Using LiteParse output after weak legacy extraction.")
+                            full_text = liteparse_text
+                            backend_used = "liteparse"
+                    except Exception as exc:
+                        logger.warning(f"LiteParse auto-fallback failed, keeping legacy output: {exc}")
+
+            text_chunks = self._chunk_text(full_text)
+            metadata["parser_backend"] = backend_used
+
+            logger.info(
+                "Processed PDF: %s chunks, %s pages via %s",
+                len(text_chunks),
+                metadata["page_count"],
+                backend_used,
+            )
+
             return {
                 "text_chunks": text_chunks,
                 "metadata": metadata

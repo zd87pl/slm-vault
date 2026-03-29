@@ -17,6 +17,7 @@ mcp>=1.0.0
 PyPDF2>=3.0.0
 pdf2image>=1.16.0  # For OCR (converting PDF pages to images)
 Pillow>=10.0.0  # Image processing for OCR
+liteparse>=1.2.1  # Optional Python wrapper for LiteParse CLI / layout-aware parsing
 
 # SmolDocling OCR (Apple Silicon optimized, ~500MB model)
 # Only installed/used on Apple Silicon Macs
@@ -32,6 +33,10 @@ langchain-text-splitters>=0.3.0
 pydantic>=2.0.0
 huggingface_hub>=0.20.0  # For better model download progress tracking
 hf_transfer>=0.3.0  # Rust-based fast download protocol (10-100x faster)
+
+# Local indexing/retrieval performance
+hnswlib>=0.8.0
+fastembed>=0.3.6
 
 # Encryption (already in main project)
 # cryptography

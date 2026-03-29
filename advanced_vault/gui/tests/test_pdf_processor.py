@@ -13,6 +13,7 @@ import tempfile
 import os
 from pathlib import Path
 import sys
+from unittest.mock import patch
 
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -33,12 +34,35 @@ class TestPDFProcessor(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
-        self.processor = PDFProcessor()
+        self.env_patcher = patch.dict(
+            os.environ,
+            {
+                "ENCLAVE_USE_SMOLDOCLING": "false",
+                "ENCLAVE_PARSER_BACKEND": "legacy",
+            },
+            clear=False,
+        )
+        self.apple_patcher = patch(
+            "advanced_vault.gui.pdf_processor._is_apple_silicon",
+            return_value=False,
+        )
+        self.ollama_patcher = patch.object(
+            PDFProcessor,
+            "_test_ollama_connection",
+            return_value=False,
+        )
+        self.env_patcher.start()
+        self.apple_patcher.start()
+        self.ollama_patcher.start()
+        self.processor = PDFProcessor(auto_setup=False)
         self.temp_dir = tempfile.mkdtemp()
     
     def tearDown(self):
         """Clean up test fixtures."""
         import shutil
+        self.ollama_patcher.stop()
+        self.apple_patcher.stop()
+        self.env_patcher.stop()
         if os.path.exists(self.temp_dir):
             shutil.rmtree(self.temp_dir)
     
@@ -62,19 +86,19 @@ class TestPDFProcessor(unittest.TestCase):
     
     def test_init(self):
         """Test processor initialization."""
-        processor = PDFProcessor()
+        processor = PDFProcessor(auto_setup=False)
         self.assertIsNotNone(processor)
     
     def test_process_pdf_not_found(self):
         """Test processing non-existent PDF."""
-        processor = PDFProcessor()
+        processor = PDFProcessor(auto_setup=False)
         
         with self.assertRaises(FileNotFoundError):
             processor.process_pdf("/nonexistent/file.pdf")
     
     def test_estimate_tokens(self):
         """Test token estimation."""
-        processor = PDFProcessor()
+        processor = PDFProcessor(auto_setup=False)
         
         # Test estimation
         text = "This is a test string with some words."
@@ -91,7 +115,7 @@ class TestPDFProcessor(unittest.TestCase):
     
     def test_get_chunk_count(self):
         """Test chunk count."""
-        processor = PDFProcessor()
+        processor = PDFProcessor(auto_setup=False)
         
         chunks = ["chunk1", "chunk2", "chunk3"]
         count = processor.get_chunk_count(chunks)
@@ -129,8 +153,92 @@ class TestPDFProcessor(unittest.TestCase):
             # If PDF processing fails due to invalid PDF, that's okay for basic test
             self.skipTest(f"PDF processing failed (expected for minimal PDF): {e}")
 
+    def test_process_pdf_uses_liteparse_when_forced(self):
+        """Forced LiteParse mode should use LiteParse output when available."""
+        pdf_path = self.create_test_pdf(
+            "This PDF includes enough structured text to satisfy quality checks for LiteParse parsing."
+        )
+
+        with patch.dict(os.environ, {"ENCLAVE_PARSER_BACKEND": "liteparse"}, clear=False):
+            with patch("advanced_vault.gui.pdf_processor._is_apple_silicon", return_value=False):
+                with patch.object(PDFProcessor, "_test_ollama_connection", return_value=False):
+                    with patch(
+                        "advanced_vault.gui.pdf_processor.probe_liteparse_backend",
+                        return_value=True,
+                    ):
+                        with patch.object(
+                            PDFProcessor,
+                            "_extract_pdf_metadata",
+                            return_value={
+                                "filename": "test.pdf",
+                                "page_count": 1,
+                                "title": None,
+                                "author": None,
+                            },
+                        ):
+                            with patch.object(
+                                PDFProcessor,
+                                "_extract_text_with_liteparse",
+                                return_value=(
+                                    "LiteParse extracted a clean and detailed page of text that is comfortably over fifty characters.",
+                                    1,
+                                ),
+                            ):
+                                processor = PDFProcessor(auto_setup=False)
+                                result = processor.process_pdf(pdf_path)
+
+        self.assertTrue(result["text_chunks"])
+        self.assertEqual(result["metadata"]["parser_backend"], "liteparse")
+        self.assertEqual(result["metadata"]["page_count"], 1)
+
+    def test_process_pdf_falls_back_when_liteparse_fails(self):
+        """LiteParse failures should fall back to the legacy PyPDF2 path."""
+        pdf_path = self.create_test_pdf(
+            "This PDF includes enough ordinary text for the legacy parser to work without OCR fallback."
+        )
+
+        with patch.dict(os.environ, {"ENCLAVE_PARSER_BACKEND": "liteparse"}, clear=False):
+            with patch("advanced_vault.gui.pdf_processor._is_apple_silicon", return_value=False):
+                with patch.object(PDFProcessor, "_test_ollama_connection", return_value=False):
+                    with patch(
+                        "advanced_vault.gui.pdf_processor.probe_liteparse_backend",
+                        return_value=True,
+                    ):
+                        with patch.object(
+                            PDFProcessor,
+                            "_extract_pdf_metadata",
+                            return_value={
+                                "filename": "test.pdf",
+                                "page_count": 1,
+                                "title": None,
+                                "author": None,
+                            },
+                        ):
+                            with patch.object(
+                                PDFProcessor,
+                                "_extract_text_with_liteparse",
+                                side_effect=RuntimeError("LiteParse CLI failed"),
+                            ):
+                                with patch.object(
+                                    PDFProcessor,
+                                    "_extract_text_with_legacy_pipeline",
+                                    return_value=(
+                                        "Legacy parser returned enough text to remain useful after a LiteParse failure.",
+                                        {
+                                            "filename": "test.pdf",
+                                            "page_count": 1,
+                                            "title": None,
+                                            "author": None,
+                                        },
+                                        "pypdf",
+                                    ),
+                                ):
+                                    processor = PDFProcessor(auto_setup=False)
+                                    result = processor.process_pdf(pdf_path)
+
+        self.assertTrue(result["text_chunks"])
+        self.assertEqual(result["metadata"]["parser_backend"], "pypdf")
+
 
 if __name__ == "__main__":
     unittest.main()
-
-
