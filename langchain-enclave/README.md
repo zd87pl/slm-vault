@@ -19,6 +19,11 @@
 - Alternative to traditional RAG with fine-tuned knowledge
 - Policy-controlled access to knowledge adapters
 
+🏠 **Local-First Workflow**
+- Ingest local files into the encrypted private RAG index
+- Chat locally over your own files without a remote backend
+- Use local LangChain retrievers and tools for OpenClaw or agent workflows
+
 🔒 **Policy-Based Security**
 - Fine-grained access control per agent
 - Wildcard pattern matching for agent identifiers
@@ -29,6 +34,44 @@
 ```bash
 pip install langchain-enclave
 ```
+
+For the local-first workflow in this monorepo, install the repo root in editable mode so
+`advanced_vault` is importable:
+
+```bash
+cd /path/to/slm-vault
+pip install -e .
+```
+
+## Local-First Quick Start
+
+```python
+from langchain_enclave import LocalEnclaveClient, LocalEnclaveKnowledgeRetriever
+
+client = LocalEnclaveClient(vault_path="~/.vault", profile_name="research")
+client.ingest_directory("/path/to/private/files")
+
+result = client.chat("What are the main themes across my files?")
+print(result["answer"])
+
+retriever = LocalEnclaveKnowledgeRetriever(vault_path="~/.vault")
+docs = retriever.get_relevant_documents("Summarize the files")
+print(docs[0].page_content)
+```
+
+When `advanced_vault.private_models` is available, the local client uses the same
+Private Language Model profile runtime as the CLI and OpenClaw plugin. That means:
+
+- encrypted file context stays under one named profile
+- WDVA adapters attach to the same profile used by local chat
+- LangChain, CLI, and OpenClaw can share one local private knowledge boundary
+
+The local client supports:
+
+- `ingest_file()` and `ingest_directory()` for private files
+- `store_secret()` and `retrieve_secret()` for local secrets
+- `chat()` and `query_knowledge()` for local file Q&A
+- `LocalEnclaveSecretProvider` and `LocalEnclaveKnowledgeRetriever` for LangChain
 
 ## Quick Start
 
@@ -199,6 +242,45 @@ documents = retriever.get_relevant_documents("What is this about?")
 - `max_tokens` (int): Maximum tokens to generate (default: 512)
 
 **Returns:** List of `Document` objects with answers
+
+### LocalEnclaveClient
+
+Local runtime for private files and vault access.
+
+```python
+from langchain_enclave import LocalEnclaveClient
+
+client = LocalEnclaveClient(vault_path="~/.vault")
+client.ingest_directory("/path/to/files")
+answer = client.chat("What did I write about project X?")
+```
+
+Optional arguments:
+
+- `profile_name`: named Private Language Model profile to use locally
+- `use_private_profiles`: force profile mode on or off
+
+### LocalEnclaveKnowledgeRetriever
+
+LangChain retriever backed by the local private-model workflow.
+
+```python
+from langchain_enclave import LocalEnclaveKnowledgeRetriever
+
+retriever = LocalEnclaveKnowledgeRetriever(vault_path="~/.vault")
+docs = retriever.get_relevant_documents("Summarize my notes")
+```
+
+### LocalEnclaveSecretProvider
+
+LangChain tool for retrieving plaintext secrets from the local vault.
+
+```python
+from langchain_enclave import LocalEnclaveSecretProvider
+
+tool = LocalEnclaveSecretProvider(vault_path="~/.vault")
+secret = tool.run("openai")
+```
 
 ## Policy Configuration
 

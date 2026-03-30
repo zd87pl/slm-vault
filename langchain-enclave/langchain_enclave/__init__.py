@@ -3,6 +3,11 @@
 from langchain_enclave.secrets import EnclaveSecretProvider
 from langchain_enclave.knowledge import EnclaveKnowledgeRetriever
 from langchain_enclave.client import EnclaveClient
+from langchain_enclave.local import (
+    LocalEnclaveClient,
+    LocalEnclaveKnowledgeRetriever,
+    LocalEnclaveSecretProvider,
+)
 from langchain_enclave.exceptions import (
     EnclaveError,
     PolicyViolationError,
@@ -17,10 +22,12 @@ __all__ = [
     "EnclaveSecretProvider",
     "EnclaveKnowledgeRetriever",
     "EnclaveClient",
+    "LocalEnclaveClient",
+    "LocalEnclaveKnowledgeRetriever",
+    "LocalEnclaveSecretProvider",
     "EnclaveError",
     "PolicyViolationError",
     "SecretNotFoundError",
     "AdapterNotFoundError",
     "RateLimitExceededError",
 ]
-

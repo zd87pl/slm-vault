@@ -1,0 +1,23 @@
+{
+  "name": "@slm-vault/openclaw-enclave",
+  "version": "0.1.0",
+  "description": "OpenClaw plugin package for the local Enclave privacy broker and private language model workflow.",
+  "private": true,
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "node --check src/index.js && python3 -m py_compile scripts/enclave_bridge.py",
+    "smoke:bridge": "python3 scripts/enclave_bridge.py status"
+  },
+  "openclaw": {
+    "extensions": [
+      "src/index.js"
+    ]
+  }
+}

@@ -15,6 +15,8 @@ Complete working examples for `langchain-enclave`.
    export ENCLAVE_BASE_URL="https://your-backend.railway.app"  # Optional
    export ENCLAVE_ADAPTER_ID="your-adapter-uuid"  # For knowledge examples
    export OPENAI_API_KEY="sk-your-openai-key"  # For LangChain LLM
+   export ENCLAVE_VAULT_PATH="~/.vault"  # For local-first examples
+   export ENCLAVE_CONTEXT_DIR="/path/to/private/files"  # Optional for local demo
    ```
 
 3. **Create a policy** (see [Quick Start](../QUICKSTART.md))
@@ -68,6 +70,21 @@ python examples/hybrid_agent_example.py
 - RAG chain with knowledge retriever (for documents)
 - Demonstrates both capabilities in one workflow
 
+### 4. Local Private Model Example
+
+**File:** `local_private_model_example.py`
+
+Local-first file ingest and chat without a remote backend.
+
+```bash
+python examples/local_private_model_example.py
+```
+
+**What it does:**
+- Ingests a local directory into the encrypted private RAG index
+- Chats locally over the ingested files
+- Uses `LocalEnclaveClient` and local LangChain wrappers
+
 ## Customization
 
 All examples use environment variables for configuration. You can:
@@ -88,6 +105,15 @@ All examples use environment variables for configuration. You can:
        temperature=0.7,  # More creative
        max_tokens=1024   # Longer responses
    )
+   ```
+
+4. **Local-first workflow:**
+   ```python
+   from langchain_enclave import LocalEnclaveClient
+
+   client = LocalEnclaveClient(vault_path="~/.vault")
+   client.ingest_directory("/path/to/private/files")
+   print(client.chat("Summarize the files")["answer"])
    ```
 
 3. **Add error handling:**
@@ -124,4 +150,3 @@ All examples use environment variables for configuration. You can:
 - Read [API Reference](../API_REFERENCE.md) for detailed API docs
 - Check [Integration Guide](../../docs/LANGCHAIN_INTEGRATION.md) for advanced usage
 - See [Policy Guide](../../docs/POLICY_GUIDE.md) for policy examples
-

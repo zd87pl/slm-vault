@@ -163,6 +163,127 @@ List available knowledge adapters.
 
 **Returns:** Dict with `adapters` list and `count`
 
+## LocalEnclaveClient
+
+Local runtime for private files, secrets, and local model chat.
+
+### Class Definition
+
+```python
+class LocalEnclaveClient:
+```
+
+### Initialization
+
+```python
+LocalEnclaveClient(
+    vault_path: str = "~/.vault",
+    master_key: Optional[bytes] = None,
+    vault: Any = None,
+    rag_index: Any = None,
+    inference_engine: Any = None,
+    model_name: Optional[str] = None,
+    top_k: int = 5,
+    similarity_threshold: float = 0.3,
+    max_context_chars: int = 8000,
+)
+```
+
+### Methods
+
+#### `ingest_file(file_path: str, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]`
+
+Read a local file and add it to the encrypted RAG index.
+
+#### `ingest_directory(directory: str, patterns: Optional[Sequence[str]] = None, recursive: bool = True, metadata: Optional[Dict[str, Any]] = None) -> Dict[str, Any]`
+
+Ingest multiple files from a local directory.
+
+#### `chat(query: str, **kwargs) -> Dict[str, Any]`
+
+Convenience alias for local knowledge queries.
+
+#### `query_knowledge(query: str, temperature: float = 0.2, max_tokens: int = 512, top_k: Optional[int] = None, threshold: Optional[float] = None, use_model: bool = True) -> Dict[str, Any]`
+
+Query local files and, when available, generate an answer with a local model.
+
+#### `store_secret(service: str, content: str, tags: Optional[List[str]] = None, description: Optional[str] = None) -> Dict[str, Any]`
+
+Store a plaintext secret in the local encrypted vault.
+
+#### `retrieve_secret(service: Optional[str] = None, tag: Optional[str] = None, tags: Optional[List[str]] = None) -> Dict[str, Any]`
+
+Retrieve a plaintext secret from the local vault.
+
+#### `list_secrets() -> Dict[str, Any]`
+
+List secret metadata only.
+
+#### `list_documents() -> Dict[str, Any]`
+
+List documents in the local encrypted RAG index.
+
+#### `load_model() -> Dict[str, Any]`
+
+Load the local model if available.
+
+## LocalEnclaveKnowledgeRetriever
+
+LangChain retriever backed by the local private-model workflow.
+
+### Class Definition
+
+```python
+class LocalEnclaveKnowledgeRetriever(BaseRetriever):
+```
+
+### Initialization
+
+```python
+LocalEnclaveKnowledgeRetriever(
+    vault_path: str = "~/.vault",
+    client: Optional[LocalEnclaveClient] = None,
+    top_k: int = 5,
+    similarity_threshold: float = 0.3,
+    temperature: float = 0.2,
+    max_tokens: int = 512,
+    use_model: bool = True,
+    **kwargs
+)
+```
+
+### Methods
+
+#### `_get_relevant_documents(query: str) -> List[Document]`
+
+Return a single synthesized answer document from local file context.
+
+## LocalEnclaveSecretProvider
+
+LangChain tool for retrieving plaintext secrets from the local vault.
+
+### Class Definition
+
+```python
+class LocalEnclaveSecretProvider(BaseTool):
+```
+
+### Initialization
+
+```python
+LocalEnclaveSecretProvider(
+    vault_path: str = "~/.vault",
+    client: Optional[LocalEnclaveClient] = None,
+    **kwargs
+)
+```
+
+### Methods
+
+#### `_run(service: Optional[str] = None, tag: Optional[str] = None, tags: Optional[list] = None) -> str`
+
+Retrieve a local plaintext secret.
+
 ## Exceptions
 
 ### EnclaveError
@@ -298,4 +419,3 @@ qa = RetrievalQA.from_chain_type(
 
 answer = qa.run("What's our Q4 revenue target?")
 ```
-

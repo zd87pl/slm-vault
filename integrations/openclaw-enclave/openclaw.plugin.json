@@ -1,0 +1,75 @@
+{
+  "id": "openclaw-enclave",
+  "name": "Enclave Private Data Layer",
+  "version": "0.1.0",
+  "kind": "tool",
+  "entry": "src/index.js",
+  "description": "Local-first privacy broker for private files, local chat, and WDVA adapter workflows.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "repoRoot": {
+        "type": "string",
+        "description": "Absolute path to the SLM Vault repository root."
+      },
+      "vaultPath": {
+        "type": "string",
+        "default": "~/.vault",
+        "description": "Local vault directory used by Enclave."
+      },
+      "profileName": {
+        "type": "string",
+        "default": "openclaw",
+        "description": "Default Private Language Model profile used for local context and WDVA adapters."
+      },
+      "pythonBin": {
+        "type": "string",
+        "default": "python3",
+        "description": "Python interpreter used to launch the local bridge."
+      },
+      "timeoutMs": {
+        "type": "integer",
+        "default": 120000,
+        "minimum": 1000,
+        "description": "Maximum time to wait for bridge calls."
+      },
+      "maxIngestFiles": {
+        "type": "integer",
+        "default": 2000,
+        "minimum": 1,
+        "description": "Safety cap for local ingestion."
+      }
+    }
+  },
+  "tools": [
+    {
+      "name": "enclave.status",
+      "description": "Show local Enclave, Sheriff, and WDVA/private-model readiness."
+    },
+    {
+      "name": "enclave.ingest",
+      "description": "Ingest local files or folders into the encrypted local context index."
+    },
+    {
+      "name": "enclave.chat",
+      "description": "Ask questions against the local encrypted context store."
+    },
+    {
+      "name": "enclave.scan",
+      "description": "Run local risk scanning with the Sheriff privacy broker."
+    },
+    {
+      "name": "enclave.protect",
+      "description": "Enable consent barriers for selected local paths."
+    },
+    {
+      "name": "enclave.read",
+      "description": "Read a protected file through a valid Sheriff lease."
+    },
+    {
+      "name": "enclave.adapters",
+      "description": "Inspect local WDVA adapters and the recommended model profile."
+    }
+  ]
+}
