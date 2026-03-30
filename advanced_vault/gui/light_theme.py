@@ -1,61 +1,62 @@
 """
-Light Theme System - Hugging Face Inspired
-Clean, bright, modern design with light backgrounds and subtle accents.
+Light Theme System
+Warm-neutral, investor-demo theme aligned to the current Enclave desktop design.
 """
 
 class LightTheme:
-    """Light theme inspired by Hugging Face's clean, bright aesthetic."""
+    """Warm neutral light theme with teal privacy accents."""
     
-    # Background colors (light, airy)
-    BG_PRIMARY = "#ffffff"           # Pure white (main background)
-    BG_SECONDARY = "#f8f9fa"         # Very light gray (subtle sections)
-    BG_ELEVATED = "#ffffff"          # White cards
-    BG_HOVER = "#f1f3f5"             # Light gray hover
-    BG_SURFACE = "#ffffff"           # Card surfaces
+    # Background colors
+    BG_PRIMARY = "#fafaf9"           # App background
+    BG_SECONDARY = "#f5f4f0"         # Section surfaces
+    BG_ELEVATED = "#ffffff"          # Cards
+    BG_HOVER = "#f0efeb"             # Hovered cards and nav
+    BG_SURFACE = "#ffffff"           # Primary surface
     
     # Subtle background variations
-    BG_SUBTLE = "#fafbfc"            # Ultra-light gray (for depth)
-    BG_DIVIDER = "#e5e7eb"           # Light divider color
+    BG_SUBTLE = "#f7f6f3"
+    BG_DIVIDER = "rgba(0, 0, 0, 0.08)"
+    SURFACE_TINT = "rgba(13, 124, 140, 0.04)"
     
-    # Accent colors (soft blues and purples like HF)
-    ACCENT_PRIMARY = "#007bff"       # Bright blue (primary actions)
-    ACCENT_PRIMARY_DARK = "#0056b3"  # Darker blue (hover)
-    ACCENT_SECONDARY = "#7c3aed"     # Purple (secondary actions)
-    ACCENT_SUCCESS = "#10b981"       # Green (success states)
-    ACCENT_WARNING = "#f59e0b"       # Amber (warnings)
-    ACCENT_ERROR = "#ef4444"         # Red (errors)
+    # Accent colors
+    ACCENT_PRIMARY = "#0d7c8c"       # Rich teal
+    ACCENT_PRIMARY_DARK = "#0a6271"
+    ACCENT_SECONDARY = "#2a9aac"
+    ACCENT_SUCCESS = "#10b981"
+    ACCENT_WARNING = "#f59e0b"
+    ACCENT_ERROR = "#ef4444"
     
     # Accent variations (HF style)
-    ACCENT_BLUE_LIGHT = "#e0f2fe"    # Light blue background
-    ACCENT_PURPLE_LIGHT = "#f3e8ff"  # Light purple background
+    ACCENT_BLUE_LIGHT = "#e6f4f6"    # Accent tint surface
+    ACCENT_PURPLE_LIGHT = "#eef7f8"
     
     # Text colors (dark on light)
-    TEXT_PRIMARY = "#1f2937"         # Dark gray (almost black)
-    TEXT_SECONDARY = "#4b5563"       # Medium gray
-    TEXT_MUTED = "#6b7280"           # Muted gray
-    TEXT_DISABLED = "#9ca3af"        # Disabled gray
-    TEXT_LINK = "#007bff"            # Link blue
+    TEXT_PRIMARY = "#1a1a1a"
+    TEXT_SECONDARY = "#3d3d3d"
+    TEXT_MUTED = "#6b6b6b"
+    TEXT_DISABLED = "#9ca3af"
+    TEXT_LINK = "#0d7c8c"
     
     # Borders (subtle, light)
-    BORDER_COLOR = "#e5e7eb"         # Light gray border
-    BORDER_COLOR_HOVER = "#d1d5db"   # Slightly darker on hover
-    BORDER_COLOR_ACTIVE = "#007bff"   # Blue border for active
+    BORDER_COLOR = "rgba(0, 0, 0, 0.08)"
+    BORDER_COLOR_HOVER = "rgba(0, 0, 0, 0.12)"
+    BORDER_COLOR_ACTIVE = "#0d7c8c"
     
     # Glassmorphism (light theme version)
-    GLASS_BG = "rgba(255, 255, 255, 0.95)"
-    GLASS_BORDER = "rgba(0, 0, 0, 0.05)"
+    GLASS_BG = "rgba(255, 255, 255, 0.92)"
+    GLASS_BORDER = "rgba(0, 0, 0, 0.06)"
     
     # Shadows (subtle, light theme)
-    SHADOW_XS = "0 1px 2px rgba(0, 0, 0, 0.05)"
-    SHADOW_SM = "0 1px 3px rgba(0, 0, 0, 0.1)"
-    SHADOW_MD = "0 4px 6px rgba(0, 0, 0, 0.1)"
-    SHADOW_LG = "0 10px 15px rgba(0, 0, 0, 0.1)"
+    SHADOW_XS = "0 1px 2px rgba(0, 0, 0, 0.04)"
+    SHADOW_SM = "0 2px 8px rgba(0, 0, 0, 0.06)"
+    SHADOW_MD = "0 4px 16px rgba(0, 0, 0, 0.08)"
+    SHADOW_LG = "0 8px 32px rgba(0, 0, 0, 0.10)"
     
     # Gradients (light theme)
-    GRADIENT_PRIMARY = ["#007bff", "#7c3aed"]  # Blue to purple
-    GRADIENT_SECONDARY = ["#f59e0b", "#f97316"]  # Amber to orange
-    GRADIENT_SUCCESS = ["#10b981", "#059669"]  # Green shades
-    GRADIENT_BG = ["#ffffff", "#f8f9fa"]  # Subtle background gradient
+    GRADIENT_PRIMARY = ["#0d7c8c", "#2a9aac"]
+    GRADIENT_SECONDARY = ["#f5f4f0", "#fafaf9"]
+    GRADIENT_SUCCESS = ["#10b981", "#059669"]
+    GRADIENT_BG = ["#fafaf9", "#f5f4f0"]
     
     # Design Tokens - Spacing (spacious like HF)
     SPACING_XS = 4
@@ -95,7 +96,7 @@ class LightTheme:
     INPUT_HEIGHT_SM = 32
     
     CARD_PADDING = 16
-    CARD_BORDER_RADIUS = 8
+    CARD_BORDER_RADIUS = 12
     
     SIDEBAR_WIDTH = 240
     
@@ -197,4 +198,3 @@ class LightTheme:
                 vertical=LightTheme.PADDING_SM
             ),
         }
-

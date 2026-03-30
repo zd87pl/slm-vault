@@ -22,14 +22,15 @@ import time
 
 # Check if MLX module is available
 try:
-    from qa_generator_mlx import MLXQAGenerator
+    from advanced_vault.gui.qa_generator_mlx import MLXQAGenerator
     MLX_MODULE_AVAILABLE = True
 except ImportError:
     MLX_MODULE_AVAILABLE = False
 
-# Add parent to path for imports
-sys.path.insert(0, str(Path(__file__).parent))
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# Ensure gui package directory is importable for sibling modules
+_gui_dir = str(Path(__file__).parent)
+if _gui_dir not in sys.path:
+    sys.path.insert(0, _gui_dir)
 
 from advanced_vault.core import HybridVault
 from advanced_vault.enclave_control import EnclaveRuntime
@@ -39,22 +40,96 @@ from advanced_vault.private_models import PrivateModelManager, PrivateModelProfi
 from advanced_vault.private_models.manager import SUPPORTED_EXTENSIONS
 from advanced_vault.sheriff.core import SheriffCore
 from advanced_vault.wallet import WalletService
-from auth_screen import AuthScreen
-from cloud_sync import CloudSyncService
-from pdf_processor import PDFProcessor, probe_liteparse_backend
-from qa_generator import QAGenerator
-from training_manager import TrainingManager
-from folder_manager import FolderManager
-from training_queue import TrainingQueue, QueueItem, QueueItemStatus, WatchedFolder
-from theme import ModernTheme
-from sleek_theme import SleekTheme
-from light_theme import LightTheme
-from welcome_screen import WelcomeScreen
-from error_helper import make_user_friendly, format_error_snackbar
-from mcp_setup import MCPSetupHelper
-from modern_sidebar import ModernSidebar
-from config_loader import apply_config, validate_config, show_config_status
-from localization import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, get_text
+
+# GUI sibling imports — use try/except for resilience
+try:
+    from auth_screen import AuthScreen
+except ImportError:
+    AuthScreen = None
+
+try:
+    from cloud_sync import CloudSyncService
+except ImportError:
+    CloudSyncService = None
+
+try:
+    from pdf_processor import PDFProcessor, probe_liteparse_backend
+except ImportError:
+    PDFProcessor = None
+    probe_liteparse_backend = None
+
+try:
+    from qa_generator import QAGenerator
+except ImportError:
+    QAGenerator = None
+
+try:
+    from training_manager import TrainingManager
+except ImportError:
+    TrainingManager = None
+
+try:
+    from folder_manager import FolderManager
+except ImportError:
+    FolderManager = None
+
+try:
+    from training_queue import TrainingQueue, QueueItem, QueueItemStatus, WatchedFolder
+except ImportError:
+    TrainingQueue = None
+    QueueItem = None
+    QueueItemStatus = None
+    WatchedFolder = None
+
+try:
+    from theme import ModernTheme
+except ImportError:
+    ModernTheme = None
+
+try:
+    from sleek_theme import SleekTheme
+except ImportError:
+    SleekTheme = None
+
+try:
+    from light_theme import LightTheme
+except ImportError:
+    LightTheme = None
+
+try:
+    from welcome_screen import WelcomeScreen
+except ImportError:
+    WelcomeScreen = None
+
+try:
+    from error_helper import make_user_friendly, format_error_snackbar
+except ImportError:
+    def make_user_friendly(e): return str(e)
+    def format_error_snackbar(e): return str(e)
+
+try:
+    from mcp_setup import MCPSetupHelper
+except ImportError:
+    MCPSetupHelper = None
+
+try:
+    from modern_sidebar import ModernSidebar
+except ImportError:
+    ModernSidebar = None
+
+try:
+    from config_loader import apply_config, validate_config, show_config_status
+except ImportError:
+    def apply_config(): pass
+    def validate_config(): return True
+    def show_config_status(): pass
+
+try:
+    from localization import DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, get_text
+except ImportError:
+    DEFAULT_LANGUAGE = "en"
+    SUPPORTED_LANGUAGES = {"en": "English"}
+    def get_text(key, **kw): return key
 
 logger = logging.getLogger(__name__)
 
@@ -102,20 +177,9 @@ class VaultApp:
         self.page.window.min_width = 800
         self.page.window.min_height = 600
         
-        # Set up light theme (Hugging Face inspired)
-        self.page.theme = ft.Theme(
-            color_scheme_seed=LightTheme.ACCENT_PRIMARY,
-            font_family="System",
-            text_theme=ft.TextTheme(
-                display_large=ft.TextStyle(size=32, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-                display_medium=ft.TextStyle(size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-                headline_large=ft.TextStyle(size=20, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-                title_large=ft.TextStyle(size=16, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-                body_large=ft.TextStyle(size=14, color=LightTheme.TEXT_PRIMARY),
-                body_medium=ft.TextStyle(size=13, color=LightTheme.TEXT_SECONDARY),
-                label_large=ft.TextStyle(size=12, weight=ft.FontWeight.W_500, color=LightTheme.TEXT_PRIMARY),
-            ),
-        )
+        # Keep the theme close to Flet defaults; heavy theme overrides were causing
+        # controls to render unreliably on the desktop/web demo surfaces.
+        self.page.theme = ft.Theme(color_scheme_seed=LightTheme.ACCENT_PRIMARY)
         
         # Set page background (light theme)
         self.page.bgcolor = LightTheme.BG_PRIMARY
@@ -4976,134 +5040,130 @@ class VaultApp:
         except Exception as e:
             logger.error(f"Private Model indexing error: {e}")
 
+    def _build_status_badge(
+        self,
+        label: str,
+        color: Optional[str] = None,
+        icon: Optional[str] = None,
+        tint: Optional[str] = None,
+    ) -> ft.Container:
+        """Small pill badge used across the investor demo shell."""
+        badge_color = color or LightTheme.TEXT_MUTED
+        badge_tint = tint or (badge_color + "12" if badge_color.startswith("#") else LightTheme.BG_HOVER)
+        controls: List[ft.Control] = []
+        if icon:
+            controls.append(ft.Icon(icon, size=12, color=badge_color))
+        controls.append(ft.Text(label, size=11, color=badge_color, weight=ft.FontWeight.W_500))
+        return ft.Container(
+            content=ft.Row(controls, spacing=6, tight=True),
+            padding=ft.padding.symmetric(horizontal=10, vertical=6),
+            bgcolor=badge_tint,
+            border_radius=999,
+        )
+
+    def _build_surface_card(
+        self,
+        content: ft.Control,
+        padding: int = 20,
+        bgcolor: Optional[str] = None,
+    ) -> ft.Container:
+        """Standard elevated card surface for investor-demo views."""
+        return ft.Container(
+            content=content,
+            padding=padding,
+            bgcolor=bgcolor or LightTheme.BG_ELEVATED,
+            border_radius=16,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+        )
+
+    def _simple_metric_card(self, label: str, value: str) -> ft.Container:
+        """Small stable metric card for the simplified workspace."""
+        return ft.Container(
+            content=ft.Column(
+                [
+                    ft.Text(label, size=11, color=LightTheme.TEXT_MUTED),
+                    ft.Text(value, size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                ],
+                spacing=4,
+            ),
+            padding=ft.padding.symmetric(horizontal=8, vertical=4),
+        )
+
+    def _build_page_header(
+        self,
+        title: str,
+        subtitle: str,
+        trailing: Optional[List[ft.Control]] = None,
+    ) -> ft.Container:
+        """Shared page header used by the demo shell."""
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Column(
+                        [
+                            ft.Text(title, size=24, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                            ft.Text(subtitle, size=14, color=LightTheme.TEXT_MUTED),
+                        ],
+                        spacing=4,
+                    ),
+                    ft.Container(expand=True),
+                    *(trailing or []),
+                ],
+                spacing=12,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.only(left=28, right=28, top=24, bottom=20),
+            bgcolor=LightTheme.BG_PRIMARY,
+            border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+        )
+
+    def _render_primary_shell(self, active_index: int, content: ft.Control) -> None:
+        """Render the main investor-demo shell with the modern sidebar."""
+        if not hasattr(self, "sidebar") or self.sidebar is None:
+            self.sidebar = ModernSidebar(
+                on_nav_change=self.on_nav_change,
+                selected_index=active_index,
+                translate=self.tr,
+            )
+        else:
+            self.sidebar.selected_index = active_index
+            self.sidebar.translate = self.tr
+        sidebar_container = self.sidebar.build()
+        self.page.add(
+            ft.Row(
+                [
+                    sidebar_container,
+                    ft.Container(content=content, expand=True, bgcolor=LightTheme.BG_PRIMARY),
+                ],
+                spacing=0,
+                expand=True,
+            )
+        )
+        self.page.update()
+
     def _show_workspace_view(self, initial_question: Optional[str] = None):
         """Render the primary Private Model workspace."""
         self.current_view = "agent_chat"
         self._ensure_chat_messages_loaded()
 
         profile = self._ensure_private_model_profile()
-        profiles = self._get_private_model_profiles()
         profile_status = self._get_private_model_status()
         documents = self._get_private_model_documents(limit=10)
         module_statuses = self._update_module_status_snapshots()
-        user_label = self._get_identity_label()
 
         self.page.clean()
-        self._ensure_private_model_pickers()
-
-        chat_stream = ft.Column(
-            spacing=16,
-            expand=True,
-            scroll=ft.ScrollMode.AUTO,
-        )
-
-        if self.chat_messages:
-            for msg in self.chat_messages:
-                chat_stream.controls.append(
-                    self._create_chat_bubble(
-                        msg["role"],
-                        msg["content"],
-                        msg.get("document"),
-                        msg.get("sources"),
-                    )
-                )
-        else:
-            quick_prompts = [
-                "Summarize the main themes across my indexed files.",
-                "What are the most important risks or open questions in this context?",
-                "Give me an investor-ready narrative from these materials.",
-                "What should I read first to get up to speed quickly?",
-            ]
-            chat_stream.controls.append(
-                ft.Container(
-                    content=ft.Column(
-                        [
-                            ft.Container(
-                                content=ft.Icon(ft.Icons.PSYCHOLOGY_ROUNDED, size=48, color=LightTheme.ACCENT_PRIMARY),
-                                padding=18,
-                                border_radius=18,
-                                bgcolor=LightTheme.ACCENT_PRIMARY + "10",
-                            ),
-                            ft.Container(height=8),
-                            ft.Text(
-                                f"{profile.name} is ready for private local chat",
-                                size=24,
-                                weight=ft.FontWeight.BOLD,
-                                color=LightTheme.TEXT_PRIMARY,
-                                text_align=ft.TextAlign.CENTER,
-                            ),
-                            ft.Text(
-                                "Ask from your encrypted context, keep documents local, and let WDVA layers shape behavior when attached.",
-                                size=14,
-                                color=LightTheme.TEXT_SECONDARY,
-                                text_align=ft.TextAlign.CENTER,
-                            ),
-                            ft.Container(height=20),
-                            ft.Row(
-                                [
-                                    self._create_action_chip("Summarize", quick_prompts[0], []),
-                                    self._create_action_chip("Risks", quick_prompts[1], []),
-                                    self._create_action_chip("Narrative", quick_prompts[2], []),
-                                    self._create_action_chip("Onboard", quick_prompts[3], []),
-                                ],
-                                alignment=ft.MainAxisAlignment.CENTER,
-                                spacing=12,
-                                wrap=True,
-                            ),
-                            ft.Container(height=20),
-                            ft.Row(
-                                [
-                                    ft.ElevatedButton(
-                                        "Add Files",
-                                        icon=ft.Icons.FILE_UPLOAD_ROUNDED,
-                                        on_click=self._open_private_files_picker,
-                                        style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
-                                    ),
-                                    ft.OutlinedButton(
-                                        "Add Folder",
-                                        icon=ft.Icons.DRIVE_FOLDER_UPLOAD_ROUNDED,
-                                        on_click=self._open_private_folder_picker,
-                                        style=ft.ButtonStyle(color=LightTheme.TEXT_PRIMARY),
-                                    ),
-                                    ft.OutlinedButton(
-                                        "Open Library",
-                                        icon=ft.Icons.FOLDER_ROUNDED,
-                                        on_click=lambda e: self.show_my_data_view(active_tab="context"),
-                                        style=ft.ButtonStyle(color=LightTheme.TEXT_PRIMARY),
-                                    ),
-                                ],
-                                alignment=ft.MainAxisAlignment.CENTER,
-                                spacing=12,
-                                wrap=True,
-                            ),
-                        ],
-                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
-                        spacing=0,
-                    ),
-                    alignment=ft.alignment.center,
-                    padding=36,
-                    border_radius=20,
-                    bgcolor=LightTheme.BG_ELEVATED,
-                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                    margin=ft.margin.only(top=56, bottom=24),
-                )
-            )
-
-        self.chat_messages_list = chat_stream
-        self.trained_adapters = []
-
         chat_input = ft.TextField(
             hint_text=(
                 f"Ask about your {profile_status.get('document_count', 0)} indexed document(s)..."
                 if profile_status.get("document_count", 0) > 0
-                else "Ask a question, then add files or folders to deepen the context..."
+                else "Ask anything about your documents..."
             ),
-            border_radius=24,
-            bgcolor=LightTheme.BG_ELEVATED,
+            expand=True,
+            border_radius=14,
             border_color=LightTheme.BORDER_COLOR,
             focused_border_color=LightTheme.ACCENT_PRIMARY,
-            content_padding=ft.padding.symmetric(horizontal=20, vertical=14),
-            expand=True,
+            content_padding=ft.padding.symmetric(horizontal=16, vertical=14),
             on_submit=lambda e: self._send_chat_message(
                 e,
                 chat_input,
@@ -5114,469 +5174,243 @@ class VaultApp:
         )
         self.chat_input = chat_input
 
-        sidebar_controls: List[ft.Control] = [
-            ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Row(
-                            [
-                                ft.Text("Active Profile", size=13, color=LightTheme.TEXT_MUTED),
-                                ft.Container(expand=True),
-                                ft.TextButton(
-                                    "New",
-                                    icon=ft.Icons.ADD_ROUNDED,
-                                    on_click=self._open_create_profile_dialog,
-                                    style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
-                                ),
-                            ]
-                        ),
-                        ft.Dropdown(
-                            value=profile.name,
-                            options=[ft.dropdown.Option(item.name, item.name) for item in profiles],
-                            border_radius=12,
-                            filled=True,
-                            bgcolor=LightTheme.BG_PRIMARY,
-                            on_change=lambda e: self._set_active_private_profile(e.control.value),
-                        ),
-                        ft.Container(height=12),
-                        ft.Text(profile.description or "Private context workspace", size=12, color=LightTheme.TEXT_SECONDARY),
-                    ],
-                    spacing=8,
-                ),
-                padding=20,
-                bgcolor=LightTheme.BG_ELEVATED,
-                border_radius=16,
-                border=ft.border.all(1, LightTheme.BORDER_COLOR),
-            ),
-            ft.Container(height=12),
-            ft.Container(
-                content=ft.Row(
-                    [
-                        ft.ElevatedButton(
-                            "Add Files",
-                            icon=ft.Icons.FILE_UPLOAD_ROUNDED,
-                            on_click=self._open_private_files_picker,
-                            style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
-                        ),
-                        ft.OutlinedButton(
-                            "Add Folder",
-                            icon=ft.Icons.DRIVE_FOLDER_UPLOAD_ROUNDED,
-                            on_click=self._open_private_folder_picker,
-                            style=ft.ButtonStyle(color=LightTheme.TEXT_PRIMARY),
-                        ),
-                    ],
-                    spacing=10,
-                    wrap=True,
-                ),
-            ),
-            ft.Container(height=12),
-            ft.Container(
-                content=ft.Column(
-                    [
-                        ft.Text("Workspace Status", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                        ft.Container(height=10),
-                        ft.Row([ft.Icon(ft.Icons.FOLDER_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY), ft.Text(f"{profile_status.get('document_count', 0)} documents", size=12, color=LightTheme.TEXT_PRIMARY)], spacing=8),
-                        ft.Row([ft.Icon(ft.Icons.DATA_OBJECT_ROUNDED, size=16, color=LightTheme.ACCENT_SUCCESS), ft.Text(f"{profile_status.get('chunk_count', 0)} encrypted chunks", size=12, color=LightTheme.TEXT_PRIMARY)], spacing=8),
-                        ft.Row([ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, size=16, color=LightTheme.ACCENT_WARNING), ft.Text(f"{len(profile.wdva_adapters)} WDVA layers", size=12, color=LightTheme.TEXT_PRIMARY)], spacing=8),
-                        ft.Row([ft.Icon(ft.Icons.PSYCHOLOGY_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY), ft.Text((profile_status.get("model_name") or DEFAULT_PRIVATE_MODEL_NAME).split("/")[-1], size=12, color=LightTheme.TEXT_PRIMARY)], spacing=8),
-                    ],
-                    spacing=8,
-                ),
-                padding=20,
-                bgcolor=LightTheme.BG_ELEVATED,
-                border_radius=16,
-                border=ft.border.all(1, LightTheme.BORDER_COLOR),
-            ),
-            ft.Container(height=12),
-            ft.Text("Indexed Context", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-        ]
-
-        if documents:
-            for doc in documents[:8]:
-                parent_name = Path(doc.get("source_path") or doc.get("name", "")).parent.name or "Local import"
-                sidebar_controls.append(
-                    ft.Container(
-                        content=ft.Row(
-                            [
-                                ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
-                                ft.Column(
-                                    [
-                                        ft.Text(doc.get("name", "Untitled"), size=12, color=LightTheme.TEXT_PRIMARY, weight=ft.FontWeight.W_600, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                                        ft.Text(f"{doc.get('chunk_count', 0)} chunks • {parent_name}", size=10, color=LightTheme.TEXT_MUTED, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                                    ],
-                                    spacing=2,
-                                    expand=True,
-                                ),
-                            ],
-                            spacing=10,
-                        ),
-                        padding=12,
-                        bgcolor=LightTheme.BG_ELEVATED,
-                        border_radius=12,
-                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                    )
-                )
-        else:
-            sidebar_controls.append(
-                ft.Container(
-                    content=ft.Text(
-                        "Add files or a folder to build context for this profile.",
-                        size=12,
-                        color=LightTheme.TEXT_MUTED,
-                    ),
-                    padding=12,
-                    bgcolor=LightTheme.BG_ELEVATED,
-                    border_radius=12,
-                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                )
-            )
-
-        sidebar_controls.extend(
-            [
-                ft.Container(height=12),
-                ft.Text("WDVA Layers", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-            ]
-        )
-
-        if profile.wdva_adapters:
-            for adapter in profile.wdva_adapters[:4]:
-                sidebar_controls.append(
-                    ft.Container(
-                        content=ft.Row(
-                            [
-                                ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, size=18, color=LightTheme.ACCENT_WARNING),
-                                ft.Column(
-                                    [
-                                        ft.Text(adapter.name, size=12, color=LightTheme.TEXT_PRIMARY, weight=ft.FontWeight.W_600, max_lines=1, overflow=ft.TextOverflow.ELLIPSIS),
-                                        ft.Text(adapter.description or "Private WDVA layer", size=10, color=LightTheme.TEXT_MUTED, max_lines=2, overflow=ft.TextOverflow.ELLIPSIS),
-                                    ],
-                                    spacing=2,
-                                    expand=True,
-                                ),
-                                ft.Text(f"{int(adapter.weight * 100)}%", size=10, color=LightTheme.ACCENT_WARNING),
-                            ],
-                            spacing=10,
-                        ),
-                        padding=12,
-                        bgcolor=LightTheme.BG_ELEVATED,
-                        border_radius=12,
-                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                    )
-                )
-        else:
-            sidebar_controls.append(
-                ft.Container(
-                    content=ft.Text(
-                        "No WDVA layers attached yet. This profile is ready when you want domain-specific behavior.",
-                        size=12,
-                        color=LightTheme.TEXT_MUTED,
-                    ),
-                    padding=12,
-                    bgcolor=LightTheme.BG_ELEVATED,
-                    border_radius=12,
-                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                )
-            )
-
-        context_panel = ft.Container(
-            content=ft.Column(sidebar_controls, spacing=0, scroll=ft.ScrollMode.AUTO),
-            width=340,
-            padding=20,
-            bgcolor=LightTheme.BG_SECONDARY,
-            border=ft.border.only(right=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
-        )
-
-        header = ft.Container(
-            content=ft.Row(
-                [
-                    ft.Column(
-                        [
-                            ft.Text("Secure Chat Workspace", size=22, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-                            ft.Text("Private context, local generation, and investor-demo polish in one place.", size=13, color=LightTheme.TEXT_SECONDARY),
-                        ],
-                        spacing=2,
-                    ),
-                    ft.Container(expand=True),
-                    ft.Container(
-                        content=ft.Row([ft.Icon(ft.Icons.COMPUTER_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Local MLX", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=6),
-                        padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                        bgcolor=LightTheme.ACCENT_SUCCESS + "10",
-                        border_radius=999,
-                    ),
-                    ft.Container(
-                        content=ft.Row([ft.Icon(ft.Icons.LOCK_ROUNDED, size=14, color=LightTheme.ACCENT_SUCCESS), ft.Text("Encrypted context", size=11, color=LightTheme.ACCENT_SUCCESS)], spacing=6),
-                        padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                        bgcolor=LightTheme.ACCENT_SUCCESS + "10",
-                        border_radius=999,
-                    ),
-                    ft.Container(
-                        content=ft.Row([ft.Icon(ft.Icons.PERSON_ROUNDED, size=14, color=LightTheme.TEXT_MUTED), ft.Text(user_label, size=11, color=LightTheme.TEXT_MUTED)], spacing=6),
-                        padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                        bgcolor=LightTheme.BG_ELEVATED,
-                        border_radius=999,
-                    ),
-                ],
-                spacing=10,
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            padding=ft.padding.symmetric(horizontal=24, vertical=18),
-            bgcolor=LightTheme.BG_PRIMARY,
-            border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
-        )
-
-        workspace_toolbar = ft.Container(
-            content=ft.Row(
-                [
-                    ft.Dropdown(
-                        value=profile.name,
-                        options=[ft.dropdown.Option(item.name, item.name) for item in profiles],
-                        width=220,
-                        border_radius=12,
-                        filled=True,
-                        bgcolor=LightTheme.BG_PRIMARY,
-                        on_change=lambda e: self._set_active_private_profile(e.control.value),
-                    ),
-                    ft.ElevatedButton(
-                        "Add Files",
-                        icon=ft.Icons.FILE_UPLOAD_ROUNDED,
-                        on_click=self._open_private_files_picker,
-                        style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
-                    ),
-                    ft.OutlinedButton(
-                        "Add Folder",
-                        icon=ft.Icons.DRIVE_FOLDER_UPLOAD_ROUNDED,
-                        on_click=self._open_private_folder_picker,
-                        style=ft.ButtonStyle(color=LightTheme.TEXT_PRIMARY),
-                    ),
-                    ft.TextButton(
-                        "Library",
-                        icon=ft.Icons.FOLDER_ROUNDED,
-                        on_click=lambda e: self.show_my_data_view(active_tab="context"),
-                        style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
-                    ),
-                    ft.Container(
-                        content=ft.Text(f"{profile_status.get('document_count', 0)} docs", size=11, color=LightTheme.ACCENT_PRIMARY),
-                        padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                        bgcolor=LightTheme.ACCENT_PRIMARY + "10",
-                        border_radius=999,
-                    ),
-                    ft.Container(
-                        content=ft.Text(f"{len(profile.wdva_adapters)} WDVA", size=11, color=LightTheme.ACCENT_WARNING),
-                        padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                        bgcolor=LightTheme.ACCENT_WARNING + "10",
-                        border_radius=999,
-                    ),
-                    ft.Container(
-                        content=ft.Text((profile_status.get("model_name") or DEFAULT_PRIVATE_MODEL_NAME).split("/")[-1], size=11, color=LightTheme.TEXT_MUTED),
-                        padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                        bgcolor=LightTheme.BG_PRIMARY,
-                        border_radius=999,
-                    ),
-                ],
-                spacing=10,
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            padding=ft.padding.symmetric(horizontal=24, vertical=16),
-            bgcolor=LightTheme.BG_ELEVATED,
-            border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
-        )
-
-        def status_tile(label: str, value: str, icon: str, color: str) -> ft.Container:
-            return ft.Container(
-                content=ft.Row(
-                    [
-                        ft.Container(
-                            content=ft.Icon(icon, size=16, color=color),
-                            padding=8,
-                            border_radius=10,
-                            bgcolor=color + "12",
-                        ),
-                        ft.Column(
-                            [
-                                ft.Text(value, size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                                ft.Text(label, size=11, color=LightTheme.TEXT_MUTED),
-                            ],
-                            spacing=2,
-                            tight=True,
-                        ),
-                    ],
-                    spacing=10,
-                ),
-                padding=ft.padding.symmetric(horizontal=14, vertical=12),
-                bgcolor=LightTheme.BG_ELEVATED,
-                border_radius=14,
-                border=ft.border.all(1, LightTheme.BORDER_COLOR),
-            )
-
         vault_runtime_status = module_statuses.get("vault", {}).get("details", {})
         wallet_runtime_status = module_statuses.get("wallet", {}).get("details", {})
-        workspace_status_strip = ft.Container(
-            content=ft.Row(
+        parser_backend = vault_runtime_status.get("parser_backend", self._current_parser_backend())
+
+        stats_chips = ft.Row(
+            [
+                self._simple_metric_card(
+                    "Documents",
+                    str(vault_runtime_status.get("document_count", profile_status.get("document_count", 0))),
+                ),
+                self._simple_metric_card(
+                    "Chunks",
+                    str(vault_runtime_status.get("chunk_count", profile_status.get("chunk_count", 0))),
+                ),
+                self._simple_metric_card(
+                    "Wallet Pending",
+                    str(wallet_runtime_status.get("pending_count", 0)),
+                ),
+            ],
+            spacing=12,
+            wrap=True,
+        )
+
+        self.workspace_empty_state = ft.Container(
+            visible=not bool(self.chat_messages),
+            padding=ft.padding.only(bottom=8),
+            content=ft.Column(
                 [
-                    status_tile(
-                        "Documents",
-                        str(vault_runtime_status.get("document_count", profile_status.get("document_count", 0))),
-                        ft.Icons.FOLDER_ROUNDED,
-                        LightTheme.ACCENT_PRIMARY,
+                    ft.Text(
+                        "Your private AI workspace",
+                        size=24,
+                        weight=ft.FontWeight.W_600,
+                        color=LightTheme.TEXT_PRIMARY,
                     ),
-                    status_tile(
-                        "Encrypted Chunks",
-                        str(vault_runtime_status.get("chunk_count", profile_status.get("chunk_count", 0))),
-                        ft.Icons.DATA_OBJECT_ROUNDED,
-                        LightTheme.ACCENT_SUCCESS,
+                    ft.Text(
+                        (
+                            "Indexed context: "
+                            + ", ".join(doc.get("name", "Untitled") for doc in documents[:3])
+                        )
+                        if documents
+                        else "No indexed files yet. Add files or a folder to get started.",
+                        size=13,
+                        color=LightTheme.TEXT_SECONDARY,
                     ),
-                    status_tile(
-                        "WDVA Layers",
-                        str(vault_runtime_status.get("adapter_count", len(profile.wdva_adapters))),
-                        ft.Icons.AUTO_AWESOME_ROUNDED,
-                        LightTheme.ACCENT_WARNING,
-                    ),
-                    status_tile(
-                        "Wallet Pending",
-                        str(wallet_runtime_status.get("pending_count", 0)),
-                        ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED,
-                        LightTheme.ACCENT_PRIMARY,
+                    ft.Row(
+                        [
+                            ft.ElevatedButton(
+                                "Add Files",
+                                icon=ft.Icons.UPLOAD_FILE_ROUNDED,
+                                on_click=self._open_private_files_picker,
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                                    color="white",
+                                    padding=ft.padding.symmetric(horizontal=16, vertical=14),
+                                    shape=ft.RoundedRectangleBorder(radius=12),
+                                ),
+                            ),
+                            ft.OutlinedButton(
+                                "Add Folder",
+                                icon=ft.Icons.DRIVE_FOLDER_UPLOAD_ROUNDED,
+                                on_click=self._open_private_folder_picker,
+                                style=ft.ButtonStyle(
+                                    color=LightTheme.TEXT_PRIMARY,
+                                    side=ft.BorderSide(1, LightTheme.BORDER_COLOR),
+                                    padding=ft.padding.symmetric(horizontal=16, vertical=14),
+                                    shape=ft.RoundedRectangleBorder(radius=12),
+                                ),
+                            ),
+                        ],
+                        spacing=12,
+                        wrap=True,
                     ),
                 ],
                 spacing=12,
-                wrap=True,
             ),
-            padding=ft.padding.symmetric(horizontal=24, vertical=16),
-            bgcolor=LightTheme.BG_PRIMARY,
-            border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
         )
 
-        recent_context_strip = ft.Container(
-            content=ft.Row(
-                [
-                    ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
-                    ft.Text("Indexed Context", size=12, color=LightTheme.TEXT_MUTED),
-                    ft.Container(expand=True),
-                    *[
-                        ft.Container(
-                            content=ft.Text(
-                                doc.get("name", "Untitled"),
-                                size=11,
-                                color=LightTheme.TEXT_PRIMARY,
-                                max_lines=1,
-                                overflow=ft.TextOverflow.ELLIPSIS,
-                            ),
-                            padding=ft.padding.symmetric(horizontal=10, vertical=6),
-                            bgcolor=LightTheme.BG_ELEVATED,
-                            border_radius=999,
-                            border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                        )
-                        for doc in documents[:3]
-                    ],
-                ],
-                spacing=10,
-                wrap=True,
-                vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            ),
-            padding=ft.padding.symmetric(horizontal=24, vertical=12),
-            bgcolor=LightTheme.BG_PRIMARY,
-            border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
-            visible=bool(documents),
+        chat_messages_list = ft.ListView(
+            spacing=12,
+            auto_scroll=True,
+            height=320,
         )
+        for msg in self.chat_messages[-8:]:
+            chat_messages_list.controls.append(
+                self._create_chat_bubble(
+                    msg.get("role", "assistant"),
+                    msg.get("content", ""),
+                    msg.get("document"),
+                    msg.get("sources"),
+                )
+            )
+        if not self.chat_messages:
+            chat_messages_list.controls.append(
+                ft.Container(
+                    content=ft.Text(
+                        "Ready for your first prompt.",
+                        size=13,
+                        color=LightTheme.TEXT_MUTED,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=4, vertical=2),
+                )
+            )
 
-        input_panel = ft.Container(
+        self.chat_messages_list = chat_messages_list
+        self.trained_adapters = []
+
+        sidebar = ft.Container(
+            width=236,
+            bgcolor=LightTheme.BG_SECONDARY,
+            border=ft.border.only(right=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+            padding=ft.padding.only(left=20, right=20, top=24, bottom=24),
             content=ft.Column(
                 [
+                    ft.Text("Enclave", size=20, weight=ft.FontWeight.W_700, color=LightTheme.TEXT_PRIMARY),
+                    ft.Text("Private Language Model", size=11, color=LightTheme.TEXT_MUTED),
+                    ft.Container(height=20),
+                    ft.TextButton("Workspace", on_click=lambda e: self.on_nav_change(-1)),
+                    ft.TextButton("Library", on_click=lambda e: self.on_nav_change(0)),
+                    ft.TextButton("Connections", on_click=lambda e: self.on_nav_change(1)),
+                    ft.TextButton("Security", on_click=lambda e: self.on_nav_change(2)),
+                    ft.Container(height=20),
+                    ft.Container(
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        border_radius=14,
+                        padding=14,
+                        content=ft.Column(
+                            [
+                                ft.Text("Active Profile", size=11, color=LightTheme.TEXT_MUTED),
+                                ft.Text(profile.name, size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                ft.Text(
+                                    (profile.model_name or DEFAULT_PRIVATE_MODEL_NAME).split("/")[-1],
+                                    size=12,
+                                    color=LightTheme.TEXT_SECONDARY,
+                                ),
+                            ],
+                            spacing=6,
+                        ),
+                    ),
+                    ft.Container(
+                        bgcolor=LightTheme.SURFACE_TINT,
+                        border_radius=14,
+                        padding=14,
+                        content=ft.Column(
+                            [
+                                ft.Text("Private Context", size=11, color=LightTheme.TEXT_MUTED),
+                                ft.Text(
+                                    f"{vault_runtime_status.get('adapter_count', profile_status.get('adapter_count', 0))} WDVA layers",
+                                    size=13,
+                                    color=LightTheme.TEXT_PRIMARY,
+                                    weight=ft.FontWeight.W_600,
+                                ),
+                                ft.Text(
+                                    f"Parser: {parser_backend}",
+                                    size=12,
+                                    color=LightTheme.TEXT_SECONDARY,
+                                ),
+                            ],
+                            spacing=6,
+                        ),
+                    ),
+                ],
+                spacing=8,
+            ),
+        )
+
+        content = ft.Container(
+            expand=True,
+            padding=24,
+            content=ft.Column(
+                [
+                    ft.Text("Secure Chat Workspace", size=24, weight=ft.FontWeight.W_700, color=LightTheme.TEXT_PRIMARY),
+                    ft.Text(
+                        "Private context, local generation, and investor-demo polish in one place.",
+                        size=13,
+                        color=LightTheme.TEXT_SECONDARY,
+                    ),
+                    stats_chips,
+                    ft.Container(
+                        bgcolor=LightTheme.BG_ELEVATED,
+                        border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        border_radius=18,
+                        padding=20,
+                        content=ft.Column(
+                            [
+                                self.workspace_empty_state,
+                                chat_messages_list,
+                            ],
+                            spacing=16,
+                        ),
+                    ),
                     ft.Row(
                         [
-                            ft.Text(self._private_model_note, size=11, color=LightTheme.TEXT_MUTED, expand=True),
-                            ft.TextButton(
-                                "New Chat",
-                                icon=ft.Icons.ADD_COMMENT_ROUNDED,
-                                on_click=lambda e: self._new_chat(),
-                                style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
+                            ft.OutlinedButton(
+                                "Summarize my files",
+                                on_click=lambda e: self._quick_ask("Summarize my files", []),
+                            ),
+                            ft.OutlinedButton(
+                                "Find key risks",
+                                on_click=lambda e: self._quick_ask("Find key risks", []),
+                            ),
+                            ft.OutlinedButton(
+                                "Draft investor update",
+                                on_click=lambda e: self._quick_ask("Draft an investor update from my private files", []),
+                            ),
+                        ],
+                        spacing=8,
+                        wrap=True,
+                    ),
+                    ft.Row(
+                        [
+                            chat_input,
+                            ft.ElevatedButton(
+                                "Send",
+                                on_click=lambda e: self._send_chat_message(
+                                    e,
+                                    chat_input,
+                                    [],
+                                    mode_override="local",
+                                    allow_cloud_fallback=False,
+                                ),
+                                style=ft.ButtonStyle(
+                                    bgcolor=LightTheme.ACCENT_PRIMARY,
+                                    color="white",
+                                    padding=ft.padding.symmetric(horizontal=18, vertical=16),
+                                    shape=ft.RoundedRectangleBorder(radius=12),
+                                ),
                             ),
                         ],
                         spacing=12,
                     ),
-                    ft.Container(height=8),
-                    ft.Row(
-                        [
-                            ft.IconButton(
-                                ft.Icons.ATTACH_FILE_ROUNDED,
-                                icon_color=LightTheme.TEXT_MUTED,
-                                tooltip="Add files to this profile",
-                                on_click=self._open_private_files_picker,
-                            ),
-                            chat_input,
-                            ft.Container(
-                                content=ft.IconButton(
-                                    ft.Icons.SEND_ROUNDED,
-                                    icon_color="white",
-                                    bgcolor=LightTheme.ACCENT_PRIMARY,
-                                    on_click=lambda e: self._send_chat_message(
-                                        e,
-                                        chat_input,
-                                        [],
-                                        mode_override="local",
-                                        allow_cloud_fallback=False,
-                                    ),
-                                ),
-                                border_radius=24,
-                            ),
-                        ],
-                        spacing=10,
-                    ),
                 ],
-                spacing=0,
+                spacing=12,
             ),
-            padding=ft.padding.symmetric(horizontal=24, vertical=18),
-            bgcolor=LightTheme.BG_PRIMARY,
-            border=ft.border.only(top=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
         )
 
-        chat_surface = ft.Container(
-            content=chat_stream,
-            expand=True,
-            bgcolor=LightTheme.BG_PRIMARY,
-            padding=ft.padding.symmetric(horizontal=28, vertical=24),
-        )
-
-        chat_panel = ft.Container(
-            content=ft.Column(
-                [
-                    header,
-                    workspace_toolbar,
-                    workspace_status_strip,
-                    recent_context_strip,
-                    chat_surface,
-                    input_panel,
-                ],
-                spacing=0,
-                expand=True,
-            ),
-            expand=True,
-            bgcolor=LightTheme.BG_PRIMARY,
-        )
-
-        if not hasattr(self, "sidebar") or self.sidebar is None:
-            self.sidebar = ModernSidebar(
-                on_nav_change=self.on_nav_change,
-                selected_index=-1,
-                translate=self.tr,
-            )
-        else:
-            self.sidebar.selected_index = -1
-            self.sidebar.translate = self.tr
-        sidebar_container = self.sidebar.build()
-
-        self.page.add(
-            ft.Row(
-                [
-                    sidebar_container,
-                    chat_panel,
-                ],
-                spacing=0,
-                expand=True,
-            )
-        )
+        self.page.add(ft.Row([sidebar, content], expand=True, spacing=0))
         self.page.update()
 
         if initial_question:
@@ -5589,6 +5423,724 @@ class VaultApp:
                 mode_override="local",
                 allow_cloud_fallback=False,
             )
+
+    def _show_library_view(self):
+        """Render the Figma-aligned Library view."""
+        self.current_view = "library_shell"
+        self.page.clean()
+
+        profile = self._ensure_private_model_profile()
+        profiles = self._get_private_model_profiles()
+        documents = self._get_private_model_documents(limit=100)
+
+        adapter_rows: List[ft.Control] = []
+        for current_profile in profiles:
+            for adapter in current_profile.wdva_adapters[:4]:
+                adapter_name = (
+                    adapter.get("name")
+                    or adapter.get("adapter_name")
+                    or adapter.get("adapter_id")
+                    or "WDVA Adapter"
+                )
+                adapter_rows.append(
+                    self._build_surface_card(
+                        ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Container(
+                                            content=ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
+                                            width=40,
+                                            height=40,
+                                            border_radius=12,
+                                            bgcolor=LightTheme.ACCENT_BLUE_LIGHT,
+                                            alignment=ft.alignment.center,
+                                        ),
+                                        ft.Column(
+                                            [
+                                                ft.Text(adapter_name, size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                                self._build_status_badge("Active", color=LightTheme.ACCENT_SUCCESS, tint=LightTheme.ACCENT_SUCCESS + "12"),
+                                            ],
+                                            spacing=6,
+                                            expand=True,
+                                        ),
+                                    ],
+                                    spacing=12,
+                                    vertical_alignment=ft.CrossAxisAlignment.START,
+                                ),
+                                ft.Text(
+                                    adapter.get("description")
+                                    or f"Private adaptive layer attached to {current_profile.name}.",
+                                    size=12,
+                                    color=LightTheme.TEXT_SECONDARY,
+                                ),
+                                ft.Row(
+                                    [
+                                        ft.Text(current_profile.name, size=11, color=LightTheme.TEXT_MUTED),
+                                        ft.Text("·", size=11, color=LightTheme.TEXT_MUTED),
+                                        ft.Text("MLX DoRA layer", size=11, color=LightTheme.TEXT_MUTED),
+                                    ],
+                                    spacing=6,
+                                ),
+                            ],
+                            spacing=12,
+                        )
+                    )
+                )
+
+        if not adapter_rows:
+            adapter_rows.append(
+                self._build_surface_card(
+                    ft.Column(
+                        [
+                            ft.Text("No WDVA adapters yet", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                            ft.Text(
+                                "Adapters will appear here once you add personalization layers to a profile.",
+                                size=12,
+                                color=LightTheme.TEXT_SECONDARY,
+                            ),
+                        ],
+                        spacing=8,
+                    )
+                )
+            )
+
+        document_rows: List[ft.Control] = [
+            ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Text("Name", size=11, color=LightTheme.TEXT_MUTED, expand=4),
+                        ft.Text("Type", size=11, color=LightTheme.TEXT_MUTED, expand=1),
+                        ft.Text("Chunks", size=11, color=LightTheme.TEXT_MUTED, expand=1),
+                        ft.Text("Source", size=11, color=LightTheme.TEXT_MUTED, expand=3),
+                    ],
+                    spacing=16,
+                ),
+                padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                bgcolor=LightTheme.BG_SUBTLE,
+                border_radius=12,
+            )
+        ]
+
+        for doc in documents[:12]:
+            source_path = doc.get("source_path") or ""
+            source_label = Path(source_path).parent.name if source_path else "Local import"
+            doc_type = Path(doc.get("name", "")).suffix.lstrip(".").upper() or "FILE"
+            document_rows.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Row(
+                                [
+                                    ft.Container(
+                                        content=ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
+                                        width=36,
+                                        height=36,
+                                        border_radius=10,
+                                        bgcolor=LightTheme.ACCENT_BLUE_LIGHT,
+                                        alignment=ft.alignment.center,
+                                    ),
+                                    ft.Column(
+                                        [
+                                            ft.Text(doc.get("name", "Unknown"), size=13, weight=ft.FontWeight.W_500, color=LightTheme.TEXT_PRIMARY),
+                                            ft.Text(f"Profile: {profile.name}", size=11, color=LightTheme.TEXT_MUTED),
+                                        ],
+                                        spacing=2,
+                                        expand=True,
+                                    ),
+                                ],
+                                spacing=12,
+                                expand=4,
+                            ),
+                            ft.Text(doc_type, size=12, color=LightTheme.TEXT_SECONDARY, expand=1),
+                            ft.Text(str(doc.get("chunk_count", 0)), size=12, color=LightTheme.TEXT_SECONDARY, expand=1),
+                            ft.Text(source_label or "Local import", size=12, color=LightTheme.TEXT_MUTED, expand=3, overflow=ft.TextOverflow.ELLIPSIS),
+                        ],
+                        spacing=16,
+                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=18, vertical=14),
+                    border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+                )
+            )
+
+        if len(document_rows) == 1:
+            document_rows.append(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Text("No documents indexed", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                            ft.Text("Add files or a folder to populate your library.", size=12, color=LightTheme.TEXT_SECONDARY),
+                        ],
+                        spacing=8,
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                    ),
+                    padding=ft.padding.all(40),
+                    alignment=ft.alignment.center,
+                )
+            )
+
+        content = ft.Column(
+            [
+                self._build_page_header(
+                    "Library",
+                    "Your knowledge sources and adaptive personalization layers.",
+                    trailing=[
+                        ft.ElevatedButton(
+                            "Create Profile",
+                            icon=ft.Icons.ADD_ROUNDED,
+                            on_click=lambda e: self._open_create_profile_dialog(),
+                            style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                        ),
+                    ],
+                ),
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Row(
+                                [
+                                    ft.TextField(
+                                        hint_text="Search documents, adapters...",
+                                        prefix_icon=ft.Icons.SEARCH_ROUNDED,
+                                        bgcolor=LightTheme.BG_ELEVATED,
+                                        border_color=LightTheme.BORDER_COLOR,
+                                        focused_border_color=LightTheme.ACCENT_PRIMARY,
+                                        border_radius=12,
+                                        content_padding=ft.padding.symmetric(horizontal=12, vertical=12),
+                                        width=360,
+                                    ),
+                                ],
+                                spacing=12,
+                            ),
+                            self._build_surface_card(
+                                ft.Column(
+                                    [
+                                        ft.Row(
+                                            [
+                                                ft.Icon(ft.Icons.LAYERS_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
+                                                ft.Text("WDVA Adapters (MLX DoRA)", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                                self._build_status_badge(f"{sum(len(item.wdva_adapters) for item in profiles)} Active", color=LightTheme.ACCENT_PRIMARY, tint=LightTheme.ACCENT_BLUE_LIGHT),
+                                                ft.Container(expand=True),
+                                            ],
+                                            spacing=10,
+                                            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                                        ),
+                                        ft.Text(
+                                            "Private personalization layers that adapt to your knowledge and style without modifying the base model.",
+                                            size=13,
+                                            color=LightTheme.TEXT_SECONDARY,
+                                        ),
+                                        ft.ResponsiveRow(
+                                            [ft.Container(control, col={"sm": 12, "md": 6}) for control in adapter_rows],
+                                            run_spacing=12,
+                                            spacing=12,
+                                        ),
+                                    ],
+                                    spacing=16,
+                                )
+                            ),
+                            self._build_surface_card(
+                                ft.Column(
+                                    [
+                                        ft.Row(
+                                            [
+                                                ft.Icon(ft.Icons.FOLDER_OPEN_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
+                                                ft.Text("Documents & Folders", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                                self._build_status_badge(f"{len(documents)} Items", color=LightTheme.TEXT_MUTED, tint=LightTheme.BG_SUBTLE),
+                                                ft.Container(expand=True),
+                                                ft.OutlinedButton("Add Files", icon=ft.Icons.UPLOAD_FILE_ROUNDED, on_click=self._open_private_files_picker),
+                                                ft.OutlinedButton("Add Folder", icon=ft.Icons.DRIVE_FOLDER_UPLOAD_ROUNDED, on_click=self._open_private_folder_picker),
+                                            ],
+                                            spacing=10,
+                                            wrap=True,
+                                        ),
+                                        ft.Container(
+                                            content=ft.Column(document_rows, spacing=0),
+                                            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                                            border_radius=14,
+                                            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                                        ),
+                                    ],
+                                    spacing=16,
+                                )
+                            ),
+                        ],
+                        spacing=20,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=28, vertical=24),
+                ),
+            ],
+            spacing=0,
+        )
+
+        self._render_primary_shell(0, content)
+
+    def _show_connections_view(self):
+        """Render the Figma-aligned Connections view."""
+        self.current_view = "connections_shell"
+        self.page.clean()
+
+        mcp_status = {}
+        try:
+            if hasattr(self, "mcp_setup") and self.mcp_setup:
+                mcp_status = self.mcp_setup.get_setup_status()
+        except Exception:
+            mcp_status = {}
+
+        connection_cards = [
+            {
+                "name": "Claude Desktop",
+                "icon": ft.Icons.SMART_TOY_ROUNDED,
+                "headline": "Native MCP setup for private Enclave tools.",
+                "configured": bool(mcp_status.get("claude_mcp_configured", mcp_status.get("mcp_configured", False))),
+                "installed": bool(mcp_status.get("claude_installed", False)),
+                "action": lambda e: self._configure_claude_mcp(),
+            },
+            {
+                "name": "Cursor",
+                "icon": ft.Icons.EDIT_ROUNDED,
+                "headline": "Route code-focused agent workflows into the local vault.",
+                "configured": bool(mcp_status.get("cursor_mcp_configured", False)),
+                "installed": bool(mcp_status.get("cursor_installed", False)),
+                "action": lambda e: self._configure_cursor_mcp(),
+            },
+            {
+                "name": "ChatGPT Desktop",
+                "icon": ft.Icons.CHAT_ROUNDED,
+                "headline": mcp_status.get("chatgpt_support_message", "Local MCP support depends on the desktop build."),
+                "configured": False,
+                "installed": bool(mcp_status.get("chatgpt_installed", False)),
+                "action": lambda e: self._configure_chatgpt_mcp(),
+            },
+            {
+                "name": "VS Code / Other",
+                "icon": ft.Icons.CODE_ROUNDED,
+                "headline": "Copy raw MCP JSON and connect any compatible client.",
+                "configured": False,
+                "installed": True,
+                "action": lambda e: self._copy_mcp_json(),
+            },
+        ]
+
+        def connection_card(card: Dict[str, Any]) -> ft.Container:
+            status_label = (
+                "Connected"
+                if card["configured"]
+                else ("Ready to configure" if card["installed"] else "Not detected")
+            )
+            status_color = (
+                LightTheme.ACCENT_SUCCESS
+                if card["configured"]
+                else (LightTheme.ACCENT_PRIMARY if card["installed"] else LightTheme.TEXT_MUTED)
+            )
+            return self._build_surface_card(
+                ft.Column(
+                    [
+                        ft.Row(
+                            [
+                                ft.Container(
+                                    content=ft.Icon(card["icon"], size=20, color=status_color),
+                                    width=42,
+                                    height=42,
+                                    border_radius=12,
+                                    bgcolor=LightTheme.ACCENT_BLUE_LIGHT if card["installed"] else LightTheme.BG_SUBTLE,
+                                    alignment=ft.alignment.center,
+                                ),
+                                ft.Column(
+                                    [
+                                        ft.Text(card["name"], size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                        self._build_status_badge(status_label, color=status_color, tint=(LightTheme.ACCENT_BLUE_LIGHT if card["installed"] else LightTheme.BG_SUBTLE)),
+                                    ],
+                                    spacing=6,
+                                    expand=True,
+                                ),
+                            ],
+                            spacing=12,
+                        ),
+                        ft.Text(card["headline"], size=12, color=LightTheme.TEXT_SECONDARY),
+                        ft.Row(
+                            [
+                                ft.TextButton(
+                                    "Configure" if card["installed"] else "Unavailable",
+                                    on_click=card["action"] if card["installed"] else None,
+                                    style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
+                                ),
+                            ],
+                            spacing=8,
+                        ),
+                    ],
+                    spacing=14,
+                )
+            )
+
+        content = ft.Column(
+            [
+                self._build_page_header(
+                    "Connections",
+                    "Connect external AI clients to Enclave through the local MCP bridge.",
+                    trailing=[
+                        ft.OutlinedButton("Copy MCP JSON", icon=ft.Icons.CONTENT_COPY_ROUNDED, on_click=lambda e: self._copy_mcp_json()),
+                    ],
+                ),
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.ResponsiveRow(
+                                [ft.Container(connection_card(card), col={"sm": 12, "md": 6}) for card in connection_cards],
+                                spacing=12,
+                                run_spacing=12,
+                            ),
+                            self._build_surface_card(
+                                ft.Column(
+                                    [
+                                        ft.Text("Integration Notes", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                        ft.Text(
+                                            "OpenClaw and LangChain now share the same local Enclave runtime. Use this screen for desktop-client setup and fallback MCP JSON distribution.",
+                                            size=12,
+                                            color=LightTheme.TEXT_SECONDARY,
+                                        ),
+                                        ft.Column(self._build_connections_content()[2:], spacing=12),
+                                    ],
+                                    spacing=14,
+                                )
+                            ),
+                        ],
+                        spacing=20,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=28, vertical=24),
+                ),
+            ],
+            spacing=0,
+        )
+
+        self._render_primary_shell(1, content)
+
+    def _show_security_view(self):
+        """Render the Figma-aligned Security view."""
+        self.current_view = "security_shell"
+        self.page.clean()
+
+        shared_status = self._update_module_status_snapshots()
+        vault_snapshot = shared_status.get("vault", {}).get("details", {})
+        wallet_snapshot = shared_status.get("wallet", {}).get("details", {})
+        kill_switch = self.enclave_runtime.get_kill_switch()
+        recent_events = self.enclave_runtime.list_events(limit=8)
+        pending_requests = self.wallet_service.list_pending_requests()
+
+        def status_card(icon: str, title: str, badge: str, description: str, icon_color: str) -> ft.Container:
+            return self._build_surface_card(
+                ft.Column(
+                    [
+                        ft.Container(
+                            content=ft.Icon(icon, size=24, color=icon_color),
+                            width=52,
+                            height=52,
+                            border_radius=16,
+                            bgcolor=LightTheme.ACCENT_BLUE_LIGHT if icon_color != LightTheme.ACCENT_SUCCESS else LightTheme.ACCENT_SUCCESS + "12",
+                            alignment=ft.alignment.center,
+                        ),
+                        ft.Text(title, size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                        self._build_status_badge(badge, color=icon_color, tint=(LightTheme.ACCENT_BLUE_LIGHT if icon_color != LightTheme.ACCENT_SUCCESS else LightTheme.ACCENT_SUCCESS + "12")),
+                        ft.Text(description, size=12, color=LightTheme.TEXT_SECONDARY),
+                    ],
+                    spacing=10,
+                    horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                )
+            )
+
+        privacy_controls = self._build_surface_card(
+            ft.Column(
+                [
+                    ft.Text("Privacy Controls", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                    self._privacy_control_row(
+                        "Local-Only Processing",
+                        "Prevents raw data from leaving your device during agent operations.",
+                        value=True,
+                        disabled=True,
+                    ),
+                    self._privacy_control_row(
+                        "Encrypted Vault Storage",
+                        "Encrypted private context and WDVA adapters at rest.",
+                        value=True,
+                        disabled=True,
+                    ),
+                    self._privacy_control_row(
+                        "Global Kill Switch",
+                        "Immediately blocks privileged Vault and Wallet actions.",
+                        value=kill_switch.enabled,
+                        disabled=False,
+                        on_change=lambda e: self._set_global_kill_switch(bool(e.control.value)),
+                    ),
+                ],
+                spacing=0,
+            )
+        )
+
+        access_cards = ft.ResponsiveRow(
+            [
+                ft.Container(
+                    self._build_surface_card(
+                        ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Container(
+                                            content=ft.Icon(ft.Icons.SHIELD_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
+                                            width=40,
+                                            height=40,
+                                            border_radius=12,
+                                            bgcolor=LightTheme.ACCENT_BLUE_LIGHT,
+                                            alignment=ft.alignment.center,
+                                        ),
+                                        ft.Column(
+                                            [
+                                                ft.Text("Document Permissions", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                                ft.Text("Control which files profiles and agents can access.", size=12, color=LightTheme.TEXT_SECONDARY),
+                                            ],
+                                            spacing=4,
+                                            expand=True,
+                                        ),
+                                    ],
+                                    spacing=12,
+                                ),
+                                ft.Row(
+                                    [
+                                        ft.Text(
+                                            f"{vault_snapshot.get('document_count', 0)} documents · {vault_snapshot.get('profile_count', 0)} profiles",
+                                            size=12,
+                                            color=LightTheme.TEXT_MUTED,
+                                        ),
+                                        ft.Container(expand=True),
+                                        ft.TextButton("Open Library", on_click=lambda e: self._show_library_view(), style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY)),
+                                    ],
+                                    spacing=8,
+                                ),
+                            ],
+                            spacing=14,
+                        )
+                    ),
+                    col={"sm": 12, "md": 6},
+                ),
+                ft.Container(
+                    self._build_surface_card(
+                        ft.Column(
+                            [
+                                ft.Row(
+                                    [
+                                        ft.Container(
+                                            content=ft.Icon(ft.Icons.HISTORY_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
+                                            width=40,
+                                            height=40,
+                                            border_radius=12,
+                                            bgcolor=LightTheme.ACCENT_BLUE_LIGHT,
+                                            alignment=ft.alignment.center,
+                                        ),
+                                        ft.Column(
+                                            [
+                                                ft.Text("Audit Logging", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                                ft.Text("Track data access and model operations in one feed.", size=12, color=LightTheme.TEXT_SECONDARY),
+                                            ],
+                                            spacing=4,
+                                            expand=True,
+                                        ),
+                                    ],
+                                    spacing=12,
+                                ),
+                                ft.Row(
+                                    [
+                                        ft.Text(f"{len(recent_events)} recent events loaded", size=12, color=LightTheme.TEXT_MUTED),
+                                        ft.Container(expand=True),
+                                        ft.TextButton("Open Advanced", on_click=lambda e: self.show_settings_hub(active_tab="sheriff"), style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY)),
+                                    ],
+                                    spacing=8,
+                                ),
+                            ],
+                            spacing=14,
+                        )
+                    ),
+                    col={"sm": 12, "md": 6},
+                ),
+            ],
+            spacing=12,
+            run_spacing=12,
+        )
+
+        activity_rows: List[ft.Control] = [
+            ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Text("Action", size=11, color=LightTheme.TEXT_MUTED, expand=4),
+                        ft.Text("Resource", size=11, color=LightTheme.TEXT_MUTED, expand=5),
+                        ft.Text("Status", size=11, color=LightTheme.TEXT_MUTED, expand=2),
+                    ],
+                    spacing=16,
+                ),
+                padding=ft.padding.symmetric(horizontal=18, vertical=12),
+                bgcolor=LightTheme.BG_SUBTLE,
+                border_radius=12,
+            )
+        ]
+
+        for event in recent_events:
+            decision = str(event.get("decision", "ALLOW"))
+            status_color = (
+                LightTheme.ACCENT_SUCCESS
+                if decision in {"ALLOW", "ALLOW_WITH_LEASE", "APPROVED"}
+                else (LightTheme.ACCENT_WARNING if decision == "PENDING" else LightTheme.ACCENT_ERROR)
+            )
+            activity_rows.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Text(
+                                f"{event.get('module', 'system')} · {event.get('tool', 'event')}",
+                                size=12,
+                                color=LightTheme.TEXT_PRIMARY,
+                                expand=4,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                            ),
+                            ft.Text(
+                                str(event.get("summary") or event.get("resource") or "Local event"),
+                                size=12,
+                                color=LightTheme.TEXT_MUTED,
+                                expand=5,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                            ),
+                            ft.Text(decision.title(), size=12, color=status_color, expand=2),
+                        ],
+                        spacing=16,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=18, vertical=14),
+                    border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+                )
+            )
+
+        pending_rows: List[ft.Control] = []
+        for request in pending_requests[:6]:
+            pending_rows.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Text(request.merchant, size=12, color=LightTheme.TEXT_PRIMARY, expand=True),
+                            ft.Text(f"${request.amount:.2f}", size=12, color=LightTheme.TEXT_SECONDARY),
+                            ft.TextButton("Approve", on_click=lambda e, request_id=request.request_id: self._approve_wallet_request(request_id), style=ft.ButtonStyle(color=LightTheme.ACCENT_SUCCESS)),
+                        ],
+                        spacing=12,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    border_radius=12,
+                )
+            )
+
+        content = ft.Column(
+            [
+                self._build_page_header(
+                    "Security & Privacy",
+                    "Monitor your privacy posture and control data access.",
+                ),
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.ResponsiveRow(
+                                [
+                                    ft.Container(status_card(ft.Icons.MEMORY_ROUNDED, "Local Agent", "Active", "MLX engine on Apple Silicon.", LightTheme.ACCENT_SUCCESS), col={"sm": 12, "md": 4}),
+                                    ft.Container(status_card(ft.Icons.LOCK_ROUNDED, "Vault Encryption", "ChaCha20", "Encrypted local context and adapters.", LightTheme.ACCENT_PRIMARY), col={"sm": 12, "md": 4}),
+                                    ft.Container(status_card(ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED, "Wallet Governance", "Mock Provider", f"{wallet_snapshot.get('pending_count', 0)} requests pending approval.", LightTheme.ACCENT_PRIMARY), col={"sm": 12, "md": 4}),
+                                ],
+                                spacing=12,
+                                run_spacing=12,
+                            ),
+                            privacy_controls,
+                            access_cards,
+                            self._build_surface_card(
+                                ft.Column(
+                                    [
+                                        ft.Row(
+                                            [
+                                                ft.Text("Wallet Governance", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                                self._build_status_badge("Frozen" if wallet_snapshot.get("frozen") else "Ready", color=(LightTheme.ACCENT_ERROR if wallet_snapshot.get("frozen") else LightTheme.ACCENT_SUCCESS), tint=((LightTheme.ACCENT_ERROR if wallet_snapshot.get("frozen") else LightTheme.ACCENT_SUCCESS) + "12")),
+                                                ft.Container(expand=True),
+                                            ],
+                                            spacing=10,
+                                        ),
+                                        ft.Text("Demo governed spend with local envelopes, approval thresholds, and shared audit events.", size=12, color=LightTheme.TEXT_SECONDARY),
+                                        ft.Row(
+                                            [
+                                                self._stat_card("Envelopes", wallet_snapshot.get("envelope_count", 0), ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED, LightTheme.ACCENT_PRIMARY),
+                                                self._stat_card("Pending", wallet_snapshot.get("pending_count", 0), ft.Icons.SCHEDULE_ROUNDED, LightTheme.ACCENT_WARNING),
+                                                self._stat_card("Transactions", wallet_snapshot.get("transaction_count", 0), ft.Icons.RECEIPT_LONG_ROUNDED, LightTheme.ACCENT_SUCCESS),
+                                            ],
+                                            spacing=16,
+                                        ),
+                                        ft.Row(
+                                            [
+                                                ft.ElevatedButton("Create Demo Envelope", icon=ft.Icons.ADD_CARD_ROUNDED, on_click=lambda e: (self._ensure_demo_wallet_envelope(), self._show_security_view()), style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white")),
+                                                ft.OutlinedButton("Request $19", icon=ft.Icons.PLAY_ARROW_ROUNDED, on_click=lambda e: self._request_demo_wallet_purchase(19.0, "github.com", "Auto-approved demo spend")),
+                                                ft.OutlinedButton("Request $85", icon=ft.Icons.HOURGLASS_TOP_ROUNDED, on_click=lambda e: self._request_demo_wallet_purchase(85.0, "openai.com", "Pending approval demo spend")),
+                                            ],
+                                            spacing=10,
+                                            wrap=True,
+                                        ),
+                                        *(pending_rows or [ft.Text("No pending approvals.", size=12, color=LightTheme.TEXT_MUTED)]),
+                                    ],
+                                    spacing=14,
+                                )
+                            ),
+                            self._build_surface_card(
+                                ft.Column(
+                                    [
+                                        ft.Text("Recent Activity", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                        ft.Container(
+                                            content=ft.Column(activity_rows, spacing=0),
+                                            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                                            border_radius=14,
+                                            clip_behavior=ft.ClipBehavior.HARD_EDGE,
+                                        ),
+                                    ],
+                                    spacing=16,
+                                )
+                            ),
+                        ],
+                        spacing=20,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=28, vertical=24),
+                ),
+            ],
+            spacing=0,
+        )
+
+        self._render_primary_shell(2, content)
+
+    def _privacy_control_row(
+        self,
+        title: str,
+        description: str,
+        value: bool,
+        disabled: bool,
+        on_change=None,
+    ) -> ft.Container:
+        """Compact settings row for privacy controls."""
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Column(
+                        [
+                            ft.Text(title, size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                            ft.Text(description, size=12, color=LightTheme.TEXT_SECONDARY),
+                        ],
+                        spacing=4,
+                        expand=True,
+                    ),
+                    self._build_status_badge("Enabled" if value else "Disabled", color=(LightTheme.ACCENT_SUCCESS if value else LightTheme.TEXT_MUTED), tint=((LightTheme.ACCENT_SUCCESS + "12") if value else LightTheme.BG_SUBTLE)),
+                    ft.Switch(value=value, on_change=on_change, disabled=disabled, active_color=LightTheme.ACCENT_SUCCESS),
+                ],
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.symmetric(horizontal=16, vertical=16),
+            border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+        )
 
     def _open_test_agent_chat(self, initial_question: Optional[str] = None):
         """Backward-compatible wrapper for opening the primary workspace."""
@@ -5614,96 +6166,86 @@ class VaultApp:
         """Create a chat message bubble."""
         is_user = role == "user"
 
-        source_controls: List[ft.Control] = []
-        if sources and not is_user:
-            source_controls.append(ft.Container(height=6))
-            source_controls.append(
-                ft.Text(
-                    "Sources:",
-                    size=11,
-                    color=LightTheme.TEXT_MUTED,
-                    weight=ft.FontWeight.W_600,
-                )
-            )
-            for source in sources[:3]:
+        body_controls: List[ft.Control] = [
+            ft.Text(
+                content,
+                size=14,
+                color=LightTheme.TEXT_PRIMARY if is_user else LightTheme.TEXT_SECONDARY,
+                selectable=True,
+            ),
+        ]
+
+        if not is_user and sources:
+            body_controls.append(ft.Container(height=10))
+            for idx, source in enumerate(sources[:3], start=1):
                 doc = source.get("document") or source.get("document_name") or "Unknown"
                 score = source.get("score")
                 excerpt = source.get("excerpt")
                 confidence = f"{int(float(score) * 100)}%" if score is not None else "n/a"
-                source_controls.append(
-                    ft.Text(
-                        f"• {doc} ({confidence})",
-                        size=11,
-                        color=LightTheme.TEXT_MUTED,
-                        italic=True,
+                body_controls.append(
+                    ft.Row(
+                        [
+                            ft.Text(f"{idx}.", size=12, weight=ft.FontWeight.W_600, color=LightTheme.ACCENT_PRIMARY),
+                            ft.Column(
+                                [
+                                    ft.Text(f"{doc} ({confidence})", size=12, weight=ft.FontWeight.W_500, color=LightTheme.TEXT_PRIMARY),
+                                    ft.Text(excerpt or "Source matched this response.", size=12, color=LightTheme.TEXT_MUTED, max_lines=2),
+                                ],
+                                spacing=2,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=8,
+                        vertical_alignment=ft.CrossAxisAlignment.START,
                     )
                 )
-                if excerpt:
-                    source_controls.append(
-                        ft.Text(
-                            f"  \"{excerpt}\"",
-                            size=10,
-                            color=LightTheme.TEXT_MUTED,
-                            italic=True,
-                            max_lines=2,
-                        )
-                    )
-        
+
+        if not is_user and document:
+            body_controls.append(ft.Container(height=10))
+            body_controls.append(
+                ft.Row(
+                    [
+                        ft.Container(width=6, height=6, border_radius=999, bgcolor=LightTheme.ACCENT_SUCCESS),
+                        ft.Text(f"Source: {document}", size=11, color=LightTheme.TEXT_MUTED),
+                    ],
+                    spacing=8,
+                )
+            )
+
+        avatar = ft.Container(
+            content=ft.Icon(
+                ft.Icons.PERSON_ROUNDED if is_user else ft.Icons.AUTO_AWESOME_ROUNDED,
+                size=16,
+                color="white" if not is_user else LightTheme.TEXT_PRIMARY,
+            ),
+            width=32,
+            height=32,
+            border_radius=10,
+            bgcolor=LightTheme.BG_SECONDARY if is_user else LightTheme.ACCENT_PRIMARY,
+            alignment=ft.alignment.center,
+        )
+
+        bubble = ft.Container(
+            content=ft.Column(body_controls, spacing=0),
+            padding=ft.padding.symmetric(horizontal=16, vertical=14),
+            bgcolor=LightTheme.BG_SECONDARY if is_user else LightTheme.BG_ELEVATED,
+            border_radius=12,
+            border=None if is_user else ft.border.all(1, LightTheme.BORDER_COLOR),
+            expand=True,
+        )
+
         return ft.Container(
             content=ft.Row(
                 [
-                    ft.Container(width=40) if is_user else ft.Container(
-                        content=ft.Icon(ft.Icons.SMART_TOY_ROUNDED, size=20, color="white"),
-                        width=36,
-                        height=36,
-                        bgcolor=LightTheme.ACCENT_PRIMARY,
-                        border_radius=18,
-                        alignment=ft.alignment.center,
-                    ),
-                    ft.Container(
-                        content=ft.Column(
-                            [
-                                ft.Text(
-                                    content,
-                                    size=14,
-                                    color=LightTheme.TEXT_PRIMARY,
-                                    selectable=True,
-                                ),
-                                *source_controls,
-                                ft.Container(height=4) if document and not is_user else ft.Container(),
-                                ft.Text(
-                                    f"📄 Based on: {document}",
-                                    size=11,
-                                    color=LightTheme.TEXT_MUTED,
-                                    italic=True,
-                                ) if document and not is_user else ft.Container(),
-                            ],
-                            spacing=0,
-                        ),
-                        padding=16,
-                        bgcolor=LightTheme.ACCENT_PRIMARY + "10" if is_user else LightTheme.BG_ELEVATED,
-                        border_radius=ft.border_radius.only(
-                            top_left=16,
-                            top_right=16,
-                            bottom_left=4 if is_user else 16,
-                            bottom_right=16 if is_user else 4,
-                        ),
-                    expand=True,
-                    ),
-                    ft.Container(
-                        content=ft.Icon(ft.Icons.PERSON_ROUNDED, size=20, color="white"),
-                        width=36,
-                        height=36,
-                        bgcolor=LightTheme.ACCENT_SUCCESS,
-                        border_radius=18,
-                        alignment=ft.alignment.center,
-                    ) if is_user else ft.Container(width=40),
+                    avatar if not is_user else ft.Container(width=0),
+                    bubble,
+                    avatar if is_user else ft.Container(width=0),
                 ],
                 spacing=12,
                 alignment=ft.MainAxisAlignment.END if is_user else ft.MainAxisAlignment.START,
                 vertical_alignment=ft.CrossAxisAlignment.START,
             ),
-            margin=ft.margin.only(left=60 if is_user else 0, right=0 if is_user else 60),
+            margin=ft.margin.only(left=56 if is_user else 0, right=0 if is_user else 56),
         )
     
     def _create_action_chip(self, label: str, prompt: str, adapters: list) -> ft.Container:
@@ -6039,6 +6581,9 @@ class VaultApp:
         self.chat_messages.append(user_msg)
         
         # Add to UI
+        if hasattr(self, "workspace_empty_state") and self.workspace_empty_state:
+            self.workspace_empty_state.visible = False
+
         if hasattr(self, 'chat_messages_list'):
             # Remove welcome message if it's first message
             if len(self.chat_messages) == 1 and self.chat_messages_list.controls:
@@ -8248,19 +8793,19 @@ class VaultApp:
         if layout and isinstance(layout, ft.Row) and len(layout.controls) > 0:
             layout.controls[0] = sidebar_container  # Update sidebar
 
-        # Handle navigation with simplified structure:
+        # Figma-aligned primary shell:
         # -1: Workspace
         #  0: Library
-        #  1: Workspace (legacy agent callbacks)
+        #  1: Connections
         #  2: Security
-        if index == -1:  # Workspace
+        if index == -1:
             self.show_landing_page()
-        elif index == 0:  # Library
-            self.show_my_data_view(active_tab="context")
-        elif index == 1:  # Workspace / Agent
-            self._show_workspace_view()
-        elif index == 2:  # Security
-            self.show_settings_hub(active_tab="sheriff")
+        elif index == 0:
+            self._show_library_view()
+        elif index == 1:
+            self._show_connections_view()
+        elif index == 2:
+            self._show_security_view()
         # Backward compatibility for legacy nav indices used in older callbacks.
         elif index == 3:  # Activity
             self.show_agent_view(active_tab="activity")
@@ -15703,4 +16248,8 @@ def main(page: ft.Page):
 
 
 if __name__ == "__main__":
-    ft.app(target=main)
+    # flet 0.28.x uses ft.app(), 0.80+ uses ft.run()
+    if hasattr(ft, 'run') and not hasattr(ft, 'FilePickerResultEvent'):
+        ft.run(main)
+    else:
+        ft.app(target=main)
