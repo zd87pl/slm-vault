@@ -488,7 +488,12 @@ class QAGenerator:
         
         return True
     
-    def generate_qa_pairs(self, text_chunk: str, num_pairs: int = 3) -> List[Dict[str, str]]:
+    def generate_qa_pairs(
+        self,
+        text_chunk: str | List[str],
+        num_pairs: int = 3,
+        max_pairs: Optional[int] = None
+    ) -> List[Dict[str, str]]:
         """
         Generate Q&A pairs from a text chunk.
         
@@ -504,6 +509,17 @@ class QAGenerator:
         Returns:
             List of Q&A pairs in format [{"instruction": "question", "output": "answer"}, ...]
         """
+        # Backward compatibility: some callers pass list[str] and max_pairs.
+        if isinstance(text_chunk, list):
+            pairs = self.generate_from_chunks(
+                text_chunks=text_chunk,
+                user_id="unknown",
+                num_pairs_per_chunk=num_pairs
+            )
+            if max_pairs is not None:
+                return pairs[:max_pairs]
+            return pairs
+
         if not text_chunk or not text_chunk.strip():
             return []
         
@@ -1408,7 +1424,12 @@ A: answer here"""
         
         return qa_pairs
     
-    def generate_from_chunks(self, text_chunks: List[str], user_id: str, num_pairs_per_chunk: int = 3) -> List[Dict[str, str]]:
+    def generate_from_chunks(
+        self,
+        text_chunks: List[str],
+        user_id: str = "unknown",
+        num_pairs_per_chunk: int = 3
+    ) -> List[Dict[str, str]]:
         """
         Generate Q&A pairs from multiple text chunks.
         
@@ -1447,13 +1468,32 @@ A: answer here"""
                 # Log the chunk length for debugging
                 logger.debug(f"Chunk {i+1} length: {len(chunk)} chars")
             
-            # Delay between chunks to give TinyLlama time to process
-            # Small models need more time between requests
-            time.sleep(2)
+            # Avoid aggressive back-to-back requests with Ollama fallback,
+            # but keep throughput high for local processing.
+            if not self.mlx_generator:
+                time.sleep(0.25)
         
         logger.info(f"Q&A generation complete: {valid_chunks} valid chunks processed, {skipped_chunks} skipped")
         logger.info(f"Total Q&A pairs generated: {len(all_qa_pairs)}")
         return all_qa_pairs
+
+    def generate_qa_from_chunks(
+        self,
+        text_chunks: List[str],
+        max_pairs: Optional[int] = None,
+        user_id: str = "unknown"
+    ) -> List[Dict[str, str]]:
+        """
+        Backward-compatible alias used by older GUI call sites.
+        """
+        pairs = self.generate_from_chunks(
+            text_chunks=text_chunks,
+            user_id=user_id,
+            num_pairs_per_chunk=3
+        )
+        if max_pairs is not None:
+            return pairs[:max_pairs]
+        return pairs
     
     def save_to_jsonl(self, qa_pairs: List[Dict[str, str]], output_path: str):
         """
@@ -1698,5 +1738,4 @@ A: answer here"""
             
         except requests.exceptions.RequestException as e:
             raise RuntimeError(f"Failed to communicate with RunPod: {e}")
-
 

@@ -16,6 +16,7 @@ Core capabilities:
 """
 
 import logging
+import re
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -39,6 +40,14 @@ FALLBACK_CONTEXT_LONG: int = 2000
 
 # Maximum number of documents returned by ``get_status``.
 STATUS_MAX_DOCUMENTS: int = 20
+THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _sanitize_model_output(text: str) -> str:
+    """Remove hidden reasoning tags from model output before returning it."""
+    cleaned = THINK_BLOCK_RE.sub("", text or "")
+    cleaned = cleaned.replace("<think>", "").replace("</think>", "")
+    return cleaned.strip()
 
 
 class LocalAgent:
@@ -213,13 +222,13 @@ class LocalAgent:
 
         # Ensure model is loaded
         if not self._ensure_model_loaded():
-            # Fallback: return context-only response if no model
             if context:
                 result["answer"] = (
-                    "Based on the indexed documents, here is relevant information:\n\n"
-                    f"{context[:FALLBACK_CONTEXT_LONG]}..."
+                    "Relevant local documents were found, but the local model backend "
+                    "is unavailable. No raw document text is exposed in this fallback. "
+                    "Install or configure MLX/local inference and try again."
                 )
-                result["model_used"] = "context-only (model not available)"
+                result["model_used"] = "no-model-safe-fallback"
             else:
                 result["error"] = "Model not available and no relevant documents found"
             return result
@@ -232,7 +241,8 @@ class LocalAgent:
             system_prompt = """You are Enclave, a helpful AI assistant with access to the user's private documents.
 Answer questions based on the provided context from indexed documents.
 Be accurate and cite which documents the information comes from when relevant.
-If the context doesn't contain relevant information, say so."""
+If the context doesn't contain relevant information, say so.
+Return only the final answer. Do not narrate your reasoning or planning."""
 
             prompt = f"""Context from indexed documents:
 {context}
@@ -243,7 +253,8 @@ Answer based on the context above:"""
         else:
             system_prompt = """You are Enclave, a helpful AI assistant running locally for privacy.
 You don't currently have any documents indexed. Help the user with general questions
-or suggest they index documents for context-aware answers."""
+or suggest they index documents for context-aware answers.
+Return only the final answer. Do not narrate your reasoning or planning."""
 
             prompt = question
 
@@ -270,13 +281,16 @@ or suggest they index documents for context-aware answers."""
                 temperature=temperature
             )
 
-            result["answer"] = response.strip()
+            result["answer"] = _sanitize_model_output(response)
 
         except (RuntimeError, ValueError) as e:
             logger.error(f"Generation failed: {e}")
             result["error"] = str(e)
             if context:
-                result["answer"] = f"Generation failed, but found relevant context:\n{context[:FALLBACK_CONTEXT_SHORT]}"
+                result["answer"] = (
+                    "Generation failed after retrieving relevant local context. "
+                    "No raw document text is exposed in this error path."
+                )
 
         return result
 
@@ -346,23 +360,27 @@ or suggest they index documents for context-aware answers."""
 
             # Generate summary
             if not self._ensure_model_loaded():
-                result["summary"] = f"Key points from documents:\n{content[:max_length]}"
+                result["error"] = (
+                    "Local model backend unavailable. Summary withheld to avoid "
+                    "returning raw document text."
+                )
                 return result
 
             engine = self._get_inference_engine()
             prompt = f"""Please provide a concise summary of the following content.
 Focus on the key points and main ideas. Keep the summary under {max_length} characters.
+Return only the summary. Do not include analysis or hidden reasoning.
 
 Content:
 {content}
 
 Summary:"""
 
-            result["summary"] = engine.generate(
+            result["summary"] = _sanitize_model_output(engine.generate(
                 prompt,
                 max_tokens=max_length // 3,  # Rough token estimate
                 temperature=0.3
-            ).strip()
+            ))
 
         except (ValueError, RuntimeError, OSError) as e:
             logger.error(f"Summarization failed: {e}")
@@ -431,6 +449,7 @@ Summary:"""
         if context:
             prompt = f"""Draft the following content using information from the provided context.
 {style_inst}
+Return only the requested draft. Do not include analysis or planning notes.
 
 Context from documents:
 {context}
@@ -442,17 +461,18 @@ Draft:"""
             prompt = f"""Draft the following content.
 {style_inst}
 Note: No specific documents are indexed, so using general knowledge.
+Return only the requested draft. Do not include analysis or planning notes.
 
 Request: {description}
 
 Draft:"""
 
         try:
-            result["draft"] = engine.generate(
+            result["draft"] = _sanitize_model_output(engine.generate(
                 prompt,
                 max_tokens=max_length // 3,
                 temperature=0.7
-            ).strip()
+            ))
         except (RuntimeError, ValueError) as e:
             logger.error(f"Draft generation failed: {e}")
             result["error"] = str(e)

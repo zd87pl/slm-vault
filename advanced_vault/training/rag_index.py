@@ -1086,11 +1086,18 @@ class RAGIndex:
         else:
             hnsw_stats = {"hnsw_enabled": False}
 
+        # Avoid lazy-loading the embedding model just to show stats in UI.
+        embedding_dimension = getattr(self.embedding_engine, "_dimension", None)
+        if embedding_dimension is None and self._vector_index is not None:
+            embedding_dimension = getattr(self._vector_index, "dimension", None)
+        if embedding_dimension is None:
+            embedding_dimension = 0
+
         return {
             "document_count": doc_count,
             "chunk_count": chunk_count,
             "total_encrypted_bytes": total_encrypted_bytes,
-            "embedding_dimension": self.embedding_engine.dimension,
+            "embedding_dimension": int(embedding_dimension),
             "embedding_model": self.embedding_engine.model_name,
             "db_path": str(self.db_path),
             "encrypted": True,

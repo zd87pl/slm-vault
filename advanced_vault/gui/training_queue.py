@@ -99,6 +99,7 @@ class WatchedFolder:
     file_extensions: List[str] = field(default_factory=lambda: [".pdf"])
     last_scan: Optional[datetime] = None
     known_files: Dict[str, str] = field(default_factory=dict)  # path -> hash
+    known_file_stats: Dict[str, str] = field(default_factory=dict)  # path -> "mtime_ns:size"
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""
@@ -110,6 +111,7 @@ class WatchedFolder:
             "file_extensions": self.file_extensions,
             "last_scan": self.last_scan.isoformat() if self.last_scan else None,
             "known_files": self.known_files,
+            "known_file_stats": self.known_file_stats,
         }
     
     @classmethod
@@ -123,6 +125,7 @@ class WatchedFolder:
             file_extensions=data.get("file_extensions", [".pdf"]),
             last_scan=datetime.fromisoformat(data["last_scan"]) if data.get("last_scan") else None,
             known_files=data.get("known_files", {}),
+            known_file_stats=data.get("known_file_stats", {}),
         )
 
 
@@ -198,7 +201,7 @@ class TrainingQueue:
         sha256 = hashlib.sha256()
         try:
             with open(file_path, 'rb') as f:
-                for chunk in iter(lambda: f.read(8192), b''):
+                for chunk in iter(lambda: f.read(1024 * 1024), b''):
                     sha256.update(chunk)
             return sha256.hexdigest()
         except Exception as e:
@@ -648,9 +651,24 @@ class TrainingQueue:
             for ext in folder.file_extensions:
                 files.extend(path.glob(f"*{ext}"))
         
+        current_paths = set()
         for file_path in files:
             str_path = str(file_path)
+            current_paths.add(str_path)
+
+            try:
+                stat = file_path.stat()
+                current_stat = f"{stat.st_mtime_ns}:{stat.st_size}"
+            except Exception as e:
+                logger.debug(f"Could not stat file {str_path}: {e}")
+                continue
+
+            # Skip expensive hashing when file metadata is unchanged.
+            if folder.known_file_stats.get(str_path) == current_stat:
+                continue
+
             file_hash = self._calculate_file_hash(str_path)
+            folder.known_file_stats[str_path] = current_stat
             
             if str_path not in folder.known_files:
                 # New file!
@@ -666,6 +684,12 @@ class TrainingQueue:
                 if not initial:
                     logger.info(f"File modified: {file_path.name}")
                     new_files.append(str_path)
+
+        # Remove deleted files from folder cache maps
+        deleted_paths = set(folder.known_files.keys()) - current_paths
+        for deleted in deleted_paths:
+            folder.known_files.pop(deleted, None)
+            folder.known_file_stats.pop(deleted, None)
         
         folder.last_scan = datetime.now()
         return new_files
@@ -708,4 +732,3 @@ class TrainingQueue:
         self.stop_folder_watcher()
         self._save_state()
         logger.info("TrainingQueue shutdown complete")
-

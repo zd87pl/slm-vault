@@ -15,9 +15,12 @@ from typing import Optional, List
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from advanced_vault.core import HybridVault
+from advanced_vault.enclave_control import EnclaveRuntime
 from advanced_vault.encrypted_kv import QueryFilter
+from advanced_vault.private_models import PrivateModelManager
 from advanced_vault.sheriff.core import SheriffCore
 from advanced_vault.sheriff.models import AccessDecision
+from advanced_vault.wallet import WalletService
 
 
 class VaultCLI:
@@ -75,7 +78,43 @@ def cli(ctx, vault_path):
 
 def _get_sheriff(vault_path: str) -> SheriffCore:
     """Create sheriff core for CLI commands."""
-    return SheriffCore(vault_path=vault_path)
+    runtime = _get_runtime(vault_path)
+    return SheriffCore(vault_path=vault_path, runtime=runtime)
+
+
+def _get_model_manager(vault_path: str) -> PrivateModelManager:
+    """Create a private model manager rooted inside the vault path."""
+    root_path = Path(vault_path).expanduser() / "private_models"
+    return PrivateModelManager(root_path=str(root_path))
+
+
+def _get_runtime(vault_path: str) -> EnclaveRuntime:
+    """Create the shared control-plane runtime for CLI commands."""
+    return EnclaveRuntime(vault_path=vault_path)
+
+
+def _get_wallet(vault_path: str) -> WalletService:
+    """Create a wallet service rooted inside the vault path."""
+    return WalletService(vault_path=vault_path)
+
+
+def _update_wallet_module_status(runtime: EnclaveRuntime, wallet: WalletService) -> None:
+    """Persist a lightweight wallet module snapshot for the GUI shell."""
+    envelopes = wallet.list_envelopes()
+    pending = wallet.list_pending_requests()
+    transactions = wallet.get_transactions()
+    frozen = wallet.store.is_frozen()
+    runtime.update_module_status(
+        "wallet",
+        status="warning" if frozen else "ready",
+        headline=("Wallet frozen" if frozen else "Wallet ready"),
+        details={
+            "envelope_count": len(envelopes),
+            "pending_count": len(pending),
+            "transaction_count": len(transactions),
+            "frozen": frozen,
+        },
+    )
 
 
 @cli.command()
@@ -401,6 +440,518 @@ def query(ctx, query):
             click.echo(f"   ❓ No results found")
     finally:
         vault_cli.close()
+
+
+@cli.group()
+def model():
+    """Private Language Model workflows (profiles, local chat, WDVA adapters)."""
+
+
+@model.command("create")
+@click.argument("name")
+@click.option("--description", default="", help="Short description for the profile")
+@click.option("--keyword", "keywords", multiple=True, help="Keywords for the profile")
+@click.option("--model-name", default=None, help="Preferred local model name/path")
+@click.option(
+    "--system-prompt",
+    default=(
+        "You are Enclave, a private local language model. "
+        "Use the user's local context carefully and cite document names."
+    ),
+    help="Profile-specific system prompt",
+)
+@click.pass_context
+def model_create(ctx, name, description, keywords, model_name, system_prompt):
+    """Create a Private Language Model profile."""
+    manager = _get_model_manager(ctx.obj["vault_path"])
+    profile = manager.create_profile(
+        name=name,
+        description=description,
+        system_prompt=system_prompt,
+        keywords=list(keywords),
+        model_name=model_name,
+    )
+    click.echo(f"✅ Created profile: {profile.name}")
+    if profile.description:
+        click.echo(f"   Description: {profile.description}")
+    if profile.model_name:
+        click.echo(f"   Model: {profile.model_name}")
+
+
+@model.command("list")
+@click.pass_context
+def model_list(ctx):
+    """List Private Language Model profiles."""
+    manager = _get_model_manager(ctx.obj["vault_path"])
+    profiles = manager.list_profiles()
+    if not profiles:
+        click.echo("No private model profiles found.")
+        return
+
+    click.echo("\n🧠 Private Language Models\n")
+    for profile in profiles:
+        click.echo(f"• {profile.name}")
+        if profile.description:
+            click.echo(f"  {profile.description}")
+        click.echo(f"  WDVA adapters: {len(profile.wdva_adapters)}")
+        if profile.keywords:
+            click.echo(f"  Keywords: {', '.join(profile.keywords)}")
+        click.echo()
+
+
+@model.command("info")
+@click.argument("name")
+@click.pass_context
+def model_info(ctx, name):
+    """Show profile details and local index stats."""
+    manager = _get_model_manager(ctx.obj["vault_path"])
+    session = manager.open_session(name)
+    try:
+        status = session.get_status()
+    finally:
+        session.close()
+
+    profile = status["profile"]
+    click.echo(f"\n🧠 Profile: {profile['name']}\n")
+    if profile.get("description"):
+        click.echo(f"Description: {profile['description']}")
+    if profile.get("model_name"):
+        click.echo(f"Model: {profile['model_name']}")
+    click.echo(f"Documents: {status['document_count']}")
+    click.echo(f"Chunks: {status['chunk_count']}")
+    click.echo(f"WDVA adapters: {len(profile.get('wdva_adapters', []))}")
+    for adapter in profile.get("wdva_adapters", []):
+        click.echo(f"  • {adapter['name']} (weight={adapter['weight']:.2f})")
+
+
+@model.command("ingest")
+@click.argument("name")
+@click.argument("paths", nargs=-1)
+@click.pass_context
+def model_ingest(ctx, name, paths):
+    """Ingest files or folders into a local profile."""
+    if not paths:
+        click.echo("❌ Provide at least one file or folder to ingest.", err=True)
+        sys.exit(1)
+
+    manager = _get_model_manager(ctx.obj["vault_path"])
+    session = manager.open_session(name)
+    try:
+        result = session.ingest_paths(paths)
+    finally:
+        session.close()
+
+    click.echo(f"✅ Added {result.added} documents")
+    if result.skipped:
+        click.echo(f"   Skipped: {result.skipped}")
+    for doc in result.documents[:10]:
+        click.echo(f"   • {doc['name']} ({doc['chunks']} chunks)")
+
+
+@model.command("chat")
+@click.argument("name")
+@click.argument("question")
+@click.option("--top-k", default=5, show_default=True, help="Number of local chunks to retrieve")
+@click.option("--temperature", default=0.2, show_default=True, help="Local generation temperature")
+@click.option("--max-tokens", default=512, show_default=True, help="Maximum output tokens")
+@click.pass_context
+def model_chat(ctx, name, question, top_k, temperature, max_tokens):
+    """Ask a Private Language Model a question."""
+    manager = _get_model_manager(ctx.obj["vault_path"])
+    session = manager.open_session(name)
+    try:
+        result = session.ask(
+            question=question,
+            top_k=top_k,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+    finally:
+        session.close()
+
+    click.echo(f"\n🧠 {name}\n")
+    click.echo(result["answer"])
+    if result.get("sources"):
+        click.echo("\nSources:")
+        for source in result["sources"]:
+            click.echo(f"  • {source['document_name']} (score={source['score']})")
+    if result.get("adapters"):
+        click.echo(f"\nWDVA adapters: {', '.join(result['adapters'])}")
+    if result.get("warning"):
+        click.echo(f"\nWarning: {result['warning']}")
+
+
+@model.command("repl")
+@click.argument("name")
+@click.option("--top-k", default=5, show_default=True, help="Number of local chunks to retrieve")
+@click.option("--temperature", default=0.2, show_default=True, help="Local generation temperature")
+@click.option("--max-tokens", default=512, show_default=True, help="Maximum output tokens")
+@click.pass_context
+def model_repl(ctx, name, top_k, temperature, max_tokens):
+    """Start an interactive local chat session for a profile."""
+    manager = _get_model_manager(ctx.obj["vault_path"])
+    session = manager.open_session(name)
+    click.echo("Type your question and press enter. Type 'exit' to quit.")
+    try:
+        while True:
+            question = click.prompt("you", prompt_suffix=" > ", default="", show_default=False)
+            if not question:
+                continue
+            if question.strip().lower() in {"exit", "quit"}:
+                break
+            result = session.ask(
+                question=question,
+                top_k=top_k,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+            click.echo(f"\n{name} > {result['answer']}\n")
+    finally:
+        session.close()
+
+
+@model.command("package-adapter")
+@click.argument("adapter_source")
+@click.argument("output_path")
+@click.argument("key_path")
+@click.pass_context
+def model_package_adapter(ctx, adapter_source, output_path, key_path):
+    """Encrypt a local adapter safetensors file into a WDVA package."""
+    manager = _get_model_manager(ctx.obj["vault_path"])
+    packaged_path, key_file = manager.package_wdva_adapter(
+        adapter_source=adapter_source,
+        output_path=output_path,
+        key_path=key_path,
+    )
+    click.echo(f"✅ Packaged WDVA adapter: {packaged_path}")
+    click.echo(f"   Key file: {key_file}")
+
+
+@model.command("attach-adapter")
+@click.argument("name")
+@click.argument("adapter_name")
+@click.argument("encrypted_path")
+@click.argument("key_path")
+@click.option("--weight", default=1.0, show_default=True, help="Adapter mixing weight")
+@click.option("--description", default="", help="Adapter description")
+@click.option("--keyword", "keywords", multiple=True, help="Adapter keywords")
+@click.pass_context
+def model_attach_adapter(
+    ctx,
+    name,
+    adapter_name,
+    encrypted_path,
+    key_path,
+    weight,
+    description,
+    keywords,
+):
+    """Attach an encrypted WDVA adapter to a profile."""
+    manager = _get_model_manager(ctx.obj["vault_path"])
+    profile = manager.attach_wdva_adapter(
+        profile_name=name,
+        adapter_name=adapter_name,
+        encrypted_path=encrypted_path,
+        key_path=key_path,
+        weight=weight,
+        description=description,
+        keywords=list(keywords),
+    )
+    click.echo(f"✅ Attached adapter '{adapter_name}' to profile '{profile.name}'")
+    click.echo(f"   Total adapters: {len(profile.wdva_adapters)}")
+
+
+@model.command("train-adapter")
+@click.argument("name")
+@click.argument("adapter_name")
+@click.argument("dataset_path")
+@click.option("--epochs", default=3, show_default=True, help="Training epochs")
+@click.option("--batch-size", default=2, show_default=True, help="Training batch size")
+@click.option("--learning-rate", default=1e-4, show_default=True, help="Learning rate")
+@click.option("--max-seq-length", default=512, show_default=True, help="Maximum sequence length")
+@click.option("--model-name", default=None, help="Override base model used for local training")
+@click.pass_context
+def model_train_adapter(
+    ctx,
+    name,
+    adapter_name,
+    dataset_path,
+    epochs,
+    batch_size,
+    learning_rate,
+    max_seq_length,
+    model_name,
+):
+    """Train and package a local WDVA adapter from JSONL examples."""
+    manager = _get_model_manager(ctx.obj["vault_path"])
+    result = manager.train_wdva_adapter(
+        profile_name=name,
+        adapter_name=adapter_name,
+        dataset_path=dataset_path,
+        model_name=model_name,
+        epochs=epochs,
+        batch_size=batch_size,
+        learning_rate=learning_rate,
+        max_seq_length=max_seq_length,
+    )
+    click.echo(f"✅ Trained WDVA adapter '{adapter_name}'")
+    click.echo(f"   Adapter dir: {result['adapter_dir']}")
+    click.echo(f"   Encrypted package: {result['encrypted_adapter_path']}")
+    click.echo(f"   Key file: {result['key_path']}")
+
+
+@cli.group()
+def wallet():
+    """Mock-only governed spend workflows for Enclave Wallet."""
+
+
+@wallet.command("create-envelope")
+@click.argument("name")
+@click.argument("budget", type=float)
+@click.option("--period", default="monthly", show_default=True)
+@click.option("--currency", default="USD", show_default=True)
+@click.option("--requires-approval-above", default=25.0, type=float, show_default=True)
+@click.option("--max-per-transaction", default=None, type=float)
+@click.option("--daily-limit", default=None, type=float)
+@click.option("--allow-merchant", "merchant_allowlist", multiple=True)
+@click.option("--block-merchant", "merchant_blocklist", multiple=True)
+@click.pass_context
+def wallet_create_envelope(
+    ctx,
+    name,
+    budget,
+    period,
+    currency,
+    requires_approval_above,
+    max_per_transaction,
+    daily_limit,
+    merchant_allowlist,
+    merchant_blocklist,
+):
+    """Create a local governed spend envelope."""
+    runtime = _get_runtime(ctx.obj["vault_path"])
+    decision, reason = runtime.evaluate_action(
+        agent_id="vault-cli",
+        module="wallet",
+        tool="create_envelope",
+        resource=name,
+    )
+    if decision == "deny":
+        click.echo(f"❌ {reason}", err=True)
+        sys.exit(1)
+
+    wallet_service = _get_wallet(ctx.obj["vault_path"])
+    envelope = wallet_service.create_envelope(
+        name=name,
+        budget=budget,
+        period=period,
+        currency=currency,
+        requires_approval_above=requires_approval_above,
+        max_per_transaction=max_per_transaction,
+        daily_limit=daily_limit,
+        merchant_allowlist=list(merchant_allowlist),
+        merchant_blocklist=list(merchant_blocklist),
+    )
+    _update_wallet_module_status(runtime, wallet_service)
+    runtime.log_event(
+        subject="vault-cli",
+        module="wallet",
+        tool="create_envelope",
+        decision="ALLOW",
+        resource=envelope.name,
+        summary=f"Created wallet envelope '{envelope.name}'",
+        metadata=envelope.to_dict(),
+        source="cli",
+    )
+    click.echo(f"✅ Created envelope: {envelope.name}")
+    click.echo(f"   Budget: {envelope.budget:.2f} {envelope.currency}")
+    click.echo(f"   Approval threshold: {envelope.requires_approval_above}")
+
+
+@wallet.command("list-envelopes")
+@click.pass_context
+def wallet_list_envelopes(ctx):
+    """List wallet envelopes."""
+    runtime = _get_runtime(ctx.obj["vault_path"])
+    decision, reason = runtime.evaluate_action(
+        agent_id="vault-cli",
+        module="wallet",
+        tool="list_envelopes",
+    )
+    if decision == "deny":
+        click.echo(f"❌ {reason}", err=True)
+        sys.exit(1)
+
+    wallet_service = _get_wallet(ctx.obj["vault_path"])
+    envelopes = wallet_service.list_envelopes()
+    _update_wallet_module_status(runtime, wallet_service)
+    if not envelopes:
+        click.echo("No wallet envelopes.")
+        return
+
+    click.echo("\n💳 Wallet Envelopes\n")
+    for envelope in envelopes:
+        click.echo(f"• {envelope.name}")
+        click.echo(f"  Budget: {envelope.budget:.2f} {envelope.currency}")
+        click.echo(f"  Available: {envelope.available:.2f} {envelope.currency}")
+        click.echo(f"  Status: {envelope.status.value}")
+        click.echo()
+
+
+@wallet.command("check-budget")
+@click.argument("envelope")
+@click.pass_context
+def wallet_check_budget(ctx, envelope):
+    """Show current budget snapshot for one envelope."""
+    runtime = _get_runtime(ctx.obj["vault_path"])
+    decision, reason = runtime.evaluate_action(
+        agent_id="vault-cli",
+        module="wallet",
+        tool="check_budget",
+        resource=envelope,
+    )
+    if decision == "deny":
+        click.echo(f"❌ {reason}", err=True)
+        sys.exit(1)
+
+    wallet_service = _get_wallet(ctx.obj["vault_path"])
+    snapshot = wallet_service.check_budget(envelope)
+    _update_wallet_module_status(runtime, wallet_service)
+    click.echo(json.dumps(snapshot, indent=2))
+
+
+@wallet.command("request-purchase")
+@click.argument("envelope")
+@click.argument("amount", type=float)
+@click.argument("merchant")
+@click.option("--memo", default="", help="Short note for the request")
+@click.option("--agent-id", default="vault-cli", show_default=True)
+@click.pass_context
+def wallet_request_purchase(ctx, envelope, amount, merchant, memo, agent_id):
+    """Submit a governed purchase request."""
+    runtime = _get_runtime(ctx.obj["vault_path"])
+    policy_decision, policy_reason = runtime.evaluate_action(
+        agent_id=agent_id,
+        module="wallet",
+        tool="request_purchase",
+        resource=f"{envelope}:{merchant}",
+        amount=amount,
+    )
+    if policy_decision == "deny":
+        runtime.log_event(
+            subject=agent_id,
+            module="wallet",
+            tool="request_purchase",
+            decision="DENY",
+            resource=f"{envelope}:{merchant}",
+            summary=policy_reason,
+            metadata={"amount": amount},
+            source="cli",
+        )
+        click.echo(f"❌ {policy_reason}", err=True)
+        sys.exit(1)
+
+    wallet_service = _get_wallet(ctx.obj["vault_path"])
+    outcome = wallet_service.request_purchase(
+        envelope,
+        amount=amount,
+        merchant=merchant,
+        agent_id=agent_id,
+        memo=memo,
+    )
+    _update_wallet_module_status(runtime, wallet_service)
+    runtime.log_event(
+        subject=agent_id,
+        module="wallet",
+        tool="request_purchase",
+        decision=outcome.decision.value.upper(),
+        resource=f"{envelope}:{merchant}",
+        summary=outcome.reason or policy_reason,
+        metadata=outcome.to_dict(),
+        source="cli",
+    )
+    click.echo(json.dumps(outcome.to_dict(), indent=2))
+
+
+@wallet.command("approve-purchase")
+@click.argument("request_id")
+@click.option("--approver", default="user", show_default=True)
+@click.pass_context
+def wallet_approve_purchase(ctx, request_id, approver):
+    """Approve a pending wallet request."""
+    runtime = _get_runtime(ctx.obj["vault_path"])
+    decision, reason = runtime.evaluate_action(
+        agent_id="vault-cli",
+        module="wallet",
+        tool="approve_purchase",
+        resource=request_id,
+    )
+    if decision == "deny":
+        click.echo(f"❌ {reason}", err=True)
+        sys.exit(1)
+
+    wallet_service = _get_wallet(ctx.obj["vault_path"])
+    outcome = wallet_service.approve_purchase(request_id, approver=approver)
+    _update_wallet_module_status(runtime, wallet_service)
+    runtime.log_event(
+        subject=approver,
+        module="wallet",
+        tool="approve_purchase",
+        decision=outcome.decision.value.upper(),
+        resource=request_id,
+        summary=outcome.reason,
+        metadata=outcome.to_dict(),
+        source="cli",
+    )
+    click.echo(json.dumps(outcome.to_dict(), indent=2))
+
+
+@wallet.command("transactions")
+@click.argument("envelope", required=False)
+@click.pass_context
+def wallet_transactions(ctx, envelope):
+    """List captured transactions."""
+    runtime = _get_runtime(ctx.obj["vault_path"])
+    decision, reason = runtime.evaluate_action(
+        agent_id="vault-cli",
+        module="wallet",
+        tool="get_transactions",
+        resource=envelope or "",
+    )
+    if decision == "deny":
+        click.echo(f"❌ {reason}", err=True)
+        sys.exit(1)
+
+    wallet_service = _get_wallet(ctx.obj["vault_path"])
+    transactions = wallet_service.get_transactions(envelope)
+    _update_wallet_module_status(runtime, wallet_service)
+    click.echo(json.dumps([item.to_dict() for item in transactions], indent=2))
+
+
+@wallet.command("freeze-all")
+@click.option("--reason", default="vault-cli kill switch", show_default=True)
+@click.pass_context
+def wallet_freeze_all(ctx, reason):
+    """Enable the global kill switch and freeze the wallet."""
+    runtime = _get_runtime(ctx.obj["vault_path"])
+    wallet_service = _get_wallet(ctx.obj["vault_path"])
+    runtime.set_kill_switch(True, reason=reason, actor="vault-cli")
+    state = wallet_service.freeze_all(reason=reason)
+    _update_wallet_module_status(runtime, wallet_service)
+    click.echo(json.dumps(state, indent=2))
+
+
+@wallet.command("unfreeze-all")
+@click.option("--reason", default="vault-cli resume", show_default=True)
+@click.pass_context
+def wallet_unfreeze_all(ctx, reason):
+    """Disable the global kill switch and unfreeze the wallet."""
+    runtime = _get_runtime(ctx.obj["vault_path"])
+    wallet_service = _get_wallet(ctx.obj["vault_path"])
+    runtime.set_kill_switch(False, reason=reason, actor="vault-cli")
+    state = wallet_service.unfreeze_all(reason=reason)
+    _update_wallet_module_status(runtime, wallet_service)
+    click.echo(json.dumps(state, indent=2))
 
 
 @cli.group()

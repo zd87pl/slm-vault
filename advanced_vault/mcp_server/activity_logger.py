@@ -17,6 +17,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 
+from advanced_vault.enclave_control import EnclaveRuntime
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -48,7 +50,7 @@ _DEFAULT_APP_DISPLAY_NAME = f"Claude {_MCP_DISPLAY_SUFFIX}"
 class ActivityLogger:
     """Logs vault access activity for GUI visibility."""
     
-    def __init__(self, vault_path: str = "~/.vault"):
+    def __init__(self, vault_path: str = "~/.vault", runtime: Optional[EnclaveRuntime] = None):
         """
         Initialize activity logger.
         
@@ -57,6 +59,7 @@ class ActivityLogger:
         """
         self.vault_path = Path(vault_path).expanduser()
         self.vault_path.mkdir(parents=True, exist_ok=True)
+        self.runtime = runtime or EnclaveRuntime(vault_path=str(self.vault_path))
         
         # Activity log file
         self.activity_log_path = self.vault_path / _ACTIVITY_LOG_FILENAME
@@ -101,10 +104,42 @@ class ActivityLogger:
             # Append to JSONL file
             with open(self.activity_log_path, 'a') as f:
                 f.write(json.dumps(log_entry) + '\n')
+
+            self.runtime.log_event(
+                subject=app_identifier,
+                module=self._module_for_tool(tool_name),
+                tool=tool_name,
+                decision="ALLOW" if granted else "DENY",
+                resource=query_preview,
+                summary=result_summary or query_preview,
+                metadata={
+                    "app_name": app_name,
+                    "granted": granted,
+                    **(metadata or {}),
+                },
+                source="activity_logger",
+            )
             
             logger.debug(f"Logged activity: {tool_name} from {app_identifier}")
         except OSError as e:
             logger.error(f"Failed to log activity: {e}")
+
+    def _module_for_tool(self, tool_name: str) -> str:
+        """Map tool names into shared control-plane modules."""
+        if tool_name.startswith("sheriff."):
+            return "security"
+        if tool_name in {
+            "check_budget",
+            "list_envelopes",
+            "request_purchase",
+            "approve_purchase",
+            "get_transactions",
+            "create_envelope",
+            "freeze_all",
+            "unfreeze_all",
+        }:
+            return "wallet"
+        return "vault"
     
     def _format_app_name(self, app_identifier: str) -> str:
         """
@@ -258,4 +293,3 @@ class ActivityLogger:
             logger.info("Cleared activity log")
         except OSError as e:
             logger.error(f"Failed to clear activity log: {e}")
-

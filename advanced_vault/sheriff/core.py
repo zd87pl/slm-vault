@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import List, Optional
 
+from advanced_vault.enclave_control import EnclaveRuntime
+
 from .audit_log import SheriffAuditLog
 from .enforcement import EnforcementLayer
 from .hardening import HardeningInspector
@@ -35,9 +37,10 @@ _REDACTION_PATTERNS = [
 class SheriffCore:
     """Main product facade for risk scan + access control + audit."""
 
-    def __init__(self, vault_path: str = "~/.vault"):
+    def __init__(self, vault_path: str = "~/.vault", runtime: Optional[EnclaveRuntime] = None):
         self.base_path = Path(vault_path).expanduser() / "sheriff"
         self.base_path.mkdir(parents=True, exist_ok=True)
+        self.runtime = runtime or EnclaveRuntime(vault_path=vault_path)
 
         self.policy = PolicyEngine(self.base_path / "policy_rules.json")
         self.leases = LeaseManager(self.base_path / "leases.json")
@@ -62,6 +65,21 @@ class SheriffCore:
         Default posture is deny-by-default for critical/sensitive labels.
         """
         label, _, _, _ = self.scanner.classify_path(resource)
+        runtime_decision, runtime_reason = self.runtime.evaluate_action(
+            agent_id=subject_app,
+            module="vault",
+            tool="sheriff.request_access",
+            resource=resource,
+        )
+        if runtime_decision == "deny":
+            result = AccessRequestResult(
+                decision=AccessDecision.DENY,
+                reason=runtime_reason,
+                label=label,
+            )
+            self._log(subject_app, resource, "request_access", result.decision, result.reason, None)
+            return result
+
         decision, reason = self.policy.evaluate(subject_app=subject_app, resource=resource, label=label)
 
         if decision == AccessDecision.ALLOW:
@@ -154,6 +172,16 @@ class SheriffCore:
         max_bytes: int = 2 * 1024 * 1024,
     ) -> str:
         """Read resource only when lease is valid."""
+        runtime_decision, runtime_reason = self.runtime.evaluate_action(
+            agent_id=subject_app,
+            module="vault",
+            tool="sheriff.read",
+            resource=resource,
+        )
+        if runtime_decision == "deny":
+            self._log(subject_app, resource, "read", AccessDecision.DENY, runtime_reason, lease_id)
+            raise PermissionError(runtime_reason)
+
         valid, reason, _ = self.leases.validate(
             lease_id=lease_id,
             subject_app=subject_app,
@@ -234,4 +262,15 @@ class SheriffCore:
                 lease_id=lease_id,
                 metadata={"pid": os.getpid()},
             )
+        )
+        module = "vault" if action == "read" else "security"
+        self.runtime.log_event(
+            subject=subject,
+            module=module,
+            tool=f"sheriff.{action}",
+            decision=decision.value if hasattr(decision, "value") else str(decision),
+            resource=resource,
+            summary=reason,
+            metadata={"lease_id": lease_id, "pid": os.getpid()},
+            source="sheriff_core",
         )

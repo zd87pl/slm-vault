@@ -32,11 +32,13 @@ sys.path.insert(0, str(Path(__file__).parent))
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from advanced_vault.core import HybridVault
+from advanced_vault.enclave_control import EnclaveRuntime
 from advanced_vault.encrypted_kv import QueryFilter, EntryType
 from advanced_vault.mcp_server.activity_logger import ActivityLogger
 from advanced_vault.private_models import PrivateModelManager, PrivateModelProfile
 from advanced_vault.private_models.manager import SUPPORTED_EXTENSIONS
 from advanced_vault.sheriff.core import SheriffCore
+from advanced_vault.wallet import WalletService
 from auth_screen import AuthScreen
 from cloud_sync import CloudSyncService
 from pdf_processor import PDFProcessor, probe_liteparse_backend
@@ -159,6 +161,9 @@ class VaultApp:
         self.require_authentication = os.getenv("ENCLAVE_REQUIRE_AUTH", "0").strip().lower() in {"1", "true", "yes"}
         self.private_profile_state_path = self.vault_path / ".active_private_profile"
         self.private_model_manager = PrivateModelManager(root_path=str(self.vault_path / "private_models"))
+        self.enclave_runtime = EnclaveRuntime(vault_path=str(self.vault_path))
+        self.activity_logger = ActivityLogger(vault_path=str(self.vault_path), runtime=self.enclave_runtime)
+        self.wallet_service = WalletService(vault_path=str(self.vault_path))
         self.active_private_profile_name = self._load_active_private_profile_name()
         self._private_model_session = None
         self._private_model_session_name = None
@@ -169,7 +174,7 @@ class VaultApp:
         self._chat_history_profile = None
 
         # Data Sheriff core and UI state
-        self.sheriff_core = SheriffCore(vault_path=str(self.vault_path))
+        self.sheriff_core = SheriffCore(vault_path=str(self.vault_path), runtime=self.enclave_runtime)
         self._sheriff_last_summary: Optional[Dict[str, Any]] = None
         self._sheriff_last_error: Optional[str] = None
         self._sheriff_scan_in_progress = False
@@ -463,6 +468,149 @@ class VaultApp:
             )
 
         return documents
+
+    def _current_parser_backend(self) -> str:
+        """Return the active parser backend label for demo surfaces."""
+        try:
+            return "liteparse" if probe_liteparse_backend() else "builtin"
+        except Exception:
+            return "builtin"
+
+    def _update_module_status_snapshots(self) -> Dict[str, Dict[str, Any]]:
+        """Refresh shared module-status snapshots for Vault and Wallet."""
+        profiles = self._get_private_model_profiles()
+        profile_status = self._get_private_model_status()
+        vault_status = self.enclave_runtime.update_module_status(
+            "vault",
+            status="ready",
+            headline="Private context ready",
+            details={
+                "profile_count": len(profiles),
+                "document_count": profile_status.get("document_count", 0),
+                "chunk_count": profile_status.get("chunk_count", 0),
+                "adapter_count": profile_status.get("adapter_count", 0),
+                "model_name": profile_status.get("model_name") or DEFAULT_PRIVATE_MODEL_NAME,
+                "parser_backend": self._current_parser_backend(),
+                "recent_access_events": len(self.enclave_runtime.list_events(limit=25, module="vault")),
+            },
+        )
+
+        envelopes = self.wallet_service.list_envelopes()
+        pending_requests = self.wallet_service.list_pending_requests()
+        transactions = self.wallet_service.get_transactions()
+        kill_switch = self.enclave_runtime.get_kill_switch()
+        wallet_status = self.enclave_runtime.update_module_status(
+            "wallet",
+            status="warning" if (kill_switch.enabled or self.wallet_service.store.is_frozen()) else "ready",
+            headline="Wallet frozen" if (kill_switch.enabled or self.wallet_service.store.is_frozen()) else "Wallet ready",
+            details={
+                "envelope_count": len(envelopes),
+                "pending_count": len(pending_requests),
+                "transaction_count": len(transactions),
+                "frozen": bool(kill_switch.enabled or self.wallet_service.store.is_frozen()),
+            },
+        )
+        return {
+            "vault": vault_status,
+            "wallet": wallet_status,
+        }
+
+    def _ensure_demo_wallet_envelope(self) -> Any:
+        """Ensure there is at least one wallet envelope available for the demo."""
+        envelopes = self.wallet_service.list_envelopes()
+        if envelopes:
+            return envelopes[0]
+
+        envelope = self.wallet_service.create_envelope(
+            "demo-ops",
+            budget=500.0,
+            requires_approval_above=75.0,
+            max_per_transaction=150.0,
+            daily_limit=300.0,
+        )
+        self.enclave_runtime.log_event(
+            subject="local-ui",
+            module="wallet",
+            tool="create_envelope",
+            decision="ALLOW",
+            resource=envelope.name,
+            summary="Created demo wallet envelope from GUI",
+            metadata=envelope.to_dict(),
+            source="gui",
+        )
+        self._update_module_status_snapshots()
+        return envelope
+
+    def _request_demo_wallet_purchase(self, amount: float, merchant: str, memo: str) -> None:
+        """Submit a demo purchase request from the Security view."""
+        try:
+            envelope = self._ensure_demo_wallet_envelope()
+            outcome = self.wallet_service.request_purchase(
+                envelope.name,
+                amount=amount,
+                merchant=merchant,
+                agent_id="local-ui",
+                memo=memo,
+            )
+            self.enclave_runtime.log_event(
+                subject="local-ui",
+                module="wallet",
+                tool="request_purchase",
+                decision=outcome.decision.value.upper(),
+                resource=f"{envelope.name}:{merchant}",
+                summary=outcome.reason,
+                metadata=outcome.to_dict(),
+                source="gui",
+            )
+            self._update_module_status_snapshots()
+            self._show_user_message(
+                "Wallet request queued for approval." if outcome.requires_human_approval else "Wallet request approved.",
+                level="success" if not outcome.requires_human_approval else "info",
+            )
+            if self.current_view == "settings_hub":
+                self.show_settings_hub(active_tab="sheriff")
+        except Exception as e:
+            self._show_user_message(f"Wallet request failed: {e}", level="error")
+
+    def _approve_wallet_request(self, request_id: str) -> None:
+        """Approve a pending demo wallet request."""
+        try:
+            outcome = self.wallet_service.approve_purchase(request_id, approver="user")
+            self.enclave_runtime.log_event(
+                subject="user",
+                module="wallet",
+                tool="approve_purchase",
+                decision=outcome.decision.value.upper(),
+                resource=request_id,
+                summary=outcome.reason,
+                metadata=outcome.to_dict(),
+                source="gui",
+            )
+            self._update_module_status_snapshots()
+            self._show_user_message("Wallet request approved.", level="success")
+            if self.current_view == "settings_hub":
+                self.show_settings_hub(active_tab="sheriff")
+        except Exception as e:
+            self._show_user_message(f"Could not approve wallet request: {e}", level="error")
+
+    def _set_global_kill_switch(self, enabled: bool) -> None:
+        """Toggle the shared kill switch and keep wallet state aligned."""
+        try:
+            reason = "Investor demo manual override"
+            self.enclave_runtime.set_kill_switch(enabled, reason=reason, actor="local-ui")
+            if enabled:
+                self.wallet_service.freeze_all(reason=reason)
+            else:
+                self.wallet_service.unfreeze_all(reason=reason)
+            self._update_module_status_snapshots()
+            self._show_user_message(
+                "Global kill switch enabled." if enabled else "Global kill switch disabled.",
+                level="warning" if enabled else "success",
+            )
+            if self.current_view == "settings_hub":
+                self.show_settings_hub(active_tab="sheriff")
+        except Exception as e:
+            self._show_user_message(f"Could not update kill switch: {e}", level="error")
 
     def _set_active_private_profile(self, profile_name: str, refresh: bool = True) -> None:
         """Switch the active local Private Model profile."""
@@ -4837,6 +4985,7 @@ class VaultApp:
         profiles = self._get_private_model_profiles()
         profile_status = self._get_private_model_status()
         documents = self._get_private_model_documents(limit=10)
+        module_statuses = self._update_module_status_snapshots()
         user_label = self._get_identity_label()
 
         self.page.clean()
@@ -4909,6 +5058,12 @@ class VaultApp:
                                         icon=ft.Icons.FILE_UPLOAD_ROUNDED,
                                         on_click=self._open_private_files_picker,
                                         style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                                    ),
+                                    ft.OutlinedButton(
+                                        "Add Folder",
+                                        icon=ft.Icons.DRIVE_FOLDER_UPLOAD_ROUNDED,
+                                        on_click=self._open_private_folder_picker,
+                                        style=ft.ButtonStyle(color=LightTheme.TEXT_PRIMARY),
                                     ),
                                     ft.OutlinedButton(
                                         "Open Library",
@@ -5228,6 +5383,104 @@ class VaultApp:
             border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
         )
 
+        def status_tile(label: str, value: str, icon: str, color: str) -> ft.Container:
+            return ft.Container(
+                content=ft.Row(
+                    [
+                        ft.Container(
+                            content=ft.Icon(icon, size=16, color=color),
+                            padding=8,
+                            border_radius=10,
+                            bgcolor=color + "12",
+                        ),
+                        ft.Column(
+                            [
+                                ft.Text(value, size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                ft.Text(label, size=11, color=LightTheme.TEXT_MUTED),
+                            ],
+                            spacing=2,
+                            tight=True,
+                        ),
+                    ],
+                    spacing=10,
+                ),
+                padding=ft.padding.symmetric(horizontal=14, vertical=12),
+                bgcolor=LightTheme.BG_ELEVATED,
+                border_radius=14,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+            )
+
+        vault_runtime_status = module_statuses.get("vault", {}).get("details", {})
+        wallet_runtime_status = module_statuses.get("wallet", {}).get("details", {})
+        workspace_status_strip = ft.Container(
+            content=ft.Row(
+                [
+                    status_tile(
+                        "Documents",
+                        str(vault_runtime_status.get("document_count", profile_status.get("document_count", 0))),
+                        ft.Icons.FOLDER_ROUNDED,
+                        LightTheme.ACCENT_PRIMARY,
+                    ),
+                    status_tile(
+                        "Encrypted Chunks",
+                        str(vault_runtime_status.get("chunk_count", profile_status.get("chunk_count", 0))),
+                        ft.Icons.DATA_OBJECT_ROUNDED,
+                        LightTheme.ACCENT_SUCCESS,
+                    ),
+                    status_tile(
+                        "WDVA Layers",
+                        str(vault_runtime_status.get("adapter_count", len(profile.wdva_adapters))),
+                        ft.Icons.AUTO_AWESOME_ROUNDED,
+                        LightTheme.ACCENT_WARNING,
+                    ),
+                    status_tile(
+                        "Wallet Pending",
+                        str(wallet_runtime_status.get("pending_count", 0)),
+                        ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED,
+                        LightTheme.ACCENT_PRIMARY,
+                    ),
+                ],
+                spacing=12,
+                wrap=True,
+            ),
+            padding=ft.padding.symmetric(horizontal=24, vertical=16),
+            bgcolor=LightTheme.BG_PRIMARY,
+            border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+        )
+
+        recent_context_strip = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=16, color=LightTheme.ACCENT_PRIMARY),
+                    ft.Text("Indexed Context", size=12, color=LightTheme.TEXT_MUTED),
+                    ft.Container(expand=True),
+                    *[
+                        ft.Container(
+                            content=ft.Text(
+                                doc.get("name", "Untitled"),
+                                size=11,
+                                color=LightTheme.TEXT_PRIMARY,
+                                max_lines=1,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                            ),
+                            padding=ft.padding.symmetric(horizontal=10, vertical=6),
+                            bgcolor=LightTheme.BG_ELEVATED,
+                            border_radius=999,
+                            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                        )
+                        for doc in documents[:3]
+                    ],
+                ],
+                spacing=10,
+                wrap=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
+            padding=ft.padding.symmetric(horizontal=24, vertical=12),
+            bgcolor=LightTheme.BG_PRIMARY,
+            border=ft.border.only(bottom=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+            visible=bool(documents),
+        )
+
         input_panel = ft.Container(
             content=ft.Column(
                 [
@@ -5291,6 +5544,8 @@ class VaultApp:
                 [
                     header,
                     workspace_toolbar,
+                    workspace_status_strip,
+                    recent_context_strip,
                     chat_surface,
                     input_panel,
                 ],
@@ -9052,10 +9307,16 @@ class VaultApp:
         enforcement = self.sheriff_core.enforcement_status()
         hardening_alerts = self.sheriff_core.hardening_report()
         active_leases = list(self.sheriff_core.leases.list_active().values())
-        recent_audit = self.sheriff_core.audit_events(limit=8)
+        shared_status = self._update_module_status_snapshots()
+        recent_activity = self.enclave_runtime.list_events(limit=12)
         rules_count = len(self.sheriff_core.policy.list_rules())
         summary = self._sheriff_last_summary or {}
         posture = self._get_sheriff_posture()
+        kill_switch = self.enclave_runtime.get_kill_switch()
+        wallet_snapshot = shared_status.get("wallet", {}).get("details", {})
+        wallet_envelopes = self.wallet_service.list_envelopes()
+        pending_requests = self.wallet_service.list_pending_requests()
+        wallet_transactions = self.wallet_service.get_transactions()
 
         critical_count = int(summary.get("critical_count", 0))
         sensitive_count = int(summary.get("sensitive_count", 0))
@@ -9133,14 +9394,17 @@ class VaultApp:
             )
 
         audit_controls: List[ft.Control] = []
-        for event in recent_audit:
+        for event in recent_activity:
             decision = str(event.get("decision", ""))
             if decision == "DENY":
                 icon = ft.Icons.BLOCK_ROUNDED
                 icon_color = LightTheme.ACCENT_ERROR
-            elif decision in {"ALLOW", "ALLOW_WITH_LEASE"}:
+            elif decision in {"ALLOW", "ALLOW_WITH_LEASE", "APPROVED"}:
                 icon = ft.Icons.CHECK_CIRCLE_ROUNDED
                 icon_color = LightTheme.ACCENT_SUCCESS
+            elif decision == "PENDING":
+                icon = ft.Icons.SCHEDULE_ROUNDED
+                icon_color = LightTheme.ACCENT_WARNING
             else:
                 icon = ft.Icons.HELP_OUTLINE_ROUNDED
                 icon_color = LightTheme.ACCENT_WARNING
@@ -9149,9 +9413,16 @@ class VaultApp:
                 ft.Row(
                     [
                         ft.Icon(icon, size=15, color=icon_color),
-                        ft.Text(str(event.get("subject", "unknown")), size=12, color=LightTheme.TEXT_PRIMARY, width=120, overflow=ft.TextOverflow.ELLIPSIS),
-                        ft.Text(str(event.get("action", "")), size=12, color=LightTheme.TEXT_SECONDARY, width=110, overflow=ft.TextOverflow.ELLIPSIS),
-                        ft.Text(str(event.get("resource", "")), size=11, color=LightTheme.TEXT_MUTED, expand=True, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(str(event.get("subject", "unknown")), size=12, color=LightTheme.TEXT_PRIMARY, width=110, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(str(event.get("module", "")), size=11, color=LightTheme.ACCENT_PRIMARY, width=80, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(str(event.get("tool", "")), size=11, color=LightTheme.TEXT_SECONDARY, width=160, overflow=ft.TextOverflow.ELLIPSIS),
+                        ft.Text(
+                            str(event.get("summary") or event.get("resource", "")),
+                            size=11,
+                            color=LightTheme.TEXT_MUTED,
+                            expand=True,
+                            overflow=ft.TextOverflow.ELLIPSIS,
+                        ),
                     ],
                     spacing=8,
                 )
@@ -9186,6 +9457,33 @@ class VaultApp:
                             ft.Text(path, size=11, color=LightTheme.TEXT_MUTED) if path else ft.Container(),
                         ],
                         spacing=4,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=10),
+                    border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                    border_radius=8,
+                    bgcolor=LightTheme.BG_ELEVATED,
+                )
+            )
+
+        pending_request_controls: List[ft.Control] = []
+        for request in pending_requests[:8]:
+            pending_request_controls.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Icon(ft.Icons.SCHEDULE_ROUNDED, size=16, color=LightTheme.ACCENT_WARNING),
+                            ft.Text(request.merchant, size=12, color=LightTheme.TEXT_PRIMARY, width=150, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Text(f"${request.amount:.2f}", size=12, color=LightTheme.TEXT_SECONDARY, width=90),
+                            ft.Text(request.agent_id, size=11, color=LightTheme.TEXT_MUTED, width=120, overflow=ft.TextOverflow.ELLIPSIS),
+                            ft.Container(expand=True),
+                            ft.TextButton(
+                                "Approve",
+                                icon=ft.Icons.CHECK_ROUNDED,
+                                on_click=lambda e, request_id=request.request_id: self._approve_wallet_request(request_id),
+                                style=ft.ButtonStyle(color=LightTheme.ACCENT_SUCCESS),
+                            ),
+                        ],
+                        spacing=8,
                     ),
                     padding=ft.padding.symmetric(horizontal=12, vertical=10),
                     border=ft.border.all(1, LightTheme.BORDER_COLOR),
@@ -9292,6 +9590,117 @@ class VaultApp:
             ft.Container(
                 content=ft.Column(
                     [
+                        ft.Row(
+                            [
+                                ft.Icon(
+                                    ft.Icons.POWER_SETTINGS_NEW_ROUNDED,
+                                    size=18,
+                                    color=LightTheme.ACCENT_ERROR if kill_switch.enabled else LightTheme.ACCENT_SUCCESS,
+                                ),
+                                ft.Text(
+                                    "Global Kill Switch",
+                                    size=15,
+                                    weight=ft.FontWeight.W_600,
+                                    color=LightTheme.TEXT_PRIMARY,
+                                ),
+                                ft.Container(expand=True),
+                                ft.ElevatedButton(
+                                    "Disable" if kill_switch.enabled else "Enable",
+                                    icon=ft.Icons.POWER_SETTINGS_NEW_ROUNDED,
+                                    on_click=lambda e: self._set_global_kill_switch(not kill_switch.enabled),
+                                    style=ft.ButtonStyle(
+                                        bgcolor=LightTheme.ACCENT_ERROR if kill_switch.enabled else LightTheme.ACCENT_SUCCESS,
+                                        color="white",
+                                    ),
+                                ),
+                            ],
+                            spacing=10,
+                        ),
+                        ft.Text(
+                            "Stops privileged Vault actions and mock Wallet execution from one control-plane state.",
+                            size=12,
+                            color=LightTheme.TEXT_SECONDARY,
+                        ),
+                        ft.Text(
+                            f"Current state: {'enabled' if kill_switch.enabled else 'disabled'}"
+                            + (f" • {kill_switch.reason}" if kill_switch.reason else ""),
+                            size=11,
+                            color=LightTheme.TEXT_MUTED,
+                        ),
+                    ],
+                    spacing=8,
+                ),
+                padding=16,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                border_radius=10,
+                bgcolor=LightTheme.BG_ELEVATED,
+            ),
+            ft.Container(height=12),
+            ft.Container(
+                content=ft.Column(
+                    [
+                        ft.Row(
+                            [
+                                ft.Text("Wallet Governance", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                ft.Container(expand=True),
+                                ft.Text(
+                                    "Mock provider, local ledger, approval queue",
+                                    size=11,
+                                    color=LightTheme.TEXT_MUTED,
+                                ),
+                            ],
+                            spacing=10,
+                        ),
+                        ft.Text(
+                            "Use this section to demo governed spend decisions without leaving the local Enclave shell.",
+                            size=12,
+                            color=LightTheme.TEXT_SECONDARY,
+                        ),
+                        ft.Row(
+                            [
+                                self._stat_card("Envelopes", wallet_snapshot.get("envelope_count", len(wallet_envelopes)), ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED, LightTheme.ACCENT_PRIMARY),
+                                self._stat_card("Pending", wallet_snapshot.get("pending_count", len(pending_requests)), ft.Icons.SCHEDULE_ROUNDED, LightTheme.ACCENT_WARNING),
+                                self._stat_card("Transactions", wallet_snapshot.get("transaction_count", len(wallet_transactions)), ft.Icons.RECEIPT_LONG_ROUNDED, LightTheme.ACCENT_SUCCESS),
+                                self._stat_card("Frozen", "Yes" if wallet_snapshot.get("frozen") else "No", ft.Icons.LOCK_ROUNDED, LightTheme.ACCENT_ERROR if wallet_snapshot.get("frozen") else LightTheme.ACCENT_SUCCESS),
+                            ],
+                            spacing=16,
+                        ),
+                        ft.Row(
+                            [
+                                ft.ElevatedButton(
+                                    "Create Demo Envelope",
+                                    icon=ft.Icons.ADD_CARD_ROUNDED,
+                                    on_click=lambda e: (self._ensure_demo_wallet_envelope(), self.show_settings_hub(active_tab="sheriff")),
+                                    style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                                ),
+                                ft.OutlinedButton(
+                                    "Request $19",
+                                    icon=ft.Icons.PLAY_ARROW_ROUNDED,
+                                    on_click=lambda e: self._request_demo_wallet_purchase(19.0, "github.com", "Auto-approved demo spend"),
+                                    style=ft.ButtonStyle(color=LightTheme.TEXT_PRIMARY),
+                                ),
+                                ft.OutlinedButton(
+                                    "Request $85",
+                                    icon=ft.Icons.HOURGLASS_TOP_ROUNDED,
+                                    on_click=lambda e: self._request_demo_wallet_purchase(85.0, "openai.com", "Pending approval demo spend"),
+                                    style=ft.ButtonStyle(color=LightTheme.TEXT_PRIMARY),
+                                ),
+                            ],
+                            spacing=10,
+                            wrap=True,
+                        ),
+                    ],
+                    spacing=12,
+                ),
+                padding=16,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                border_radius=10,
+                bgcolor=LightTheme.BG_ELEVATED,
+            ),
+            ft.Container(height=16),
+            ft.Container(
+                content=ft.Column(
+                    [
                         ft.Text("Recommended: 1-click Secure", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
                         ft.Text(
                             "Use this first. It auto-configures supported AI apps, scans files, and enables protection rules.",
@@ -9387,10 +9796,18 @@ class VaultApp:
         content.extend(
             [
                 ft.Container(height=12),
-                ft.Text("Recent Sheriff Audit", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                ft.Text("Pending Wallet Approvals", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
             ]
         )
-        content.extend(audit_controls or [ft.Text("No audit events yet.", size=12, color=LightTheme.TEXT_MUTED)])
+        content.extend(pending_request_controls or [ft.Text("No pending wallet approvals.", size=12, color=LightTheme.TEXT_MUTED)])
+
+        content.extend(
+            [
+                ft.Container(height=12),
+                ft.Text("Recent Enclave Activity", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+            ]
+        )
+        content.extend(audit_controls or [ft.Text("No runtime activity yet.", size=12, color=LightTheme.TEXT_MUTED)])
 
         return content
 

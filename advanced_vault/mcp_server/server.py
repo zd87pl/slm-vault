@@ -19,11 +19,13 @@ from mcp.server import Server
 from mcp.types import Tool, TextContent
 
 from advanced_vault.core import HybridVault
+from advanced_vault.enclave_control import EnclaveRuntime
 from advanced_vault.sheriff.core import SheriffCore
 from advanced_vault.sheriff.models import AccessDecision
 from advanced_vault.mcp_server.consent import ConsentManager
 from advanced_vault.mcp_server.activity_logger import ActivityLogger
 from advanced_vault.mcp_server.agent import get_agent, LocalAgent
+from advanced_vault.wallet import WalletService
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +48,8 @@ class VaultMCPServer:
         """
         self.vault_path = Path(vault_path).expanduser()
         self.vault_path.mkdir(parents=True, exist_ok=True)
+        self.runtime = EnclaveRuntime(vault_path=str(self.vault_path))
+        self.wallet = WalletService(vault_path=str(self.vault_path))
 
         # Initialize vault (will be lazy-loaded when needed)
         self.vault = None
@@ -55,10 +59,10 @@ class VaultMCPServer:
         self.consent_manager = ConsentManager(vault_path=str(self.vault_path))
         
         # Initialize activity logger
-        self.activity_logger = ActivityLogger(vault_path=str(self.vault_path))
+        self.activity_logger = ActivityLogger(vault_path=str(self.vault_path), runtime=self.runtime)
         
         # Local Data Sheriff core: deny-by-default consent + lease controls
-        self.sheriff = SheriffCore(vault_path=str(self.vault_path))
+        self.sheriff = SheriffCore(vault_path=str(self.vault_path), runtime=self.runtime)
 
         # API configuration (for LangChain tools)
         # Can be set via environment variable or configured later
@@ -76,6 +80,7 @@ class VaultMCPServer:
 
         # Register tools
         self._register_tools()
+        self._update_runtime_module_status()
 
         logger.info(f"Initialized Enclave MCP Server at {self.vault_path}")
 
@@ -260,6 +265,25 @@ class VaultMCPServer:
                     }
                 ),
                 # Agent Tools - External AIs command the local agent, never see raw documents
+                Tool(
+                    name="query_knowledge",
+                    description="Ask Enclave Vault a knowledge question through the local synthesized-answer path. This is an additive alias for agent_query.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "Question to ask about the indexed private knowledge base"
+                            },
+                            "temperature": {
+                                "type": "number",
+                                "description": "Generation temperature (0.0-1.0, default: 0.7)",
+                                "default": 0.7
+                            }
+                        },
+                        "required": ["question"]
+                    }
+                ),
                 Tool(
                     name="agent_query",
                     description="Ask the local Enclave agent a question. The agent reads indexed documents locally and returns a synthesized answer. External AIs never see raw document content - only the agent's response. Use this for questions about user's documents.",
@@ -462,6 +486,96 @@ class VaultMCPServer:
                         "type": "object",
                         "properties": {}
                     }
+                ),
+                Tool(
+                    name="create_envelope",
+                    description="Create a governed mock wallet envelope for local budgeted spend.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "budget": {"type": "number"},
+                            "period": {"type": "string", "default": "monthly"},
+                            "currency": {"type": "string", "default": "USD"},
+                            "requires_approval_above": {"type": "number", "default": 25.0},
+                            "max_per_transaction": {"type": "number"},
+                            "daily_limit": {"type": "number"}
+                        },
+                        "required": ["name", "budget"]
+                    }
+                ),
+                Tool(
+                    name="list_envelopes",
+                    description="List all configured wallet envelopes.",
+                    inputSchema={"type": "object", "properties": {}}
+                ),
+                Tool(
+                    name="check_budget",
+                    description="Inspect the budget state for one wallet envelope.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "envelope": {"type": "string", "description": "Envelope name or id"}
+                        },
+                        "required": ["envelope"]
+                    }
+                ),
+                Tool(
+                    name="request_purchase",
+                    description="Request governed spend from a wallet envelope. Requests above policy/envelope threshold may enter approval.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "envelope": {"type": "string"},
+                            "amount": {"type": "number"},
+                            "merchant": {"type": "string"},
+                            "currency": {"type": "string", "default": "USD"},
+                            "memo": {"type": "string", "default": ""}
+                        },
+                        "required": ["envelope", "amount", "merchant"]
+                    }
+                ),
+                Tool(
+                    name="approve_purchase",
+                    description="Approve a pending wallet purchase request.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "request_id": {"type": "string"},
+                            "approver": {"type": "string", "default": "user"}
+                        },
+                        "required": ["request_id"]
+                    }
+                ),
+                Tool(
+                    name="get_transactions",
+                    description="List wallet transactions for one envelope or all envelopes.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "envelope": {"type": "string"}
+                        }
+                    }
+                ),
+                Tool(
+                    name="freeze_all",
+                    description="Enable the global kill switch and freeze wallet execution.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "reason": {"type": "string", "default": "MCP freeze"}
+                        }
+                    }
+                ),
+                Tool(
+                    name="unfreeze_all",
+                    description="Disable the global kill switch and unfreeze wallet execution.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "reason": {"type": "string", "default": "MCP unfreeze"}
+                        }
+                    }
                 )
             ]
 
@@ -483,6 +597,8 @@ class VaultMCPServer:
                 elif name == "vault_store":
                     query_preview = f"Store {args.get('data_type', 'data')}"
                 elif name == "agent_query":
+                    query_preview = args.get("question", "")[:50]
+                elif name == "query_knowledge":
                     query_preview = args.get("question", "")[:50]
                 elif name == "agent_summarize":
                     query_preview = f"Summarize: {args.get('topic', '')[:30]}"
@@ -509,9 +625,50 @@ class VaultMCPServer:
                     query_preview = "Run hardening report"
                 elif name == "sheriff.enforcement_status":
                     query_preview = "Check enforcement status"
+                elif name == "create_envelope":
+                    query_preview = f"Create envelope {args.get('name', '')[:30]}"
+                elif name == "list_envelopes":
+                    query_preview = "List wallet envelopes"
+                elif name == "check_budget":
+                    query_preview = f"Check budget {args.get('envelope', '')[:30]}"
+                elif name == "request_purchase":
+                    query_preview = f"Request {args.get('merchant', '')[:30]} ${args.get('amount', 0)}"
+                elif name == "approve_purchase":
+                    query_preview = f"Approve purchase {args.get('request_id', '')[:18]}"
+                elif name == "get_transactions":
+                    query_preview = f"Transactions {args.get('envelope', 'all')}"
+                elif name == "freeze_all":
+                    query_preview = "Freeze all wallet execution"
+                elif name == "unfreeze_all":
+                    query_preview = "Unfreeze wallet execution"
 
                 # Get app identifier for logging
                 app_identifier = self.consent_manager._get_app_identifier()
+                module_name = self._module_for_tool(name)
+                policy_decision, policy_reason = self.runtime.evaluate_action(
+                    agent_id=app_identifier,
+                    module=module_name,
+                    tool=name,
+                    resource=str(args.get("resource") or args.get("service") or args.get("envelope") or ""),
+                    amount=float(args.get("amount", 0.0) or 0.0) if "amount" in args else None,
+                )
+                if policy_decision == "deny":
+                    self.runtime.log_event(
+                        subject=app_identifier,
+                        module=module_name,
+                        tool=name,
+                        decision="DENY",
+                        resource=query_preview,
+                        summary=policy_reason,
+                        metadata={"arguments": args},
+                        source="mcp_server",
+                    )
+                    return [
+                        TextContent(
+                            type="text",
+                            text=f"❌ Shared policy denied {name}: {policy_reason}",
+                        )
+                    ]
 
                 if not name.startswith("sheriff."):
                     granted = self.consent_manager.request_consent(
@@ -565,6 +722,9 @@ class VaultMCPServer:
                 elif name == "langchain_query_knowledge":
                     result = await self._handle_langchain_query_knowledge(args)
                     result_summary = "Queried knowledge adapter"
+                elif name == "query_knowledge":
+                    result = await self._handle_query_knowledge(args)
+                    result_summary = "Queried private knowledge"
                 elif name == "agent_query":
                     result = await self._handle_agent_query(args)
                     result_summary = "Agent answered question"
@@ -601,6 +761,30 @@ class VaultMCPServer:
                 elif name == "sheriff.enforcement_status":
                     result = await self._handle_sheriff_enforcement_status(args)
                     result_summary = "Sheriff enforcement status checked"
+                elif name == "create_envelope":
+                    result = await self._handle_wallet_create_envelope(args)
+                    result_summary = f"Created envelope {args.get('name', '')[:30]}"
+                elif name == "list_envelopes":
+                    result = await self._handle_wallet_list_envelopes(args)
+                    result_summary = "Listed wallet envelopes"
+                elif name == "check_budget":
+                    result = await self._handle_wallet_check_budget(args)
+                    result_summary = f"Budget checked for {args.get('envelope', '')[:30]}"
+                elif name == "request_purchase":
+                    result = await self._handle_wallet_request_purchase(args, app_identifier)
+                    result_summary = f"Purchase requested for {args.get('merchant', '')[:30]}"
+                elif name == "approve_purchase":
+                    result = await self._handle_wallet_approve_purchase(args)
+                    result_summary = f"Purchase approved {args.get('request_id', '')[:18]}"
+                elif name == "get_transactions":
+                    result = await self._handle_wallet_get_transactions(args)
+                    result_summary = "Wallet transactions listed"
+                elif name == "freeze_all":
+                    result = await self._handle_wallet_freeze_all(args)
+                    result_summary = "Wallet frozen"
+                elif name == "unfreeze_all":
+                    result = await self._handle_wallet_unfreeze_all(args)
+                    result_summary = "Wallet unfrozen"
                 else:
                     raise ValueError(f"Unknown tool: {name}")
 
@@ -932,6 +1116,10 @@ class VaultMCPServer:
                 text="❌ Error: Question is required"
             )]
 
+    async def _handle_query_knowledge(self, args: dict) -> Sequence[TextContent]:
+        """Additive alias for the synthesized private knowledge query path."""
+        return await self._handle_agent_query(args)
+
         try:
             agent = self._get_agent()
             result = agent.query(
@@ -1224,6 +1412,160 @@ class VaultMCPServer:
         _ = args
         status = self.sheriff.enforcement_status()
         return [TextContent(type="text", text=json.dumps(status, indent=2))]
+
+    async def _handle_wallet_create_envelope(self, args: dict) -> Sequence[TextContent]:
+        """Handle create_envelope tool call."""
+        envelope = self.wallet.create_envelope(
+            name=args["name"],
+            budget=float(args["budget"]),
+            period=args.get("period", "monthly"),
+            currency=args.get("currency", "USD"),
+            requires_approval_above=float(args.get("requires_approval_above", 25.0)),
+            max_per_transaction=float(args["max_per_transaction"]) if args.get("max_per_transaction") is not None else None,
+            daily_limit=float(args["daily_limit"]) if args.get("daily_limit") is not None else None,
+        )
+        self._update_runtime_module_status()
+        return [TextContent(type="text", text=json.dumps(envelope.to_dict(), indent=2))]
+
+    async def _handle_wallet_list_envelopes(self, args: dict) -> Sequence[TextContent]:
+        """Handle list_envelopes tool call."""
+        _ = args
+        self._update_runtime_module_status()
+        return [TextContent(type="text", text=json.dumps([item.to_dict() for item in self.wallet.list_envelopes()], indent=2))]
+
+    async def _handle_wallet_check_budget(self, args: dict) -> Sequence[TextContent]:
+        """Handle check_budget tool call."""
+        envelope = args.get("envelope")
+        if not envelope:
+            return [TextContent(type="text", text="❌ Error: 'envelope' is required.")]
+        snapshot = self.wallet.check_budget(envelope)
+        self._update_runtime_module_status()
+        return [TextContent(type="text", text=json.dumps(snapshot, indent=2))]
+
+    async def _handle_wallet_request_purchase(self, args: dict, app_identifier: str) -> Sequence[TextContent]:
+        """Handle request_purchase tool call."""
+        envelope = args.get("envelope")
+        amount = args.get("amount")
+        merchant = args.get("merchant")
+        if not envelope or amount is None or not merchant:
+            return [TextContent(type="text", text="❌ Error: 'envelope', 'amount', and 'merchant' are required.")]
+
+        outcome = self.wallet.request_purchase(
+            envelope,
+            amount=float(amount),
+            merchant=merchant,
+            agent_id=app_identifier,
+            currency=args.get("currency", "USD"),
+            memo=args.get("memo", ""),
+        )
+        self.runtime.log_event(
+            subject=app_identifier,
+            module="wallet",
+            tool="request_purchase",
+            decision=outcome.decision.value.upper(),
+            resource=f"{envelope}:{merchant}",
+            summary=outcome.reason,
+            metadata=outcome.to_dict(),
+            source="mcp_wallet",
+        )
+        self._update_runtime_module_status()
+        return [TextContent(type="text", text=json.dumps(outcome.to_dict(), indent=2))]
+
+    async def _handle_wallet_approve_purchase(self, args: dict) -> Sequence[TextContent]:
+        """Handle approve_purchase tool call."""
+        request_id = args.get("request_id")
+        if not request_id:
+            return [TextContent(type="text", text="❌ Error: 'request_id' is required.")]
+        outcome = self.wallet.approve_purchase(
+            request_id,
+            approver=args.get("approver", "user"),
+        )
+        self.runtime.log_event(
+            subject=args.get("approver", "user"),
+            module="wallet",
+            tool="approve_purchase",
+            decision=outcome.decision.value.upper(),
+            resource=request_id,
+            summary=outcome.reason,
+            metadata=outcome.to_dict(),
+            source="mcp_wallet",
+        )
+        self._update_runtime_module_status()
+        return [TextContent(type="text", text=json.dumps(outcome.to_dict(), indent=2))]
+
+    async def _handle_wallet_get_transactions(self, args: dict) -> Sequence[TextContent]:
+        """Handle get_transactions tool call."""
+        envelope = args.get("envelope")
+        transactions = self.wallet.get_transactions(envelope)
+        self._update_runtime_module_status()
+        return [TextContent(type="text", text=json.dumps([item.to_dict() for item in transactions], indent=2))]
+
+    async def _handle_wallet_freeze_all(self, args: dict) -> Sequence[TextContent]:
+        """Handle freeze_all tool call."""
+        reason = args.get("reason", "MCP freeze")
+        self.runtime.set_kill_switch(True, reason=reason, actor="mcp")
+        payload = self.wallet.freeze_all(reason=reason)
+        self._update_runtime_module_status()
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+    async def _handle_wallet_unfreeze_all(self, args: dict) -> Sequence[TextContent]:
+        """Handle unfreeze_all tool call."""
+        reason = args.get("reason", "MCP unfreeze")
+        self.runtime.set_kill_switch(False, reason=reason, actor="mcp")
+        payload = self.wallet.unfreeze_all(reason=reason)
+        self._update_runtime_module_status()
+        return [TextContent(type="text", text=json.dumps(payload, indent=2))]
+
+    def _module_for_tool(self, tool_name: str) -> str:
+        """Map public tool names to shared runtime module names."""
+        if tool_name.startswith("sheriff."):
+            return "security"
+        if tool_name in {
+            "create_envelope",
+            "list_envelopes",
+            "check_budget",
+            "request_purchase",
+            "approve_purchase",
+            "get_transactions",
+            "freeze_all",
+            "unfreeze_all",
+        }:
+            return "wallet"
+        return "vault"
+
+    def _update_runtime_module_status(self) -> None:
+        """Refresh lightweight Vault + Wallet module snapshots."""
+        try:
+            agent = self._get_agent()
+            agent_status = agent.get_status()
+            self.runtime.update_module_status(
+                "vault",
+                status="ready",
+                headline="Vault ready",
+                details={
+                    "document_count": agent_status.get("document_count", 0),
+                    "model_loaded": agent_status.get("model_loaded", False),
+                    "backend": agent_status.get("backend"),
+                    "document_names": [doc.get("name") for doc in agent_status.get("documents", [])[:5]],
+                },
+            )
+        except Exception:
+            self.runtime.update_module_status("vault", status="warning", headline="Vault initialized with limited status")
+
+        try:
+            self.runtime.update_module_status(
+                "wallet",
+                status="warning" if self.wallet.store.is_frozen() else "ready",
+                headline="Wallet frozen" if self.wallet.store.is_frozen() else "Wallet ready",
+                details={
+                    "envelope_count": len(self.wallet.list_envelopes()),
+                    "pending_count": len(self.wallet.list_pending_requests()),
+                    "transaction_count": len(self.wallet.get_transactions()),
+                    "frozen": self.wallet.store.is_frozen(),
+                },
+            )
+        except Exception:
+            self.runtime.update_module_status("wallet", status="warning", headline="Wallet initialized with limited status")
 
 
 def create_vault_server(vault_path: str = "~/.vault") -> VaultMCPServer:

@@ -16,6 +16,7 @@ from .rag_index import RAGIndex, Document, Chunk, RetrievalResult
 from .vector_index import VectorIndex, HNSWIndex, BruteForceIndex, create_vector_index
 from .kv_cache import RAGCache, QueryCache, ChunkKVCache
 from .late_chunking import LateChunker, JinaLateChunker, LateChunk, create_late_chunker
+from .mlx_trainer import MLXTrainer, TrainingExample, TrainingResult, check_mlx_available, get_recommended_model
 
 __all__ = [
     # Core RAG
@@ -41,4 +42,10 @@ __all__ = [
     "JinaLateChunker",
     "LateChunk",
     "create_late_chunker",
+    # Local MLX training
+    "MLXTrainer",
+    "TrainingExample",
+    "TrainingResult",
+    "check_mlx_available",
+    "get_recommended_model",
 ]

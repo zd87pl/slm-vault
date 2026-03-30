@@ -57,41 +57,34 @@ class ModernSidebar:
         })
     
     def build(self) -> ft.Container:
-        """Build the sidebar component with simplified 4-item navigation."""
+        """Build the sidebar component with a simple product-focused navigation."""
         nav_controls = []
 
         # Clean top spacing (branding is in window title)
         nav_controls.append(ft.Container(height=12))
 
-        # Simplified navigation structure (4 items)
-        # -1: Vault (landing page)
-        #  0: My Data
-        #  1: Agent
-        #  2: Settings
+        # Simplified navigation structure (3 items)
+        # -1: Workspace
+        #  0: Library
+        #  2: Security
         nav_items_column = []
         nav_items = [
             {
-                "icon": ft.Icons.SHIELD_OUTLINED,
-                "selected": ft.Icons.SHIELD_ROUNDED,
-                "label": self.t("sidebar.vault", "Vault"),
+                "icon": ft.Icons.FORUM_OUTLINED,
+                "selected": ft.Icons.FORUM_ROUNDED,
+                "label": "Workspace",
                 "idx": -1,
             },
             {
                 "icon": ft.Icons.FOLDER_OUTLINED,
                 "selected": ft.Icons.FOLDER_ROUNDED,
-                "label": self.t("sidebar.my_data", "My Data"),
+                "label": "Library",
                 "idx": 0,
             },
             {
-                "icon": ft.Icons.SMART_TOY_OUTLINED,
-                "selected": ft.Icons.SMART_TOY_ROUNDED,
-                "label": self.t("sidebar.agent", "Agent"),
-                "idx": 1,
-            },
-            {
-                "icon": ft.Icons.SETTINGS_OUTLINED,
-                "selected": ft.Icons.SETTINGS_ROUNDED,
-                "label": self.t("sidebar.settings", "Settings"),
+                "icon": ft.Icons.GPP_GOOD_OUTLINED,
+                "selected": ft.Icons.GPP_GOOD_ROUNDED,
+                "label": "Security",
                 "idx": 2,
             },
         ]

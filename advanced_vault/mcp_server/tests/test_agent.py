@@ -205,6 +205,38 @@ class TestAgentWithInference(unittest.TestCase):
                     self.assertEqual(result["model_used"], "test-model")
                     self.assertIn("versatile", result["answer"])
 
+    def test_query_strips_reasoning_tags(self):
+        """Test query sanitizes hidden reasoning tags from model output."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            from advanced_vault.mcp_server.agent import LocalAgent
+
+            mock_chunk = MagicMock()
+            mock_chunk.content = "WDVA adapters personalize behavior."
+
+            mock_result = MagicMock()
+            mock_result.chunk = mock_chunk
+            mock_result.document_name = "wdva.txt"
+            mock_result.score = 0.91
+
+            mock_rag = MagicMock()
+            mock_rag.search.return_value = [mock_result]
+
+            mock_engine = MagicMock()
+            mock_engine.model = MagicMock()
+            mock_engine.tokenizer = MagicMock()
+            mock_engine.tokenizer.apply_chat_template.return_value = "formatted prompt"
+            mock_engine.generate.return_value = "<think>hidden</think>Visible answer"
+            mock_engine.MLX_MODEL_NAME = "test-model"
+
+            with patch.object(LocalAgent, '_get_rag_index', return_value=mock_rag):
+                with patch.object(LocalAgent, '_get_inference_engine', return_value=mock_engine):
+                    agent = LocalAgent(vault_path=tmpdir)
+                    agent._model_loaded = True
+
+                    result = agent.query("What is WDVA?")
+
+                    self.assertEqual(result["answer"], "Visible answer")
+
     def test_summarize_with_inference(self):
         """Test summarize with mocked components."""
         with tempfile.TemporaryDirectory() as tmpdir:

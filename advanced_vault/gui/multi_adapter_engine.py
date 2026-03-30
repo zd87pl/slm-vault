@@ -211,6 +211,18 @@ class MultiAdapterEngine:
 
         if self._base_engine is None:
             self._base_engine = LocalInferenceEngine(cache_dir=str(self.cache_dir))
+            if model_path:
+                if hasattr(self._base_engine, "MLX_MODEL_CANDIDATES"):
+                    candidates = [model_path]
+                    candidates.extend(
+                        item
+                        for item in self._base_engine.MLX_MODEL_CANDIDATES
+                        if item != model_path
+                    )
+                    self._base_engine.MLX_MODEL_CANDIDATES = candidates
+                    self._base_engine.MLX_MODEL_NAME = model_path
+                if hasattr(self._base_engine, "MODEL_NAME"):
+                    self._base_engine.MODEL_NAME = model_path
 
         success = self._base_engine.load_model(progress_callback=progress_callback)
         self._model_loaded = success
@@ -762,12 +774,11 @@ class MultiAdapterEngine:
         # Log usage
         self._log_usage(query)
 
-        # Use base engine's chat
-        return self._base_engine.chat(
-            query,
-            system_prompt=system_prompt,
+        prompt = query if not system_prompt else f"{system_prompt}\n\nUser request: {query}\n\nAssistant:"
+        return self._base_engine.generate(
+            prompt,
             max_tokens=max_tokens,
-            temperature=temperature
+            temperature=temperature,
         )
 
     def _log_usage(self, query: str):
