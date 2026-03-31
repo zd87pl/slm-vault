@@ -2046,7 +2046,7 @@ class VaultApp:
                     self.tr("onboarding.info.protect"),
                     level="info",
                 )
-                self.show_settings_hub(active_tab="sheriff")
+                self._show_connections_view()
                 return
 
             self.show_landing_page()
@@ -2370,7 +2370,7 @@ class VaultApp:
                 return
 
             if step_id == "adapter":
-                self.on_nav_change(7)
+                self.on_nav_change(1)
                 return
 
             if step_id == "inference":
@@ -2378,11 +2378,11 @@ class VaultApp:
                     self._run_local_setup()
                 else:
                     self.check_backend_connectivity()
-                    self.on_nav_change(5)
+                    self.on_nav_change(2)
                 return
 
             if step_id == "sync":
-                self.on_nav_change(5)
+                self.on_nav_change(2)
                 return
         except Exception as e:
             self._show_actionable_error(
@@ -2390,7 +2390,7 @@ class VaultApp:
                 title=self.tr("readiness.error.fix"),
                 context="sync",
                 fix_label=self.tr("readiness.fix.open_setup"),
-                fix_action=lambda: self.on_nav_change(5),
+                fix_action=lambda: self.on_nav_change(2),
             )
 
     def _build_readiness_strip(
@@ -5468,15 +5468,27 @@ class VaultApp:
 
     def _render_primary_shell(self, active_index: int, content: ft.Control) -> None:
         """Render the main investor-demo shell with the modern sidebar."""
+        profile_status = self._get_private_model_status()
+        document_count = int(profile_status.get("document_count", 0) or 0)
+        if getattr(self, "vault_service", None) is not None:
+            try:
+                vault_status = self.vault_service.get_status()
+                if isinstance(vault_status, dict):
+                    document_count = int(vault_status.get("document_count", document_count) or document_count)
+            except Exception:
+                pass
+
         if not hasattr(self, "sidebar") or self.sidebar is None:
             self.sidebar = ModernSidebar(
                 on_nav_change=self.on_nav_change,
                 selected_index=active_index,
                 translate=self.tr,
+                document_count=document_count,
             )
         else:
             self.sidebar.selected_index = active_index
             self.sidebar.translate = self.tr
+            self.sidebar.document_count = document_count
         sidebar_container = self.sidebar.build()
         self.page.add(
             ft.Row(
@@ -8209,44 +8221,30 @@ class VaultApp:
         self.load_secrets()
 
     def on_nav_change(self, index: int):
-        """Handle navigation change for simplified 4-item structure."""
-        # Update sidebar selection
-        self.sidebar.selected_index = index
-        sidebar_container = self.sidebar.build()
+        """Handle navigation change for the Chat / Files / Settings shell."""
+        if index == 7:
+            routed_index = 1
+        elif index in {-1, 0}:
+            routed_index = 0
+        elif index in {1}:
+            routed_index = 1
+        elif index in {2, 3, 4, 5, 6, 8, 9}:
+            routed_index = 2
+        else:
+            routed_index = 2
 
-        # Update sidebar in layout
-        layout = self.page.controls[0]  # Get the Row layout
-        if layout and isinstance(layout, ft.Row) and len(layout.controls) > 0:
-            layout.controls[0] = sidebar_container  # Update sidebar
+        if hasattr(self, "sidebar") and self.sidebar is not None:
+            self.sidebar.selected_index = routed_index
 
-        # Figma-aligned primary shell:
-        # -1: Workspace
-        #  0: Library
-        #  1: Connections
-        #  2: Security
-        if index == -1:
-            self.show_landing_page()
-        elif index == 0:
+        if routed_index == 0:
+            self._show_workspace_view()
+        elif routed_index == 1:
             self._show_library_view()
-        elif index == 1:
-            self._show_connections_view()
-        elif index == 2:
-            self._show_security_view()
-        # Backward compatibility for legacy nav indices used in older callbacks.
-        elif index == 3:  # Activity
-            self.show_agent_view(active_tab="activity")
-        elif index == 4:  # Statistics
-            self.show_settings_hub(active_tab="stats")
-        elif index == 5:  # Setup/Settings
-            self.show_settings_hub(active_tab="setup")
-        elif index == 6:  # LangChain policies
-            self.show_settings_hub(active_tab="policies")
-        elif index == 7:  # Library
-            self.show_my_data_view(active_tab="profiles")
-        elif index == 8:  # Permissions
-            self.show_agent_view(active_tab="permissions")
-        elif index == 9:  # Data Sheriff
-            self.show_settings_hub(active_tab="sheriff")
+        else:
+            if hasattr(self, "show_settings_hub"):
+                self.show_settings_hub()
+            else:
+                self._show_security_view()
 
         self.page.update()
 
@@ -14551,7 +14549,7 @@ class VaultApp:
             ft.ElevatedButton(
                 self.tr("settings.permissions.button"),
                 icon=ft.Icons.SHIELD_ROUNDED,
-                on_click=lambda e: self.on_nav_change(8),
+                on_click=lambda e: self.on_nav_change(2),
                 style=ft.ButtonStyle(bgcolor=LightTheme.BG_ELEVATED, color=LightTheme.TEXT_PRIMARY, shape=ft.RoundedRectangleBorder(radius=8)),
             ),
         ])
