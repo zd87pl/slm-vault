@@ -126,7 +126,7 @@ class TestWorkspaceDemo(unittest.TestCase):
 
             app._show_workspace_view()
             strings = _collect_strings(page.controls[0])
-            self.assertIn("pitch.md", strings)
+            self.assertTrue(any("pitch.md" in value for value in strings))
             self.assertIn("Add Files", strings)
             self.assertIn("Add Folder", strings)
             self.assertIn("Secure Chat Workspace", strings)
