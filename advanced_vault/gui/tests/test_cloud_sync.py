@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from advanced_vault.gui.cloud_sync import CloudSyncService
-from advanced_vault.encrypted_kv import EncryptedKVStore, EntryType
+from advanced_vault.encrypted_kv import EncryptedKVStore, EntryType, QueryFilter
 
 
 class TestCloudSyncService(unittest.TestCase):
@@ -109,7 +109,7 @@ class TestCloudSyncService(unittest.TestCase):
         )
         
         # Get entry
-        entries = self.vault.search(service="test_service")
+        entries = self.vault.search(QueryFilter(service="test_service"))
         entry = entries[0]
         
         # Prepare for backend

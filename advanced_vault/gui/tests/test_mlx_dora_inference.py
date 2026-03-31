@@ -215,9 +215,9 @@ class TestDoRAWeightsGrouping(unittest.TestCase):
 
         grouped = engine._group_weights_by_layer(flat_weights)
 
-        # Should strip prefix and suffix
+        # Should strip the PEFT prefix/suffix down to the actual model layer path
         self.assertEqual(len(grouped), 1)
-        self.assertIn("model.layers.0.self_attn.q_proj", grouped)
+        self.assertIn("layers.0.self_attn.q_proj", grouped)
 
     def test_normalize_weight_type_names(self):
         """Test normalization of various weight type names."""

@@ -105,9 +105,19 @@ class TestWorkspaceDemo(unittest.TestCase):
             self.assertIsNotNone(app.chat_input)
             strings = _collect_strings(page.controls[0])
             self.assertIn("Private Chat", strings)
+            self.assertIn("Control what the agentic web can see", strings)
+            self.assertIn("Add Private Files", strings)
+            self.assertIn("Connect Apps", strings)
+            self.assertIn("Review Protection", strings)
+            self.assertIn("Prepare a safe agent handoff", strings)
+            self.assertIn("Import private files", strings)
+            self.assertIn("Get a private answer", strings)
+            self.assertIn("Connect AI apps", strings)
+            self.assertIn("Review protection", strings)
             self.assertIn("Add Files", strings)
             self.assertIn("Add Folder", strings)
             self.assertIn("Workspace", strings)
+            self.assertTrue(any("ChatGPT-like tools" in value for value in strings))
             self.assertGreater(len(app.chat_messages_list.controls), 0)
 
     def test_welcome_screen_uses_simple_three_step_language(self) -> None:
@@ -116,15 +126,16 @@ class TestWorkspaceDemo(unittest.TestCase):
             app.show_welcome_screen()
 
             strings = _collect_strings(page.controls[0])
-            self.assertIn("Private AI for your files", strings)
-            self.assertIn("Add a File", strings)
-            self.assertIn("Open Demo", strings)
+            self.assertIn("Private AI workspace for the agentic web", strings)
+            self.assertIn("Add Private Files", strings)
+            self.assertIn("Open Investor Demo", strings)
             self.assertIn("Runs on this Mac", strings)
-            self.assertIn("No signup", strings)
-            self.assertIn("Approval stays with you", strings)
-            self.assertIn("Add a file", strings)
-            self.assertIn("Ask a question", strings)
-            self.assertIn("Review guardrails", strings)
+            self.assertIn("Works before cloud setup", strings)
+            self.assertIn("Exposure stays under your approval", strings)
+            self.assertIn("Add private files", strings)
+            self.assertIn("Ask privately", strings)
+            self.assertIn("Connect apps safely", strings)
+            self.assertTrue(any("ChatGPT-like/MCP tools" in value for value in strings))
 
     def test_local_first_boot_does_not_require_auth_screen(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -189,6 +200,39 @@ class TestWorkspaceDemo(unittest.TestCase):
             strings = _collect_strings(page.controls[0])
             self.assertIn("Download local model", strings)
             self.assertIn("Download Model", strings)
+
+    def test_connections_view_frames_enclave_as_control_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app, page = self._make_app(tmpdir)
+            app._show_connections_view()
+
+            strings = _collect_strings(page.controls[0])
+            self.assertIn("Connect AI Apps", strings)
+            self.assertIn("Connect a New App", strings)
+            self.assertIn("Investor Demo Flow", strings)
+            self.assertIn("Common Agent Paths", strings)
+            self.assertIn("Claude Desktop", strings)
+            self.assertIn("ChatGPT-like / MCP tools", strings)
+            self.assertIn("Browsers / ecommerce automations", strings)
+            self.assertIn("Connect Apps", strings)
+            self.assertIn("Protection", strings)
+            self.assertIn("Connect Claude Desktop", strings)
+            self.assertIn("Connect Cursor", strings)
+            self.assertIn("Copy for OpenClaw / other MCP apps", strings)
+            self.assertTrue(any("Ready on this Mac" in value or "Connected" in value or "Not detected" in value for value in strings))
+            self.assertTrue(any("ChatGPT-like/MCP tools" in value for value in strings))
+
+    def test_protection_view_frames_exposure_control(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app, page = self._make_app(tmpdir)
+            app._show_security_view()
+
+            strings = _collect_strings(page.controls[0])
+            self.assertIn("Protection", strings)
+            self.assertIn("Exposure Summary", strings)
+            self.assertIn("Protected Files", strings)
+            self.assertIn("What Left Enclave", strings)
+            self.assertIn("Ecommerce & Spend Guardrails", strings)
 
     def test_local_ingest_and_chat_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -142,8 +142,10 @@ class TestLocalAgentChat(unittest.TestCase):
                     self.assertTrue(result["rag_used"])
                     self.assertEqual(len(result["sources"]), 1)
                     self.assertEqual(result["sources"][0]["document"], "q3_report.pdf")
-                    # Without model, answer should contain context
-                    self.assertIn("Revenue", result.get("answer", ""))
+                    # Without a local model, the fallback should stay privacy-safe
+                    self.assertIn("local model backend is unavailable", result.get("answer", ""))
+                    self.assertIn("No raw document text is exposed", result.get("answer", ""))
+                    self.assertEqual(result.get("model_used"), "no-model-safe-fallback")
 
     def test_query_no_results(self):
         """Test query with no matching documents."""
