@@ -257,6 +257,8 @@ class VaultApp:
         self._private_model_session = None
         self._private_model_session_name = None
         self._private_model_note = "Create a local profile to start chatting with your private files."
+        self._private_model_prewarm_in_progress = False
+        self._private_model_prewarm_profile_name = None
         self.private_files_picker = None
         self.private_folder_picker = None
         self.training_queue = None
@@ -504,6 +506,160 @@ class VaultApp:
         self._private_model_session_name = profile.name
         return self._private_model_session
 
+    def _prewarm_private_model_session(self, announce: bool = False) -> None:
+        """Warm the active local model session in the background for faster demo Q&A."""
+        profile = self._ensure_private_model_profile()
+        model_status = self._get_local_private_model_status()
+        if not model_status.get("available"):
+            self._component_status["qa"]["status"] = "checking"
+            self._component_status["qa"]["message"] = self.tr("local_model.download.title")
+            self._private_model_note = (
+                f"Download {model_status.get('display_name', 'the local model')} once on this Mac "
+                "to enable private Q&A."
+            )
+            return
+        if (
+            self._private_model_prewarm_in_progress
+            and self._private_model_prewarm_profile_name == profile.name
+        ):
+            return
+
+        session = self._get_private_model_session()
+        if (
+            getattr(session, "_engine", None) is not None
+            and self._private_model_prewarm_profile_name == profile.name
+        ):
+            return
+
+        self._private_model_prewarm_in_progress = True
+        self._private_model_prewarm_profile_name = profile.name
+        self._component_status["qa"]["status"] = "installing"
+        self._component_status["qa"]["message"] = "Warming local MLX model..."
+        self._private_model_note = f"{profile.name} is warming locally in the background."
+        logger.info("Scheduling private model prewarm for profile %s", profile.name)
+
+        if announce:
+            self._show_user_message(
+                "Warming the local MLX model in the background so private Q&A is ready faster.",
+                level="info",
+            )
+
+        def worker() -> None:
+            try:
+                loaded_session = self._get_private_model_session()
+                engine = loaded_session._ensure_engine()
+                if engine is None:
+                    raise RuntimeError("No local model backend is available")
+                self._component_status["qa"]["status"] = "ready"
+                self._component_status["qa"]["message"] = "Ready (Local MLX)"
+                self._private_model_note = f"{profile.name} is warm and ready for local chat."
+                logger.info("Private model session prewarmed for profile %s", profile.name)
+            except Exception as exc:
+                logger.warning("Private model prewarm failed for %s: %s", profile.name, exc)
+                self._component_status["qa"]["status"] = "error"
+                self._component_status["qa"]["message"] = f"Local model warmup failed: {exc}"
+            finally:
+                self._private_model_prewarm_in_progress = False
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _get_local_private_model_status(self) -> Dict[str, Any]:
+        """Return availability details for the shared local base model."""
+        profile = self._ensure_private_model_profile()
+        model_name = profile.model_name or DEFAULT_PRIVATE_MODEL_NAME
+        try:
+            from advanced_vault.gui.local_inference import LocalInferenceEngine
+
+            available = LocalInferenceEngine.is_model_available(model_name)
+            cache_root = LocalInferenceEngine.get_shared_model_root()
+            return {
+                "available": available,
+                "model_name": model_name,
+                "display_name": model_name.split("/")[-1],
+                "cache_root": str(cache_root),
+            }
+        except Exception as exc:
+            return {
+                "available": False,
+                "model_name": model_name,
+                "display_name": model_name.split("/")[-1],
+                "cache_root": "",
+                "error": str(exc),
+            }
+
+    def _setup_local_private_model_with_progress(self) -> None:
+        """Download and warm the shared local model with explicit first-run UX."""
+        model_status = self._get_local_private_model_status()
+        if model_status.get("available"):
+            self._prewarm_private_model_session(announce=True)
+            self._show_user_message(self.tr("local_model.download.ready"), level="info")
+            return
+
+        profile = self._ensure_private_model_profile()
+        progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
+            self.tr("local_model.download.title"),
+            self.tr("local_model.download.preparing"),
+        )
+        progress_bar.value = None
+        progress_percent.value = ""
+        time_remaining_text.value = self.tr("local_model.download.first_run")
+        self.page.overlay.append(progress_dialog)
+        progress_dialog.open = True
+        self.page.update()
+
+        def update_progress(message: str) -> None:
+            try:
+                progress_text.value = message
+                progress_bar.value = None
+                progress_percent.value = ""
+                time_remaining_text.value = self.tr("local_model.download.first_run")
+                self._component_status["qa"]["status"] = "installing"
+                self._component_status["qa"]["message"] = message
+                self._private_model_note = message
+                self.page.update()
+            except Exception as exc:
+                logger.debug("Could not update local model progress: %s", exc)
+
+        def worker() -> None:
+            try:
+                session = self._get_private_model_session()
+                if not session.ensure_model_ready(allow_download=True, progress_callback=update_progress):
+                    raise RuntimeError("Local model could not be prepared")
+                self._component_status["qa"]["status"] = "ready"
+                self._component_status["qa"]["message"] = "Ready (Local MLX)"
+                self._private_model_note = f"{profile.name} is warm and ready for local chat."
+                progress_text.value = self.tr("local_model.download.ready")
+                progress_bar.value = 1.0
+                progress_percent.value = "100%"
+                time_remaining_text.value = ""
+                progress_dialog.actions = [
+                    ft.TextButton(
+                        self.tr("common.ok"),
+                        on_click=lambda e: setattr(progress_dialog, "open", False) or self.page.update(),
+                    ),
+                ]
+                if self.current_view == "agent_chat":
+                    self._show_workspace_view()
+                else:
+                    self.page.update()
+            except Exception as exc:
+                logger.warning("Local model download failed: %s", exc)
+                self._component_status["qa"]["status"] = "error"
+                self._component_status["qa"]["message"] = f"Local model download failed: {exc}"
+                progress_text.value = f"Error: {exc}"
+                progress_bar.value = None
+                progress_percent.value = ""
+                time_remaining_text.value = ""
+                progress_dialog.actions = [
+                    ft.TextButton(
+                        self.tr("common.ok"),
+                        on_click=lambda e: setattr(progress_dialog, "open", False) or self.page.update(),
+                    ),
+                ]
+                self.page.update()
+
+        threading.Thread(target=worker, daemon=True).start()
+
     def _get_private_model_status(self) -> Dict[str, Any]:
         """Return lightweight local Private Model profile status."""
         profile = self._ensure_private_model_profile()
@@ -515,6 +671,7 @@ class VaultApp:
 
         status["model_name"] = profile.model_name or DEFAULT_PRIVATE_MODEL_NAME
         status["adapter_count"] = len(profile.wdva_adapters)
+        status["model_downloaded"] = self._get_local_private_model_status().get("available", False)
         return status
 
     def _get_private_model_documents(self, limit: Optional[int] = None) -> List[Dict[str, Any]]:
@@ -713,9 +870,11 @@ class VaultApp:
         self.active_private_profile_name = profile_name
         self._save_active_private_profile_name()
         self._reset_private_model_session()
+        self._private_model_prewarm_profile_name = None
         self._chat_history_profile = None
         self._ensure_chat_messages_loaded()
         self._private_model_note = f"{profile_name} is active and ready for local chat."
+        self._prewarm_private_model_session()
 
         if refresh:
             if self.current_view == "landing":
@@ -1025,7 +1184,7 @@ class VaultApp:
         )
         self._close_dialog(dialog)
         self._set_active_private_profile(profile.name, refresh=False)
-        self._private_model_note = f"{profile.name} is ready. Add files to start chatting locally."
+        self._private_model_note = f"{profile.name} is active. Add files while the local model warms in the background."
 
         if self.current_view == "agent_chat":
             self._open_test_agent_chat()
@@ -1039,6 +1198,7 @@ class VaultApp:
         logger.info("Starting Enclave in local-first mode")
         self.initialize_vault()
         self._show_initial_authenticated_view()
+        self._prewarm_private_model_session()
         self._show_user_message(
             "Running in local-first mode. Your files and model context stay on this Mac.",
             level="info",
@@ -1046,8 +1206,15 @@ class VaultApp:
 
     def check_authentication(self):
         """Check if user is authenticated."""
-        # Try to load existing session
-        self.session_data = AuthScreen.load_session()
+        # Try to load existing session when cloud auth dependencies are available.
+        self.session_data = None
+        if AuthScreen is not None:
+            try:
+                self.session_data = AuthScreen.load_session()
+            except Exception as e:
+                logger.warning(f"Could not load saved cloud session: {e}")
+        else:
+            logger.info("Auth screen dependencies are unavailable; skipping cloud session restore")
 
         if self.session_data:
             # User is authenticated, initialize vault
@@ -1064,6 +1231,45 @@ class VaultApp:
 
     def show_auth_screen(self):
         """Show authentication screen."""
+        if AuthScreen is None:
+            self.page.clean()
+            self.page.add(
+                ft.Container(
+                    content=ft.Column(
+                        [
+                            ft.Icon(ft.Icons.CLOUD_OFF_ROUNDED, size=48, color=LightTheme.ACCENT_WARNING),
+                            ft.Text(
+                                "Cloud authentication is unavailable in this local build.",
+                                size=22,
+                                weight=ft.FontWeight.W_600,
+                                color=LightTheme.TEXT_PRIMARY,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                            ft.Text(
+                                "Install the cloud auth dependencies or run Enclave in local-first mode for the investor demo.",
+                                size=14,
+                                color=LightTheme.TEXT_SECONDARY,
+                                text_align=ft.TextAlign.CENTER,
+                            ),
+                            ft.ElevatedButton(
+                                "Start Local Demo",
+                                icon=ft.Icons.LAPTOP_MAC_ROUNDED,
+                                visible=not self.require_authentication,
+                                on_click=lambda e: self._enter_local_first_mode(),
+                                style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                            ),
+                        ],
+                        horizontal_alignment=ft.CrossAxisAlignment.CENTER,
+                        spacing=16,
+                    ),
+                    expand=True,
+                    alignment=ft.alignment.center,
+                    padding=32,
+                )
+            )
+            self.page.update()
+            return
+
         auth_screen = AuthScreen(
             page=self.page,
             backend_url=self.backend_url,
@@ -1811,29 +2017,36 @@ class VaultApp:
     def _handle_onboarding_step_action(self, step_id: str) -> None:
         """Route onboarding step CTAs to high-value product actions."""
         try:
+            normalized_step = {
+                "connect": "protect",
+                "encrypt": "add",
+                "train": "add",
+                "ask": "ask",
+                "add": "add",
+                "protect": "protect",
+            }.get(step_id, step_id)
+
             self._mark_onboarding_completed()
             self.show_landing_page()
 
-            if step_id == "connect":
-                self._run_local_setup()
-                self.on_nav_change(5)
+            if normalized_step == "add":
                 self._show_user_message(
-                    self.tr("onboarding.info.connect"),
+                    self.tr("onboarding.info.add"),
                     level="info",
                 )
+                self._open_private_files_picker()
                 return
 
-            if step_id == "encrypt":
-                self.on_nav_change(0)
-                self.show_add_dialog(None, default_type="secret")
-                return
-
-            if step_id == "train":
-                self.on_nav_change(7)
-                return
-
-            if step_id == "ask":
+            if normalized_step == "ask":
                 self._open_test_agent_chat()
+                return
+
+            if normalized_step == "protect":
+                self._show_user_message(
+                    self.tr("onboarding.info.protect"),
+                    level="info",
+                )
+                self.show_settings_hub(active_tab="sheriff")
                 return
 
             self.show_landing_page()
@@ -1867,61 +2080,71 @@ class VaultApp:
         self.show_landing_page()
     
     def _add_sample_data(self):
-        """Add sample data for first-time users."""
+        """Seed a lightweight demo workspace with sample private context."""
         try:
-            if not self.vault:
-                raise RuntimeError("Vault not initialized")
-            
-            sample_secrets = [
-                {
-                    "service": "GitHub",
-                    "content": "ghp_example_token_123456789",
-                    "tags": ["development", "version-control"],
-                    "description": "GitHub Personal Access Token"
-                },
-                {
-                    "service": "AWS",
-                    "content": "AKIAIOSFODNN7EXAMPLE",
-                    "tags": ["cloud", "infrastructure"],
-                    "description": "AWS Access Key"
-                },
-                {
-                    "service": "Stripe",
-                    "content": "sk_test_example_placeholder_key_not_real",
-                    "tags": ["payment", "production"],
-                    "description": "Stripe API Key (example)"
-                },
-            ]
-            
-            added_count = 0
-            for secret in sample_secrets:
-                try:
-                    self.vault.store(
-                        content=secret["content"],
-                        data_type="secret",
-                        service=secret["service"],
-                        tags=secret["tags"],
-                        description=secret["description"]
+            profile = self._ensure_private_model_profile()
+            session = self.private_model_manager.open_session(profile.name)
+            try:
+                existing = {
+                    item.get("name")
+                    for item in session.list_documents()
+                }
+                sample_documents = [
+                    {
+                        "name": "welcome_note.md",
+                        "content": (
+                            "Enclave is a local-first AI workspace. Your files stay on this Mac by default, "
+                            "answers are synthesized locally, and external agents interact through controlled tools."
+                        ),
+                    },
+                    {
+                        "name": "payments_guardrails.md",
+                        "content": (
+                            "The escrow wallet blocks autonomous spending above 75 dollars unless the user approves it. "
+                            "Funds must be preloaded into the wallet, and the global kill switch freezes both sensitive "
+                            "data access and governed spend."
+                        ),
+                    },
+                    {
+                        "name": "travel_brief.txt",
+                        "content": (
+                            "Weekend NYC plan: stay near SoHo, keep food budget under 180 dollars, and prioritize "
+                            "quiet hotels with reliable Wi-Fi. Keep passport scans private and accessible only through Enclave."
+                        ),
+                    },
+                ]
+
+                added_count = 0
+                for document in sample_documents:
+                    if document["name"] in existing:
+                        continue
+                    session.add_document(
+                        name=document["name"],
+                        content=document["content"],
+                        source_path=str(self.vault_path / document["name"]),
                     )
                     added_count += 1
-                except Exception as e:
-                    logger.warning(f"Failed to add sample secret {secret['service']}: {e}")
-            
-            logger.info(f"Added {added_count} sample secrets")
-            
-            # Show success message
+            finally:
+                session.close()
+
+            self._reset_private_model_session()
+            self._ensure_demo_wallet_envelope()
+            self._mark_onboarding_completed()
+            self.show_landing_page()
             self._show_user_message(
                 self.tr("onboarding.success.sample", count=added_count),
                 level="success",
             )
-            
+            self._open_test_agent_chat(
+                initial_question="What blocks autonomous spending above $75?"
+            )
         except Exception as e:
             self._show_actionable_error(
                 e,
                 title=self.tr("onboarding.error.add_sample"),
                 context="vault",
                 fix_label=self.tr("onboarding.fix.add_secret"),
-                fix_action=lambda: self.show_add_dialog(None, default_type="secret"),
+                fix_action=self.show_landing_page,
             )
 
     def _show_user_message(self, message: str, level: str = "info") -> None:
@@ -5259,7 +5482,16 @@ class VaultApp:
             ft.Row(
                 [
                     sidebar_container,
-                    ft.Container(content=content, expand=True, bgcolor=LightTheme.BG_PRIMARY),
+                    ft.Container(
+                        content=ft.ListView(
+                            controls=[content],
+                            expand=True,
+                            spacing=0,
+                            padding=0,
+                        ),
+                        expand=True,
+                        bgcolor=LightTheme.BG_PRIMARY,
+                    ),
                 ],
                 spacing=0,
                 expand=True,
@@ -5748,6 +5980,17 @@ class VaultApp:
         query = input_field.value.strip() if input_field.value else ""
         if not query:
             return
+
+        active_mode = mode_override or self.inference_mode
+        if active_mode == "local":
+            local_model_status = self._get_local_private_model_status()
+            if not local_model_status.get("available"):
+                self._show_user_message(
+                    self.tr("local_model.download.keep_query"),
+                    level="info",
+                )
+                self._setup_local_private_model_with_progress()
+                return
         
         # Clear input
         input_field.value = ""
@@ -6428,6 +6671,9 @@ class VaultApp:
                 self.training_queue = None
                 self._component_status["qa"]["status"] = "error"
                 self._component_status["qa"]["message"] = f"Error: {str(e)}"
+
+        if self.inference_mode == "local":
+            self._prewarm_private_model_session()
     
     def _ensure_qa_api_key_set(self):
         """
@@ -6472,7 +6718,8 @@ class VaultApp:
             return
 
         # Clear session
-        AuthScreen.clear_session()
+        if AuthScreen is not None:
+            AuthScreen.clear_session()
         self.session_data = None
         self.vault = None
 
@@ -9341,7 +9588,7 @@ class VaultApp:
                             spacing=10,
                         ),
                         ft.Text(
-                            "Stops privileged Vault actions and mock Wallet execution from one control-plane state.",
+                            "Stops privileged Vault actions and prepaid wallet or escrow execution from one control-plane state.",
                             size=12,
                             color=LightTheme.TEXT_SECONDARY,
                         ),
@@ -9365,10 +9612,10 @@ class VaultApp:
                     [
                         ft.Row(
                             [
-                                ft.Text("Wallet Governance", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                ft.Text("Agentic Payments Guardrails", size=15, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
                                 ft.Container(expand=True),
                                 ft.Text(
-                                    "Mock provider, local ledger, approval queue",
+                                    "Prepaid wallet, escrow envelopes, approval queue",
                                     size=11,
                                     color=LightTheme.TEXT_MUTED,
                                 ),
@@ -9376,7 +9623,7 @@ class VaultApp:
                             spacing=10,
                         ),
                         ft.Text(
-                            "Use this section to demo governed spend decisions without leaving the local Enclave shell.",
+                            "Use this section to show that agent payments are governed like data access: funds must be preloaded, policy checked, and approved when thresholds are crossed.",
                             size=12,
                             color=LightTheme.TEXT_SECONDARY,
                         ),
@@ -9392,19 +9639,19 @@ class VaultApp:
                         ft.Row(
                             [
                                 ft.ElevatedButton(
-                                    "Create Demo Envelope",
+                                    "Create Demo Wallet",
                                     icon=ft.Icons.ADD_CARD_ROUNDED,
                                     on_click=lambda e: (self._ensure_demo_wallet_envelope(), self.show_settings_hub(active_tab="sheriff")),
                                     style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
                                 ),
                                 ft.OutlinedButton(
-                                    "Request $19",
+                                    "Auto-approve $19",
                                     icon=ft.Icons.PLAY_ARROW_ROUNDED,
                                     on_click=lambda e: self._request_demo_wallet_purchase(19.0, "github.com", "Auto-approved demo spend"),
                                     style=ft.ButtonStyle(color=LightTheme.TEXT_PRIMARY),
                                 ),
                                 ft.OutlinedButton(
-                                    "Request $85",
+                                    "Queue $85 Review",
                                     icon=ft.Icons.HOURGLASS_TOP_ROUNDED,
                                     on_click=lambda e: self._request_demo_wallet_purchase(85.0, "openai.com", "Pending approval demo spend"),
                                     style=ft.ButtonStyle(color=LightTheme.TEXT_PRIMARY),

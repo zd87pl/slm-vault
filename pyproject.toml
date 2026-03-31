@@ -62,6 +62,7 @@ dependencies = [
 
     # PDF Processing (optional but recommended)
     "pypdf>=3.0.0",
+    "zstandard>=0.23.0",
 ]
 
 [project.optional-dependencies]
@@ -69,6 +70,8 @@ dependencies = [
 mlx = [
     "mlx>=0.10.0",
     "mlx-lm>=0.10.0",
+    "huggingface_hub>=0.20.0",
+    "hf_transfer>=0.1.8",
 ]
 
 # GPU training (NVIDIA)
@@ -82,7 +85,7 @@ cuda = [
 
 # Desktop GUI
 gui = [
-    "flet>=0.21.0",
+    "flet[all]>=0.28.3,<0.29",
 ]
 
 # Optional layout-aware parsing / OCR wrapper

@@ -24,12 +24,10 @@ class WelcomeScreen:
         self.on_add_sample = on_add_sample
         self.on_step_action = on_step_action
         self.translate = translate
-        self.completed_steps = set()
         self._step_defs = [
-            {"id": "connect", "icon": ft.Icons.CABLE_ROUNDED},
-            {"id": "encrypt", "icon": ft.Icons.LOCK_ROUNDED},
-            {"id": "train", "icon": ft.Icons.PSYCHOLOGY_ROUNDED},
+            {"id": "add", "icon": ft.Icons.FILE_UPLOAD_ROUNDED},
             {"id": "ask", "icon": ft.Icons.CHAT_ROUNDED},
+            {"id": "protect", "icon": ft.Icons.SHIELD_ROUNDED},
         ]
 
     def t(self, key: str, **kwargs) -> str:
@@ -42,162 +40,145 @@ class WelcomeScreen:
         return get_text("en", key, **kwargs)
 
     def get_view(self) -> ft.Container:
-        completed = len(self.completed_steps)
-        progress = completed / len(self._step_defs)
-
-        step_cards = [self._build_step_card(step) for step in self._step_defs]
+        step_chips = [
+            self._build_step_chip(index + 1, step)
+            for index, step in enumerate(self._step_defs)
+        ]
+        trust_badges = ft.Row(
+            [
+                self._build_trust_badge(ft.Icons.LAPTOP_MAC_ROUNDED, self.t("onboarding.trust.local")),
+                self._build_trust_badge(ft.Icons.NO_ACCOUNTS_ROUNDED, self.t("onboarding.trust.account")),
+                self._build_trust_badge(ft.Icons.VERIFIED_USER_ROUNDED, self.t("onboarding.trust.control")),
+            ],
+            spacing=10,
+            wrap=True,
+        )
 
         return ft.Container(
             expand=True,
             bgcolor=LightTheme.BG_PRIMARY,
-            padding=ft.padding.symmetric(horizontal=56, vertical=40),
+            padding=ft.padding.symmetric(horizontal=40, vertical=32),
             content=ft.Column(
                 [
-                    ft.Text(
-                        self.t("onboarding.title"),
-                        size=34,
-                        weight=ft.FontWeight.BOLD,
-                        color=LightTheme.TEXT_PRIMARY,
-                    ),
-                    ft.Text(
-                        self.t("onboarding.subtitle"),
-                        size=14,
-                        color=LightTheme.TEXT_SECONDARY,
-                    ),
-                    ft.Container(height=16),
-                    ft.Row(
-                        [
-                            ft.Text(
-                                self.t(
-                                    "onboarding.progress",
-                                    completed=completed,
-                                    total=len(self._step_defs),
-                                ),
-                                size=12,
-                                color=LightTheme.TEXT_MUTED,
-                            ),
-                            ft.Container(expand=True),
-                            ft.Text(
-                                self.t("onboarding.ttfv"),
-                                size=12,
-                                color=LightTheme.TEXT_MUTED,
-                            ),
-                        ],
-                    ),
-                    ft.ProgressBar(
-                        value=progress,
-                        color=LightTheme.ACCENT_PRIMARY,
-                        bgcolor=LightTheme.BORDER_COLOR,
-                        height=8,
-                    ),
-                    ft.Container(height=18),
-                    ft.Column(step_cards, spacing=12),
-                    ft.Container(height=18),
-                    ft.Row(
-                        [
-                            ft.ElevatedButton(
-                                self.t("onboarding.continue"),
-                                icon=ft.Icons.ARROW_FORWARD_ROUNDED,
-                                on_click=self._on_continue,
-                                style=ft.ButtonStyle(
-                                    bgcolor=LightTheme.ACCENT_PRIMARY,
-                                    color="white",
-                                    shape=ft.RoundedRectangleBorder(radius=8),
-                                    padding=ft.padding.symmetric(horizontal=26, vertical=14),
-                                ),
-                            ),
-                            ft.OutlinedButton(
-                                self.t("onboarding.add_sample"),
-                                icon=ft.Icons.AUTO_AWESOME_ROUNDED,
-                                on_click=self._on_add_sample,
-                                style=ft.ButtonStyle(
+                    ft.Container(
+                        width=760,
+                        content=ft.Column(
+                            [
+                                ft.Text(
+                                    self.t("onboarding.title"),
+                                    size=34,
+                                    weight=ft.FontWeight.BOLD,
                                     color=LightTheme.TEXT_PRIMARY,
-                                    side=ft.BorderSide(1, LightTheme.BORDER_COLOR),
-                                    shape=ft.RoundedRectangleBorder(radius=8),
                                 ),
-                            ),
-                        ],
-                        spacing=12,
+                                ft.Text(
+                                    self.t("onboarding.subtitle"),
+                                    size=15,
+                                    color=LightTheme.TEXT_SECONDARY,
+                                ),
+                                ft.Container(height=18),
+                                trust_badges,
+                                ft.Container(height=24),
+                                ft.Row(step_chips, spacing=10, wrap=True),
+                                ft.Container(height=28),
+                                ft.Row(
+                                    [
+                                        ft.ElevatedButton(
+                                            self.t("onboarding.primary"),
+                                            icon=ft.Icons.FILE_UPLOAD_ROUNDED,
+                                            on_click=lambda e: self._run_step_action("add"),
+                                            style=ft.ButtonStyle(
+                                                bgcolor=LightTheme.ACCENT_PRIMARY,
+                                                color="white",
+                                                shape=ft.RoundedRectangleBorder(radius=10),
+                                                padding=ft.padding.symmetric(horizontal=26, vertical=14),
+                                            ),
+                                        ),
+                                        ft.OutlinedButton(
+                                            self.t("onboarding.add_sample"),
+                                            icon=ft.Icons.AUTO_AWESOME_ROUNDED,
+                                            on_click=self._on_add_sample,
+                                            style=ft.ButtonStyle(
+                                                color=LightTheme.TEXT_PRIMARY,
+                                                side=ft.BorderSide(1, LightTheme.BORDER_COLOR),
+                                                shape=ft.RoundedRectangleBorder(radius=10),
+                                            ),
+                                        ),
+                                        ft.TextButton(
+                                            self.t("onboarding.skip"),
+                                            on_click=self._on_continue,
+                                            style=ft.ButtonStyle(color=LightTheme.TEXT_MUTED),
+                                        ),
+                                    ],
+                                    spacing=12,
+                                    wrap=True,
+                                ),
+                            ],
+                            spacing=0,
+                        ),
                     ),
                 ],
                 scroll=ft.ScrollMode.AUTO,
                 spacing=0,
+                horizontal_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
 
-    def _build_step_card(self, step: dict) -> ft.Container:
+    def _build_step_chip(self, number: int, step: dict) -> ft.Container:
         step_id = step["id"]
-        step_done = step_id in self.completed_steps
-        status_icon = ft.Icons.CHECK_CIRCLE_ROUNDED if step_done else ft.Icons.RADIO_BUTTON_UNCHECKED_ROUNDED
-        status_color = LightTheme.ACCENT_SUCCESS if step_done else LightTheme.TEXT_MUTED
-
-        def _run_step(_):
-            self.completed_steps.add(step_id)
-            if self.on_step_action:
-                self.on_step_action(step_id)
-                return
-            self.page.update()
-
         return ft.Container(
+            padding=ft.padding.symmetric(horizontal=14, vertical=12),
             bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=14,
             border=ft.border.all(1, LightTheme.BORDER_COLOR),
-            border_radius=12,
-            padding=16,
-            content=ft.Column(
+            content=ft.Row(
                 [
-                    ft.Row(
-                        [
-                            ft.Container(
-                                width=34,
-                                height=34,
-                                border_radius=9,
-                                bgcolor=LightTheme.ACCENT_PRIMARY + "20",
-                                alignment=ft.alignment.center,
-                                content=ft.Icon(step["icon"], size=18, color=LightTheme.ACCENT_PRIMARY),
-                            ),
-                            ft.Container(width=10),
-                            ft.Text(
-                                self.t(f"onboarding.step.{step_id}.title"),
-                                size=16,
-                                weight=ft.FontWeight.W_600,
-                                color=LightTheme.TEXT_PRIMARY,
-                                expand=True,
-                            ),
-                            ft.Icon(status_icon, size=18, color=status_color),
-                        ],
-                        vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                    ft.Container(
+                        width=24,
+                        height=24,
+                        border_radius=999,
+                        bgcolor=LightTheme.ACCENT_PRIMARY + "14",
+                        alignment=ft.alignment.center,
+                        content=ft.Text(
+                            str(number),
+                            size=12,
+                            weight=ft.FontWeight.W_700,
+                            color=LightTheme.ACCENT_PRIMARY,
+                        ),
                     ),
-                    ft.Container(height=8),
                     ft.Text(
-                        self.t(f"onboarding.step.{step_id}.description"),
+                        self.t(f"onboarding.step.{step_id}.title"),
                         size=13,
-                        color=LightTheme.TEXT_SECONDARY,
-                    ),
-                    ft.Container(height=8),
-                    ft.Text(
-                        self.t(f"onboarding.step.{step_id}.value"),
-                        size=12,
-                        color=LightTheme.ACCENT_SUCCESS,
-                    ),
-                    ft.Container(height=10),
-                    ft.Row(
-                        [
-                            ft.ElevatedButton(
-                                self.t(f"onboarding.step.{step_id}.cta"),
-                                icon=ft.Icons.ARROW_RIGHT_ALT_ROUNDED,
-                                on_click=_run_step,
-                                style=ft.ButtonStyle(
-                                    bgcolor=LightTheme.BG_SECONDARY,
-                                    color=LightTheme.TEXT_PRIMARY,
-                                    shape=ft.RoundedRectangleBorder(radius=8),
-                                ),
-                            ),
-                        ],
+                        weight=ft.FontWeight.W_600,
+                        color=LightTheme.TEXT_PRIMARY,
                     ),
                 ],
-                spacing=0,
+                spacing=10,
+                tight=True,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
             ),
         )
+
+    def _build_trust_badge(self, icon: str, label: str) -> ft.Container:
+        return ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(icon, size=14, color=LightTheme.ACCENT_PRIMARY),
+                    ft.Text(label, size=12, color=LightTheme.TEXT_PRIMARY),
+                ],
+                spacing=6,
+                tight=True,
+            ),
+            padding=ft.padding.symmetric(horizontal=12, vertical=8),
+            bgcolor=LightTheme.BG_ELEVATED,
+            border_radius=999,
+            border=ft.border.all(1, LightTheme.BORDER_COLOR),
+        )
+
+    def _run_step_action(self, step_id: str) -> None:
+        if self.on_step_action:
+            self.on_step_action(step_id)
+            return
+        self.on_start()
 
     def _on_continue(self, _):
         self.on_start()

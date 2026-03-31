@@ -69,7 +69,7 @@ class _FakeLocalInferenceEngine:
     def __init__(self, *args, **kwargs):
         self.prompts = []
 
-    def load_model(self):
+    def load_model(self, progress_callback=None, allow_download=True):
         return True
 
     def generate(self, prompt, max_tokens=512, temperature=0.2):
@@ -156,6 +156,28 @@ def test_session_safe_fallback_when_generation_fails(monkeypatch, tmp_path):
 
     assert result["warning"].startswith("generation_failed")
     assert "No raw document text is exposed" in result["answer"]
+
+
+def test_session_can_refuse_implicit_download(monkeypatch, tmp_path):
+    class _UnavailableLocalInferenceEngine(_FakeLocalInferenceEngine):
+        def load_model(self, progress_callback=None, allow_download=True):
+            return allow_download
+
+    monkeypatch.setattr("advanced_vault.private_models.manager.RAGIndex", _FakeRAGIndex)
+    monkeypatch.setattr(
+        "advanced_vault.private_models.manager.LocalInferenceEngine",
+        _UnavailableLocalInferenceEngine,
+    )
+
+    manager = PrivateModelManager(root_path=str(tmp_path / "models"))
+    manager.create_profile("packaged")
+    session = manager.open_session("packaged")
+
+    try:
+        assert session.ensure_model_ready(allow_download=False) is False
+        assert session.ensure_model_ready(allow_download=True) is True
+    finally:
+        session.close()
 
 
 def test_status_is_lazy_without_loading_rag(monkeypatch, tmp_path):

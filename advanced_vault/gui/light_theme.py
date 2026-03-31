@@ -7,14 +7,14 @@ class LightTheme:
     """Warm neutral light theme with teal privacy accents."""
     
     # Background colors
-    BG_PRIMARY = "#fafaf9"           # App background
-    BG_SECONDARY = "#f5f4f0"         # Section surfaces
+    BG_PRIMARY = "#ffffff"           # App background
+    BG_SECONDARY = "#fbfbfb"         # Section surfaces
     BG_ELEVATED = "#ffffff"          # Cards
-    BG_HOVER = "#f0efeb"             # Hovered cards and nav
+    BG_HOVER = "#f4f4f4"             # Hovered cards and nav
     BG_SURFACE = "#ffffff"           # Primary surface
     
     # Subtle background variations
-    BG_SUBTLE = "#f7f6f3"
+    BG_SUBTLE = "#fafafa"
     BG_DIVIDER = "rgba(0, 0, 0, 0.08)"
     SURFACE_TINT = "rgba(13, 124, 140, 0.04)"
     
@@ -54,9 +54,9 @@ class LightTheme:
     
     # Gradients (light theme)
     GRADIENT_PRIMARY = ["#0d7c8c", "#2a9aac"]
-    GRADIENT_SECONDARY = ["#f5f4f0", "#fafaf9"]
+    GRADIENT_SECONDARY = ["#fbfbfb", "#ffffff"]
     GRADIENT_SUCCESS = ["#10b981", "#059669"]
-    GRADIENT_BG = ["#fafaf9", "#f5f4f0"]
+    GRADIENT_BG = ["#ffffff", "#fbfbfb"]
     
     # Design Tokens - Spacing (spacious like HF)
     SPACING_XS = 4

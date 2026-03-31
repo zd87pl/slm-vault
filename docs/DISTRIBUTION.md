@@ -17,6 +17,7 @@ This guide explains how to package and distribute the Enclave application for MV
 - Apple Silicon (M1/M2/M3) or Intel Mac
 - 2GB free disk space
 - No Python installation required (all bundled)
+- For Apple Silicon local AI, expect a one-time MLX model download on first use unless you pre-seed the cache
 
 ## Building the Distribution Package
 
@@ -92,6 +93,7 @@ Enclave-MVP-v0.1.0.zip
 
 - [ ] App launches without Python installed
 - [ ] All dependencies bundled correctly
+- [ ] First-run local model download works and finishes into the shared app cache
 - [ ] Environment variables load properly
 - [ ] PDF processing works (MLX dependencies)
 - [ ] Cloud sync works (Supabase connection)
@@ -101,6 +103,13 @@ Enclave-MVP-v0.1.0.zip
 - [ ] All UI components render correctly
 
 ## Distribution Methods
+
+## Local Model Handling
+
+- Bundle the MLX runtime inside `Enclave.app`, but do not bundle model weights inside the app.
+- On first use, the app downloads the selected MLX model into `~/Library/Application Support/Enclave/models` by default.
+- If you need a fully offline demo machine, pre-seed that cache directory before distributing the app.
+- You can override the cache root with `ENCLAVE_MODEL_CACHE_DIR`.
 
 ### Direct Download (MVP)
 
@@ -239,4 +248,3 @@ After MVP testing:
 3. Add code signing
 4. Create DMG installer
 5. Prepare for wider distribution
-

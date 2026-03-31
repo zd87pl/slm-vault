@@ -24,7 +24,7 @@ That makes RAG the immediate utility layer and WDVA the durable personalization 
 ```bash
 python -m advanced_vault.cli --vault-path ~/.vault model create work \
   --description "Private work assistant" \
-  --model-name mlx-community/Qwen3-0.6B-4bit
+  --model-name mlx-community/Qwen2.5-1.5B-Instruct-4bit
 
 python -m advanced_vault.cli --vault-path ~/.vault model ingest work ~/Documents/private-notes
 
@@ -38,6 +38,12 @@ Useful follow-ups:
 python -m advanced_vault.cli --vault-path ~/.vault model info work
 python -m advanced_vault.cli --vault-path ~/.vault model repl work
 python -m advanced_vault.cli --vault-path ~/.vault model list
+```
+
+If you want to validate the full local demo path before a meeting, run:
+
+```bash
+./.venv/bin/python scripts/verify_local_demo.py
 ```
 
 ### WDVA Adapters

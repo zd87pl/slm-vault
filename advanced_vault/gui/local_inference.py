@@ -17,39 +17,67 @@ MLX DoRA Support:
 """
 
 import os
+import re
 import json
 import logging
 import tempfile
+import platform
 from pathlib import Path
 from typing import Dict, Optional, Any, Callable
 from base64 import b64decode
 
-# Enable fast HuggingFace downloads (10-100x faster) BEFORE importing HF libraries
+logger = logging.getLogger(__name__)
+THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
+
+
+def _sanitize_response(text: str) -> str:
+    """Remove hidden reasoning markers and common prompt echoes."""
+    cleaned = THINK_BLOCK_RE.sub("", text or "")
+    cleaned = cleaned.replace("<think>", "").replace("</think>", "").strip()
+    for prefix in ("Answer:", "Assistant:"):
+        if cleaned.lower().startswith(prefix.lower()):
+            cleaned = cleaned[len(prefix):].lstrip()
+    return cleaned
+
+
+def _default_model_storage_root() -> Path:
+    """Resolve the shared on-device model cache root."""
+    explicit = os.getenv("ENCLAVE_MODEL_CACHE_DIR")
+    if explicit:
+        return Path(explicit).expanduser()
+    if platform.system() == "Darwin":
+        return Path.home() / "Library" / "Application Support" / "Enclave" / "models"
+    return Path.home() / ".cache" / "enclave" / "models"
+
+
+def _normalize_repo_cache_key(model_name: str) -> str:
+    """Convert a Hugging Face repo id into a filesystem-safe cache key."""
+    return model_name.replace("/", "--")
+
+
+MODEL_STORAGE_ROOT = _default_model_storage_root()
+MODEL_STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
+HF_HOME_DIR = MODEL_STORAGE_ROOT / "huggingface"
+HF_HUB_CACHE_DIR = HF_HOME_DIR / "hub"
+TRANSFORMERS_CACHE_DIR = MODEL_STORAGE_ROOT / "transformers"
+for directory in (HF_HOME_DIR, HF_HUB_CACHE_DIR, TRANSFORMERS_CACHE_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
+
+os.environ.setdefault("HF_HOME", str(HF_HOME_DIR))
+os.environ.setdefault("HF_HUB_CACHE", str(HF_HUB_CACHE_DIR))
+os.environ.setdefault("TRANSFORMERS_CACHE", str(TRANSFORMERS_CACHE_DIR))
 os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 
-logger = logging.getLogger(__name__)
 
 def _ensure_fast_downloads():
-    """Ensure hf_transfer is installed for fast downloads."""
+    """Check whether hf_transfer is available for fast downloads."""
     try:
         import hf_transfer
         logger.info("✓ hf_transfer available for fast downloads")
         return True
     except ImportError:
-        logger.info("Installing hf_transfer for faster downloads...")
-        try:
-            import subprocess
-            import sys
-            subprocess.check_call(
-                [sys.executable, "-m", "pip", "install", "hf_transfer", "-q"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL
-            )
-            logger.info("✓ hf_transfer installed")
-            return True
-        except Exception as e:
-            logger.warning(f"Could not install hf_transfer (downloads will be slower): {e}")
-            return False
+        logger.info("hf_transfer not installed; model downloads will continue without acceleration")
+        return False
 
 # Try to enable fast downloads
 _ensure_fast_downloads()
@@ -107,18 +135,85 @@ class LocalInferenceEngine:
     
     MODEL_NAME = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
 
-    # MLX models prioritized by quality (Phase 2 optimization)
-    # Research: Qwen3-0.6B achieves 55% MMLU vs TinyLlama's 45%
-    # Phi-4 achieves 72% MMLU but is larger (3.8B)
+    # MLX models prioritized for clean local QA and investor-demo reliability.
+    # Qwen 2.5 Instruct has produced the most stable grounded answers in the
+    # local RAG flow, so keep it first and fall back from there.
     MLX_MODEL_CANDIDATES = [
-        "mlx-community/Qwen3-0.6B-4bit",              # Best quality/size ratio, 55% MMLU
-        "mlx-community/Qwen2.5-1.5B-Instruct-4bit",   # Very good quality
+        "mlx-community/Qwen2.5-1.5B-Instruct-4bit",   # Best default for local grounded QA
+        "mlx-community/Qwen3-0.6B-4bit",              # Small fast fallback
         "mlx-community/Phi-4-mini-instruct-4bit",     # High quality, larger
         "mlx-community/Llama-3.2-1B-Instruct-4bit",   # Good quality
         "mlx-community/SmolLM3-3B-Instruct-4bit",     # Balanced option
         "mlx-community/TinyLlama-1.1B-Chat-v1.0-8bit",  # Legacy fallback
     ]
-    MLX_MODEL_NAME = MLX_MODEL_CANDIDATES[0]  # Default to Qwen3
+    MLX_MODEL_NAME = MLX_MODEL_CANDIDATES[0]
+
+    @classmethod
+    def get_shared_model_root(cls) -> Path:
+        """Return the shared model cache root used by local installs and app bundles."""
+        root = _default_model_storage_root()
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+
+    @classmethod
+    def get_mlx_model_dir(cls, model_name: Optional[str] = None) -> Path:
+        """Return the shared local directory for an MLX model repo."""
+        resolved_name = model_name or cls.MLX_MODEL_NAME
+        model_dir = cls.get_shared_model_root() / "mlx" / _normalize_repo_cache_key(resolved_name)
+        model_dir.mkdir(parents=True, exist_ok=True)
+        return model_dir
+
+    @classmethod
+    def is_mlx_model_available(cls, model_name: Optional[str] = None) -> bool:
+        """Return True when the shared MLX model files exist locally."""
+        model_dir = cls.get_mlx_model_dir(model_name)
+        has_config = (model_dir / "config.json").exists()
+        has_weights = any(model_dir.glob("*.safetensors")) or (model_dir / "model.safetensors.index.json").exists()
+        return has_config and has_weights
+
+    @classmethod
+    def is_model_available(cls, model_name: Optional[str] = None) -> bool:
+        """Return True when the preferred local model is already present on disk."""
+        if MLX_AVAILABLE:
+            return cls.is_mlx_model_available(model_name)
+        return False
+
+    @classmethod
+    def ensure_mlx_model_downloaded(
+        cls,
+        model_name: Optional[str] = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> Path:
+        """Download the shared MLX model into the app-owned cache if needed."""
+        resolved_name = model_name or cls.MLX_MODEL_NAME
+        model_dir = cls.get_mlx_model_dir(resolved_name)
+        if cls.is_mlx_model_available(resolved_name):
+            if progress_callback:
+                progress_callback(f"{resolved_name.split('/')[-1]} is already on this Mac.")
+            return model_dir
+
+        if progress_callback:
+            progress_callback(f"Downloading {resolved_name.split('/')[-1]} to this Mac...")
+
+        try:
+            from huggingface_hub import snapshot_download
+        except ImportError as exc:
+            raise RuntimeError("huggingface_hub is required to download local models") from exc
+
+        snapshot_download(
+            repo_id=resolved_name,
+            local_dir=model_dir,
+            cache_dir=HF_HOME_DIR,
+            token=os.getenv("HF_TOKEN"),
+            max_workers=8,
+        )
+
+        if not cls.is_mlx_model_available(resolved_name):
+            raise RuntimeError(f"Local model download appears incomplete for {resolved_name}")
+
+        if progress_callback:
+            progress_callback(f"Downloaded {resolved_name.split('/')[-1]}.")
+        return model_dir
     
     def __init__(self, cache_dir: Optional[str] = None):
         """
@@ -129,6 +224,7 @@ class LocalInferenceEngine:
         """
         self.cache_dir = Path(cache_dir or os.path.expanduser("~/.cache/enclave"))
         self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self.shared_model_root = self.get_shared_model_root()
 
         self.model = None
         self.tokenizer = None
@@ -159,7 +255,11 @@ class LocalInferenceEngine:
         """Check if local inference is available."""
         return CRYPTO_AVAILABLE and (MLX_AVAILABLE or TORCH_AVAILABLE)
     
-    def load_model(self, progress_callback: Optional[Callable[[str], None]] = None) -> bool:
+    def load_model(
+        self,
+        progress_callback: Optional[Callable[[str], None]] = None,
+        allow_download: bool = True,
+    ) -> bool:
         """
         Load the base model (downloads if needed).
         
@@ -175,7 +275,7 @@ class LocalInferenceEngine:
         
         try:
             if progress_callback:
-                progress_callback("Loading TinyLlama model...")
+                progress_callback("Loading local model...")
             
             if self.backend == "mlx":
                 # Try loading MLX models in order until one works
@@ -184,11 +284,22 @@ class LocalInferenceEngine:
                 
                 for model_name in self.MLX_MODEL_CANDIDATES:
                     logger.info(f"Trying MLX model: {model_name}")
-                    if progress_callback:
-                        progress_callback(f"Loading {model_name.split('/')[-1]}...")
-                    
                     try:
-                        self.model, self.tokenizer = mlx_load(model_name)
+                        if allow_download:
+                            local_model_path = self.ensure_mlx_model_downloaded(
+                                model_name,
+                                progress_callback=progress_callback,
+                            )
+                        else:
+                            if not self.is_mlx_model_available(model_name):
+                                logger.info("MLX model is not downloaded yet: %s", model_name)
+                                last_error = RuntimeError(f"Model not downloaded: {model_name}")
+                                continue
+                            local_model_path = self.get_mlx_model_dir(model_name)
+
+                        if progress_callback:
+                            progress_callback(f"Loading {model_name.split('/')[-1]}...")
+                        self.model, self.tokenizer = mlx_load(str(local_model_path))
                         self.MLX_MODEL_NAME = model_name  # Remember which one worked
                         logger.info(f"✓ Successfully loaded: {model_name}")
                         break
@@ -198,15 +309,17 @@ class LocalInferenceEngine:
                         
                         # Clear corrupted cache if needed
                         if "No safetensors found" in str(mlx_err):
-                            cache_path = Path.home() / ".cache" / "huggingface" / "hub"
-                            model_cache = cache_path / f"models--{model_name.replace('/', '--')}"
+                            model_cache = self.get_mlx_model_dir(model_name)
                             if model_cache.exists():
                                 shutil.rmtree(model_cache)
-                                logger.info(f"Cleared corrupted cache: {model_cache}")
+                                logger.info(f"Cleared corrupted model cache: {model_cache}")
                         continue
                 
                 # If all MLX models failed, fall back to PyTorch
                 if self.model is None:
+                    if not allow_download:
+                        logger.info("No downloaded MLX model is available yet")
+                        return False
                     logger.warning("All MLX models failed, falling back to PyTorch...")
                     if progress_callback:
                         progress_callback("MLX failed, trying PyTorch...")
@@ -222,7 +335,8 @@ class LocalInferenceEngine:
                 
                 self.tokenizer = AutoTokenizer.from_pretrained(
                     self.MODEL_NAME,
-                    cache_dir=self.cache_dir / "models"
+                    cache_dir=self.shared_model_root / "torch",
+                    local_files_only=not allow_download,
                 )
                 
                 if self.tokenizer.pad_token is None:
@@ -232,7 +346,8 @@ class LocalInferenceEngine:
                     self.MODEL_NAME,
                     torch_dtype=torch.float16 if device == "cuda" else torch.float32,
                     device_map="auto" if device == "cuda" else None,
-                    cache_dir=self.cache_dir / "models"
+                    cache_dir=self.shared_model_root / "torch",
+                    local_files_only=not allow_download,
                 )
                 
                 if device == "cpu":
@@ -528,7 +643,7 @@ class LocalInferenceEngine:
             else:
                 raise
         
-        return response
+        return _sanitize_response(response)
     
     def _generate_torch(self, messages: list, max_tokens: int, temperature: float) -> str:
         """Generate using PyTorch."""
@@ -564,7 +679,7 @@ class LocalInferenceEngine:
             skip_special_tokens=True
         )
         
-        return response.strip()
+        return _sanitize_response(response)
     
     def query_base(self, query: str, max_tokens: int = 512, temperature: float = 0.7) -> str:
         """
@@ -583,10 +698,11 @@ class LocalInferenceEngine:
             raise RuntimeError("Model not loaded. Call load_model() first.")
         
         # System prompt for helpful assistant behavior
-        system_prompt = """You are Enclave AI, a helpful, private AI assistant. 
-You run locally on the user's device for maximum privacy.
-Be concise, friendly, and helpful. If asked about documents, 
-explain that the user can upload PDFs to enhance your knowledge."""
+        system_prompt = """You are Enclave, a helpful private AI assistant running locally on the user's device.
+Answer directly and concisely.
+Do not expose chain-of-thought or hidden reasoning.
+Do not invent facts about uploaded documents, balances, or payments that are not present in the chat.
+If the user asks about private context you do not have, say that no indexed local context is available yet."""
         
         # Build chat messages
         messages = [
@@ -645,7 +761,7 @@ explain that the user can upload PDFs to enhance your knowledge."""
         else:
             raise RuntimeError(f"Unknown backend: {self.backend}")
         
-        return response
+        return _sanitize_response(response)
     
     def query(
         self, 
@@ -771,4 +887,3 @@ def is_multi_adapter_available() -> bool:
         return MLX_DORA_AVAILABLE
     except ImportError:
         return False
-

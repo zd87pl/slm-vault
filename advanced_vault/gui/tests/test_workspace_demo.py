@@ -104,11 +104,45 @@ class TestWorkspaceDemo(unittest.TestCase):
             self.assertTrue(page.controls)
             self.assertIsNotNone(app.chat_input)
             strings = _collect_strings(page.controls[0])
-            self.assertIn("Secure Chat Workspace", strings)
+            self.assertIn("Private Chat", strings)
             self.assertIn("Add Files", strings)
             self.assertIn("Add Folder", strings)
             self.assertIn("Workspace", strings)
             self.assertGreater(len(app.chat_messages_list.controls), 0)
+
+    def test_welcome_screen_uses_simple_three_step_language(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app, page = self._make_app(tmpdir)
+            app.show_welcome_screen()
+
+            strings = _collect_strings(page.controls[0])
+            self.assertIn("Private AI for your files", strings)
+            self.assertIn("Add a File", strings)
+            self.assertIn("Open Demo", strings)
+            self.assertIn("Runs on this Mac", strings)
+            self.assertIn("No signup", strings)
+            self.assertIn("Approval stays with you", strings)
+            self.assertIn("Add a file", strings)
+            self.assertIn("Ask a question", strings)
+            self.assertIn("Review guardrails", strings)
+
+    def test_local_first_boot_does_not_require_auth_screen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            page = _FakePage()
+            with patch.dict(
+                os.environ,
+                {
+                    "HOME": tmpdir,
+                    "ENCLAVE_LOCAL_FIRST": "1",
+                    "ENCLAVE_REQUIRE_AUTH": "0",
+                },
+                clear=False,
+            ):
+                with patch("advanced_vault.gui.vault_app.AuthScreen", None):
+                    with patch.object(VaultApp, "_enter_local_first_mode", autospec=True, return_value=None) as enter_local:
+                        VaultApp(page)
+
+            enter_local.assert_called_once()
 
     def test_workspace_renders_indexed_documents(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -129,8 +163,32 @@ class TestWorkspaceDemo(unittest.TestCase):
             self.assertTrue(any("pitch.md" in value for value in strings))
             self.assertIn("Add Files", strings)
             self.assertIn("Add Folder", strings)
-            self.assertIn("Secure Chat Workspace", strings)
-            self.assertIn("Ask about your 1 indexed document(s)...", strings)
+            self.assertIn("Private Chat", strings)
+            self.assertIn("Ask about your 1 file(s)...", strings)
+
+    def test_primary_shell_wraps_content_in_scrollable_list(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app, page = self._make_app(tmpdir)
+            app.show_landing_page()
+
+            shell = page.controls[0]
+            content_panel = shell.controls[1]
+            self.assertIsInstance(content_panel.content, ft.ListView)
+            self.assertTrue(content_panel.content.expand)
+
+    def test_workspace_prompts_for_model_download_when_not_cached(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app, page = self._make_app(tmpdir)
+            with patch.object(
+                VaultApp,
+                "_get_local_private_model_status",
+                return_value={"available": False, "display_name": "Qwen2.5-1.5B-Instruct-4bit"},
+            ):
+                app.show_landing_page()
+
+            strings = _collect_strings(page.controls[0])
+            self.assertIn("Download local model", strings)
+            self.assertIn("Download Model", strings)
 
     def test_local_ingest_and_chat_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

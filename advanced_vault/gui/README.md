@@ -32,13 +32,19 @@ By default, the GUI will open in local-first mode when there is no saved cloud s
 Recommended setup:
 
 ```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e ".[mlx,mac-performance,liteparse]"
+python3.11 -m venv .venv
+./.venv/bin/python -m pip install -U pip
+./.venv/bin/python -m pip install -e ".[mlx,gui,mac-performance]"
+./.venv/bin/python scripts/verify_local_demo.py
+./.venv/bin/python -m advanced_vault.gui.vault_app
+```
+
+Optional PDF parsing polish for the demo:
+
+```bash
+./.venv/bin/python -m pip install -e ".[liteparse]"
 npm install -g @llamaindex/liteparse
 export ENCLAVE_PARSER_BACKEND=auto
-python3 -m advanced_vault.gui.vault_app
 ```
 
 What to expect on first use:
@@ -46,6 +52,7 @@ What to expect on first use:
 - You can add files or folders directly from the landing page
 - Chat history is isolated per profile
 - Documents stay encrypted at rest and local by default
+- The local MLX model is warmed in the background for the active profile when possible
 
 ## Optional Cloud/Auth Mode
 
@@ -71,14 +78,18 @@ For an investor or product demo, the cleanest path is:
 1. Launch the GUI.
 2. Create a profile if you want a domain-specific workspace.
 3. Click `Add Files` or `Add Folder`.
-4. Open `Secure Chat Workspace`.
+4. Open `Private Chat`.
 5. Ask for a summary, risks, themes, or an investor-ready narrative.
 6. Open `Data Sheriff` in Settings to show controls, leases, and audit posture.
+7. Use the wallet section to show prepaid envelopes, approval thresholds, and the shared kill switch.
 
 ## Notes
 
 - The recommended local model is `mlx-community/Qwen2.5-1.5B-Instruct-4bit`.
+- Packaged builds do not embed the model weights in `Enclave.app`; the app downloads them on first use and keeps them in `~/Library/Application Support/Enclave/models` by default.
+- Set `ENCLAVE_MODEL_CACHE_DIR` if you want the packaged app to keep local models in a different directory.
+- The GUI depends on the desktop Flet runtime, so prefer the pinned `gui` extra over `pip install flet`.
 - WDVA adapters are surfaced in the GUI as profile-level adaptive layers.
 - OCR/PDF extraction setup is deferred until first use so the app opens quickly.
 - `LiteParse` is now supported as an optional PDF backend with automatic fallback to the legacy `PyPDF2 -> SmolDocling/Ollama` pipeline.
-- For the Wednesday demo, preinstall `Node.js >= 18`, `@llamaindex/liteparse`, and warm one sample ingest before the meeting.
+- For a high-confidence demo, use text, Markdown, or simple text-based PDFs and warm one sample question before the meeting.

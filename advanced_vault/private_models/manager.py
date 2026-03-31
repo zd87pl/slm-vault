@@ -555,7 +555,22 @@ class PrivateModelSession:
             "chunk_count": int(chunk_count),
         }
 
-    def _ensure_engine(self) -> Optional[Any]:
+    def ensure_model_ready(
+        self,
+        allow_download: bool = True,
+        progress_callback=None,
+    ) -> bool:
+        """Ensure the local base model is ready for this profile."""
+        return self._ensure_engine(
+            allow_download=allow_download,
+            progress_callback=progress_callback,
+        ) is not None
+
+    def _ensure_engine(
+        self,
+        allow_download: bool = True,
+        progress_callback=None,
+    ) -> Optional[Any]:
         if self._engine is not None:
             return self._engine
 
@@ -564,7 +579,11 @@ class PrivateModelSession:
             engine = multi_adapter_engine_class(
                 cache_dir=str(self.manager._profile_dir(self.profile.name) / "models")
             )
-            if not engine.load_model(model_path=self.profile.model_name):
+            if not engine.load_model(
+                model_path=self.profile.model_name,
+                progress_callback=progress_callback,
+                allow_download=allow_download,
+            ):
                 return None
             for adapter in self.profile.wdva_adapters:
                 encrypted_bytes = Path(adapter.encrypted_path).expanduser().read_bytes()
@@ -586,7 +605,10 @@ class PrivateModelSession:
             cache_dir=str(self.manager._profile_dir(self.profile.name) / "models")
         )
         self._configure_model(engine)
-        if not engine.load_model():
+        if not engine.load_model(
+            progress_callback=progress_callback,
+            allow_download=allow_download,
+        ):
             return None
         self._engine = engine
         self._engine_kind = "local"

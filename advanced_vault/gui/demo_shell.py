@@ -21,15 +21,16 @@ def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> Non
 
     profile = app._ensure_private_model_profile()
     profile_status = app._get_private_model_status()
+    local_model_status = app._get_local_private_model_status()
     documents = app._get_private_model_documents(limit=10)
     module_statuses = app._update_module_status_snapshots()
 
     app.page.clean()
     chat_input = ft.TextField(
         hint_text=(
-            f"Ask about your {profile_status.get('document_count', 0)} indexed document(s)..."
+            f"Ask about your {profile_status.get('document_count', 0)} file(s)..."
             if profile_status.get("document_count", 0) > 0
-            else "Ask anything about your documents..."
+            else "Ask about your files..."
         ),
         expand=True,
         border_radius=14,
@@ -53,15 +54,11 @@ def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> Non
     stats_chips = ft.Row(
         [
             app._simple_metric_card(
-                "Documents",
+                "Files",
                 str(vault_runtime_status.get("document_count", profile_status.get("document_count", 0))),
             ),
             app._simple_metric_card(
-                "Chunks",
-                str(vault_runtime_status.get("chunk_count", profile_status.get("chunk_count", 0))),
-            ),
-            app._simple_metric_card(
-                "Wallet Pending",
+                "Approvals",
                 str(wallet_runtime_status.get("pending_count", 0)),
             ),
         ],
@@ -75,15 +72,15 @@ def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> Non
         content=ft.Column(
             [
                 ft.Text(
-                    "Your private AI workspace",
+                    "Add a file to start",
                     size=24,
                     weight=ft.FontWeight.W_600,
                     color=LightTheme.TEXT_PRIMARY,
                 ),
                 ft.Text(
-                    ("Indexed context: " + ", ".join(doc.get("name", "Untitled") for doc in documents[:3]))
+                    ("Ready to answer from " + ", ".join(doc.get("name", "Untitled") for doc in documents[:3]))
                     if documents
-                    else "No indexed files yet. Add files or a folder to get started.",
+                    else "PDFs, notes, and folders stay on this Mac.",
                     size=13,
                     color=LightTheme.TEXT_SECONDARY,
                 ),
@@ -148,18 +145,79 @@ def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> Non
 
     app.chat_messages_list = chat_messages_list
     app.trained_adapters = []
+    quick_actions: List[ft.Control] = [
+        ft.OutlinedButton(
+            "Summarize files",
+            on_click=lambda e: app._quick_ask("Summarize my files", []),
+        ),
+        ft.OutlinedButton(
+            "Find key facts",
+            on_click=lambda e: app._quick_ask("Find key facts in my files", []),
+        ),
+    ]
+    if wallet_runtime_status.get("pending_count", 0):
+        quick_actions.append(
+            ft.OutlinedButton(
+                "Review approvals",
+                on_click=lambda e: app._quick_ask("What payments are waiting for approval?", []),
+            )
+        )
+
+    model_setup_card = None
+    if not local_model_status.get("available"):
+        model_setup_card = app._build_surface_card(
+            ft.Row(
+                [
+                    ft.Column(
+                        [
+                            ft.Text(
+                                app.tr("local_model.download.title"),
+                                size=16,
+                                weight=ft.FontWeight.W_600,
+                                color=LightTheme.TEXT_PRIMARY,
+                            ),
+                            ft.Text(
+                                app.tr("local_model.download.required"),
+                                size=12,
+                                color=LightTheme.TEXT_SECONDARY,
+                            ),
+                            ft.Text(
+                                local_model_status.get("display_name", profile_status.get("model_name", "Local Model")),
+                                size=11,
+                                color=LightTheme.TEXT_MUTED,
+                            ),
+                        ],
+                        spacing=6,
+                        expand=True,
+                    ),
+                    ft.ElevatedButton(
+                        app.tr("local_model.download.cta"),
+                        icon=ft.Icons.DOWNLOAD_ROUNDED,
+                        on_click=lambda e: app._setup_local_private_model_with_progress(),
+                        style=ft.ButtonStyle(
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
+                            color="white",
+                            padding=ft.padding.symmetric(horizontal=16, vertical=14),
+                            shape=ft.RoundedRectangleBorder(radius=12),
+                        ),
+                    ),
+                ],
+                spacing=16,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            )
+        )
 
     content = ft.Container(
-        expand=True,
         padding=24,
         content=ft.Column(
             [
-                ft.Text("Secure Chat Workspace", size=24, weight=ft.FontWeight.W_700, color=LightTheme.TEXT_PRIMARY),
+                ft.Text("Private Chat", size=24, weight=ft.FontWeight.W_700, color=LightTheme.TEXT_PRIMARY),
                 ft.Text(
-                    "Private context, local generation, and investor-demo polish in one place.",
+                    "Ask questions about files stored on this Mac.",
                     size=13,
                     color=LightTheme.TEXT_SECONDARY,
                 ),
+                model_setup_card if model_setup_card is not None else ft.Container(),
                 stats_chips,
                 ft.Container(
                     bgcolor=LightTheme.BG_ELEVATED,
@@ -175,20 +233,7 @@ def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> Non
                     ),
                 ),
                 ft.Row(
-                    [
-                        ft.OutlinedButton(
-                            "Summarize my files",
-                            on_click=lambda e: app._quick_ask("Summarize my files", []),
-                        ),
-                        ft.OutlinedButton(
-                            "Find key risks",
-                            on_click=lambda e: app._quick_ask("Find key risks", []),
-                        ),
-                        ft.OutlinedButton(
-                            "Draft investor update",
-                            on_click=lambda e: app._quick_ask("Draft an investor update from my private files", []),
-                        ),
-                    ],
+                    quick_actions,
                     spacing=8,
                     wrap=True,
                 ),
@@ -333,7 +378,6 @@ def show_library_view(app: Any) -> None:
         )
 
     content = ft.Container(
-        expand=True,
         padding=24,
         content=ft.Column(
             [
@@ -504,7 +548,6 @@ def show_connections_view(app: Any) -> None:
     ]
 
     content = ft.Container(
-        expand=True,
         padding=24,
         content=ft.Column(
             [
@@ -623,19 +666,19 @@ def show_security_view(app: Any) -> None:
                 ft.Text("Privacy Controls", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
                 app._privacy_control_row(
                     "Local-Only Processing",
-                    "Prevents raw data from leaving your device during agent operations.",
+                    "Private data stays on this device.",
                     value=True,
                     disabled=True,
                 ),
                 app._privacy_control_row(
                     "Encrypted Vault Storage",
-                    "Encrypted private context and WDVA adapters at rest.",
+                    "Files and context stay encrypted at rest.",
                     value=True,
                     disabled=True,
                 ),
                 app._privacy_control_row(
                     "Global Kill Switch",
-                    "Immediately blocks privileged Vault and Wallet actions.",
+                    "Stops sensitive vault and wallet actions.",
                     value=kill_switch.enabled,
                     disabled=False,
                     on_change=lambda e: app._set_global_kill_switch(bool(e.control.value)),
@@ -664,7 +707,7 @@ def show_security_view(app: Any) -> None:
                                     ft.Column(
                                         [
                                             ft.Text("Document Permissions", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                                            ft.Text("Control which files profiles and agents can access.", size=12, color=LightTheme.TEXT_SECONDARY),
+                                            ft.Text("Choose which files agents can use.", size=12, color=LightTheme.TEXT_SECONDARY),
                                         ],
                                         spacing=4,
                                         expand=True,
@@ -680,7 +723,7 @@ def show_security_view(app: Any) -> None:
                                         color=LightTheme.TEXT_MUTED,
                                     ),
                                     ft.Container(expand=True),
-                                    ft.TextButton("Open Library", on_click=lambda e: app._show_library_view(), style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY)),
+                                    ft.TextButton("Open Files", on_click=lambda e: app._show_library_view(), style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY)),
                                 ],
                                 spacing=8,
                             ),
@@ -707,7 +750,7 @@ def show_security_view(app: Any) -> None:
                                     ft.Column(
                                         [
                                             ft.Text("Audit Logging", size=14, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
-                                            ft.Text("Track data access and model operations in one feed.", size=12, color=LightTheme.TEXT_SECONDARY),
+                                            ft.Text("Review recent access decisions.", size=12, color=LightTheme.TEXT_SECONDARY),
                                         ],
                                         spacing=4,
                                         expand=True,
@@ -719,7 +762,7 @@ def show_security_view(app: Any) -> None:
                                 [
                                     ft.Text(f"{len(recent_events)} recent events loaded", size=12, color=LightTheme.TEXT_MUTED),
                                     ft.Container(expand=True),
-                                    ft.TextButton("Open Advanced", on_click=lambda e: app.show_settings_hub(active_tab="sheriff"), style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY)),
+                                    ft.TextButton("View Log", on_click=lambda e: app.show_settings_hub(active_tab="sheriff"), style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY)),
                                 ],
                                 spacing=8,
                             ),
@@ -803,21 +846,20 @@ def show_security_view(app: Any) -> None:
         )
 
     content = ft.Container(
-        expand=True,
         padding=24,
         content=ft.Column(
             [
-                ft.Text("Security & Privacy", size=24, weight=ft.FontWeight.W_700, color=LightTheme.TEXT_PRIMARY),
+                ft.Text("Privacy", size=24, weight=ft.FontWeight.W_700, color=LightTheme.TEXT_PRIMARY),
                 ft.Text(
-                    "Monitor your privacy posture and control data access.",
+                    "Local by default. Sensitive actions need your approval.",
                     size=13,
                     color=LightTheme.TEXT_SECONDARY,
                 ),
                 ft.ResponsiveRow(
                     [
-                        ft.Container(status_card(ft.Icons.MEMORY_ROUNDED, "Local Agent", "Active", "MLX engine on Apple Silicon.", LightTheme.ACCENT_SUCCESS), col={"sm": 12, "md": 4}),
-                        ft.Container(status_card(ft.Icons.LOCK_ROUNDED, "Vault Encryption", "ChaCha20", "Encrypted local context and adapters.", LightTheme.ACCENT_PRIMARY), col={"sm": 12, "md": 4}),
-                        ft.Container(status_card(ft.Icons.HUB_ROUNDED, "MCP Server", "Running", "Intercepts external AI queries before they touch private data.", LightTheme.ACCENT_PRIMARY), col={"sm": 12, "md": 4}),
+                        ft.Container(status_card(ft.Icons.MEMORY_ROUNDED, "Local AI", "On", "Runs on this Mac.", LightTheme.ACCENT_SUCCESS), col={"sm": 12, "md": 4}),
+                        ft.Container(status_card(ft.Icons.LOCK_ROUNDED, "Vault", "Encrypted", "Files stay encrypted at rest.", LightTheme.ACCENT_PRIMARY), col={"sm": 12, "md": 4}),
+                        ft.Container(status_card(ft.Icons.HUB_ROUNDED, "Guardrails", "On", "Checks private access and spend.", LightTheme.ACCENT_PRIMARY), col={"sm": 12, "md": 4}),
                     ],
                     spacing=12,
                     run_spacing=12,
@@ -829,7 +871,7 @@ def show_security_view(app: Any) -> None:
                         [
                             ft.Row(
                                 [
-                                    ft.Text("Wallet Governance", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                                    ft.Text("Payments Guardrails", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
                                     app._build_status_badge(
                                         "Frozen" if wallet_snapshot.get("frozen") else "Ready",
                                         color=(LightTheme.ACCENT_ERROR if wallet_snapshot.get("frozen") else LightTheme.ACCENT_SUCCESS),
@@ -839,7 +881,7 @@ def show_security_view(app: Any) -> None:
                                 ],
                                 spacing=10,
                             ),
-                            ft.Text("Demo governed spend with local envelopes, approval thresholds, and shared audit events.", size=12, color=LightTheme.TEXT_SECONDARY),
+                            ft.Text("Prepaid limits for agent spend.", size=12, color=LightTheme.TEXT_SECONDARY),
                             ft.Row(
                                 [
                                     app._stat_card("Envelopes", wallet_snapshot.get("envelope_count", 0), ft.Icons.ACCOUNT_BALANCE_WALLET_ROUNDED, LightTheme.ACCENT_PRIMARY),
@@ -850,9 +892,9 @@ def show_security_view(app: Any) -> None:
                             ),
                             ft.Row(
                                 [
-                                    ft.ElevatedButton("Create Demo Envelope", icon=ft.Icons.ADD_CARD_ROUNDED, on_click=lambda e: (app._ensure_demo_wallet_envelope(), app._show_security_view()), style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white")),
-                                    ft.OutlinedButton("Request $19", icon=ft.Icons.PLAY_ARROW_ROUNDED, on_click=lambda e: app._request_demo_wallet_purchase(19.0, "github.com", "Auto-approved demo spend")),
-                                    ft.OutlinedButton("Request $85", icon=ft.Icons.HOURGLASS_TOP_ROUNDED, on_click=lambda e: app._request_demo_wallet_purchase(85.0, "openai.com", "Pending approval demo spend")),
+                                    ft.ElevatedButton("Create Wallet", icon=ft.Icons.ADD_CARD_ROUNDED, on_click=lambda e: (app._ensure_demo_wallet_envelope(), app._show_security_view()), style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white")),
+                                    ft.OutlinedButton("$19 test", icon=ft.Icons.PLAY_ARROW_ROUNDED, on_click=lambda e: app._request_demo_wallet_purchase(19.0, "github.com", "Auto-approved demo spend")),
+                                    ft.OutlinedButton("$85 approval", icon=ft.Icons.HOURGLASS_TOP_ROUNDED, on_click=lambda e: app._request_demo_wallet_purchase(85.0, "openai.com", "Pending approval demo spend")),
                                 ],
                                 spacing=10,
                                 wrap=True,
@@ -865,7 +907,7 @@ def show_security_view(app: Any) -> None:
                 app._build_surface_card(
                     ft.Column(
                         [
-                            ft.Text("Recent Activity", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                            ft.Text("Recent decisions", size=17, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
                             ft.Container(
                                 content=ft.Column(activity_rows, spacing=0),
                                 border=ft.border.all(1, LightTheme.BORDER_COLOR),
@@ -876,7 +918,7 @@ def show_security_view(app: Any) -> None:
                                 [
                                     ft.Container(expand=True),
                                     ft.TextButton(
-                                        "View Complete Audit Log",
+                                        "View log",
                                         on_click=lambda e: app.show_settings_hub(active_tab="sheriff"),
                                         style=ft.ButtonStyle(color=LightTheme.ACCENT_PRIMARY),
                                     ),

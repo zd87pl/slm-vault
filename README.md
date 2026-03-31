@@ -43,7 +43,7 @@ External AIs send commands. Enclave reads your documents locally and returns syn
 - **Encrypted Storage**: ChaCha20-Poly1305 encryption for all data at rest
 - **Activity Logging**: See every command from every AI agent
 - **Per-Agent Permissions**: Control what each AI can access
-- **Local Inference**: MLX-powered LLM on Apple Silicon (Qwen3, Phi-4, Llama)
+- **Local Inference**: MLX-powered LLM on Apple Silicon (Qwen 2.5, Phi-4, Llama)
 - **Desktop GUI**: Native macOS/Windows/Linux application
 - **Adapter Training**: Fine-tune local models on your documents
 
@@ -62,17 +62,19 @@ External AIs send commands. Enclave reads your documents locally and returns syn
 # Install from source
 git clone https://github.com/your-org/slm-vault
 cd slm-vault
-pip install -e .
+python3.11 -m venv .venv
+./.venv/bin/python -m pip install -U pip
+./.venv/bin/python -m pip install -e ".[mlx,gui,mac-performance]"
 
-# Or with Apple Silicon support
-pip install -e ".[mlx]"
+# Verify the local demo path
+./.venv/bin/python scripts/verify_local_demo.py
 ```
 
 ### Run the Desktop App
 
 ```bash
 # Start the GUI
-python -m advanced_vault.gui.vault_app
+./.venv/bin/python -m advanced_vault.gui.vault_app
 ```
 
 ### Start the MCP Server
@@ -208,7 +210,7 @@ pip install fastembed
 pip install hnswlib
 
 # Desktop GUI
-pip install flet
+pip install "flet[all]>=0.28.3,<0.29"
 ```
 
 ## Development

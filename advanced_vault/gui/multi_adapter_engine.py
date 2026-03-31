@@ -196,7 +196,12 @@ class MultiAdapterEngine:
         import os
         return hashlib.sha256(os.urandom(32)).hexdigest()[:16]
 
-    def load_model(self, model_path: Optional[str] = None, progress_callback=None) -> bool:
+    def load_model(
+        self,
+        model_path: Optional[str] = None,
+        progress_callback=None,
+        allow_download: bool = True,
+    ) -> bool:
         """
         Load the base model.
 
@@ -224,7 +229,10 @@ class MultiAdapterEngine:
                 if hasattr(self._base_engine, "MODEL_NAME"):
                     self._base_engine.MODEL_NAME = model_path
 
-        success = self._base_engine.load_model(progress_callback=progress_callback)
+        success = self._base_engine.load_model(
+            progress_callback=progress_callback,
+            allow_download=allow_download,
+        )
         self._model_loaded = success
 
         # Get DoRA engine reference
