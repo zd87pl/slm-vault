@@ -83,16 +83,6 @@ except ImportError:
     WatchedFolder = None
 
 try:
-    from theme import ModernTheme
-except ImportError:
-    ModernTheme = None
-
-try:
-    from sleek_theme import SleekTheme
-except ImportError:
-    SleekTheme = None
-
-try:
     from light_theme import LightTheme
 except ImportError:
     LightTheme = None
