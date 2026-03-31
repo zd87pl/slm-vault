@@ -1,0 +1,73 @@
+name: PR Quality Gate
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  checklist:
+    name: PR Checklist
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify PR has description
+        run: |
+          if [ -z "${{ github.event.pull_request.body }}" ]; then
+            echo "::error::PR description is required. Please describe what this PR does and why."
+            exit 1
+          fi
+
+      - name: Check for test coverage on changed files
+        run: |
+          # Get list of changed Python files
+          CHANGED=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- '*.py' | grep -v test_ | grep -v __pycache__ || true)
+          if [ -z "$CHANGED" ]; then
+            echo "No source Python files changed."
+            exit 0
+          fi
+          echo "Changed source files:"
+          echo "$CHANGED"
+          # Check that at least one test file was also modified
+          TESTS=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'tests/**' 'advanced_vault/gui/tests/**' '**/test_*.py' || true)
+          if [ -z "$TESTS" ]; then
+            echo "::warning::No test files modified. Consider adding or updating tests for your changes."
+          else
+            echo "Test files modified:"
+            echo "$TESTS"
+          fi
+
+  size-check:
+    name: PR Size Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check PR size
+        run: |
+          ADDITIONS=$(git diff --shortstat origin/${{ github.base_ref }}...HEAD | awk '{print $4}' | tr -d ',')
+          DELETIONS=$(git diff --shortstat origin/${{ github.base_ref }}...HEAD | awk '{print $6}' | tr -d ',')
+          TOTAL=$((${ADDITIONS:-0} + ${DELETIONS:-0}))
+          echo "PR size: +${ADDITIONS:-0} -${DELETIONS:-0} (total: $TOTAL lines)"
+          if [ "$TOTAL" -gt 1000 ]; then
+            echo "::warning::This PR is large ($TOTAL lines changed). Consider splitting into smaller PRs for easier review."
+          fi
+
+  label-pr:
+    name: Auto-label PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          sync-labels: true
+        continue-on-error: true

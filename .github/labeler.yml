@@ -1,0 +1,30 @@
+gui:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "advanced_vault/gui/**"
+
+backend:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "advanced_vault/cli/**"
+      - "advanced_vault/core/**"
+      - "advanced_vault/mcp_server/**"
+
+tests:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "tests/**"
+      - "**/test_*.py"
+
+ci:
+  - changed-files:
+    - any-glob-to-any-file:
+      - ".github/**"
+      - "Makefile"
+      - "pyproject.toml"
+
+docs:
+  - changed-files:
+    - any-glob-to-any-file:
+      - "*.md"
+      - "docs/**"

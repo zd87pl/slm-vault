@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & Format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install lint tools
+        run: pip install ruff mypy
+
+      - name: Ruff lint
+        run: ruff check advanced_vault/ --output-format=github
+
+      - name: Ruff format check
+        run: ruff format --check advanced_vault/
+
+      - name: Mypy type check
+        run: mypy advanced_vault/ --ignore-missing-imports
+
+  test:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install core dependencies
+        run: |
+          pip install -e ".[dev]"
+          # Install lightweight stubs for packages unavailable in CI
+          pip install flet --no-deps 2>/dev/null || true
+
+      - name: Run unit tests (non-GUI)
+        run: |
+          pytest tests/ -v --tb=short \
+            --ignore=advanced_vault/gui/tests \
+            --cov=advanced_vault \
+            --cov-report=xml \
+            --cov-report=term-missing
+
+      - name: Run GUI tests (mock display)
+        run: |
+          # GUI tests use mocking so no display needed
+          pytest advanced_vault/gui/tests/ -v --tb=short \
+            -p no:warnings \
+            --timeout=30
+        continue-on-error: false
+
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        if: always()
+        with:
+          files: coverage.xml
+          fail_ci_if_error: false
+
+  security:
+    name: Security Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install bandit
+        run: pip install bandit[toml]
+
+      - name: Bandit security scan
+        run: |
+          bandit -r advanced_vault/ \
+            -x advanced_vault/gui/tests \
+            --severity-level medium \
+            --confidence-level medium \
+            -f json -o bandit-report.json || true
+          bandit -r advanced_vault/ \
+            -x advanced_vault/gui/tests \
+            --severity-level high \
+            --confidence-level high
+
+      - name: Upload security report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: bandit-report.json
