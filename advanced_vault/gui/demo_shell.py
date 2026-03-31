@@ -247,7 +247,7 @@ def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> Non
     )
 
     input_bar = ft.Container(
-        padding=ft.padding.from_ltrb(24, 16, 24, 24),
+        padding=ft.padding.only(left=24, top=16, right=24, bottom=24),
         border=ft.border.only(top=ft.BorderSide(1, "#e0e0e0")),
         content=ft.Row(
             [

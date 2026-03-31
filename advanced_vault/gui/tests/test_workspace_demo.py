@@ -104,21 +104,18 @@ class TestWorkspaceDemo(unittest.TestCase):
             self.assertTrue(page.controls)
             self.assertIsNotNone(app.chat_input)
             strings = _collect_strings(page.controls[0])
-            self.assertIn("Private Chat", strings)
-            self.assertIn("Control what the agentic web can see", strings)
-            self.assertIn("Add Private Files", strings)
-            self.assertIn("Connect Apps", strings)
-            self.assertIn("Review Protection", strings)
-            self.assertIn("Prepare a safe agent handoff", strings)
-            self.assertIn("Import private files", strings)
-            self.assertIn("Get a private answer", strings)
-            self.assertIn("Connect AI apps", strings)
-            self.assertIn("Review protection", strings)
-            self.assertIn("Add Files", strings)
-            self.assertIn("Add Folder", strings)
-            self.assertIn("Workspace", strings)
-            self.assertTrue(any("ChatGPT-like tools" in value for value in strings))
-            self.assertGreater(len(app.chat_messages_list.controls), 0)
+            # Figma-aligned Chat screen: hero + suggestion chips
+            self.assertIn("Chat", strings)
+            self.assertIn("Ask anything about your files", strings)
+            self.assertIn("Summarize my files", strings)
+            self.assertIn("Find key facts", strings)
+            # Sidebar: 3-item nav
+            self.assertIn("Files", strings)
+            self.assertIn("Settings", strings)
+            # Empty state: chat list has no messages, empty state hero is visible
+            self.assertIsNotNone(app.chat_messages_list)
+            self.assertIsNotNone(app.workspace_empty_state)
+            self.assertTrue(app.workspace_empty_state.visible)
 
     def test_welcome_screen_uses_simple_three_step_language(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -172,10 +169,9 @@ class TestWorkspaceDemo(unittest.TestCase):
             app._show_workspace_view()
             strings = _collect_strings(page.controls[0])
             self.assertTrue(any("pitch.md" in value for value in strings))
-            self.assertIn("Add Files", strings)
-            self.assertIn("Add Folder", strings)
-            self.assertIn("Private Chat", strings)
+            self.assertIn("1 file ready: pitch.md", strings)
             self.assertIn("Ask about your 1 file(s)...", strings)
+            self.assertIn("Ask anything about your files", strings)
 
     def test_primary_shell_wraps_content_in_scrollable_list(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -214,8 +210,7 @@ class TestWorkspaceDemo(unittest.TestCase):
             self.assertIn("Claude Desktop", strings)
             self.assertIn("ChatGPT-like / MCP tools", strings)
             self.assertIn("Browsers / ecommerce automations", strings)
-            self.assertIn("Connect Apps", strings)
-            self.assertIn("Protection", strings)
+            self.assertIn("Settings", strings)
             self.assertIn("Connect Claude Desktop", strings)
             self.assertIn("Connect Cursor", strings)
             self.assertIn("Copy for OpenClaw / other MCP apps", strings)
