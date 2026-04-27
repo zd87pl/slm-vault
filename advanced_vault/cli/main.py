@@ -1258,3 +1258,255 @@ def model_verify(ctx, package_path, password):
 
 if __name__ == '__main__':
     cli()
+
+
+# --- Prosumer CLI Commands ---
+
+@cli.group()
+def prosumer():
+    """Personal data vault and adapter management for consumers."""
+    pass
+
+
+@prosumer.group()
+def vaults():
+    """Manage personal data vault categories."""
+    pass
+
+
+@vaults.command("list")
+def vaults_list():
+    """List all available vault categories."""
+    from advanced_vault.prosumer.vault_categories import list_categories
+    
+    click.echo("📦  Available Vault Categories\n")
+    for category in list_categories():
+        click.echo(f"{category.icon}  {category.name}")
+        click.echo(f"   ID: {category.id}")
+        click.echo(f"   Description: {category.description}")
+        click.echo(f"   Privacy: {category.privacy_level.value}")
+        click.echo(f"   Min docs for training: {category.min_documents_for_training}")
+        click.echo(f"   Recommended preset: {category.recommended_preset}")
+        click.echo()
+
+
+@prosumer.command("classify")
+@click.argument("file_path")
+@click.option("--preview", default=3000, help="Number of chars to extract for content analysis")
+@click.pass_context
+def prosumer_classify(ctx, file_path, preview):
+    """Classify a document into a vault category."""
+    from advanced_vault.prosumer.document_classifier import DocumentClassifier
+    
+    vault_path = ctx.obj.get('vault_path', "~/.vault")
+    classifier = DocumentClassifier(vault_path=vault_path)
+    
+    if not Path(file_path).exists():
+        click.echo(f"❌ File not found: {file_path}", err=True)
+        sys.exit(1)
+    
+    click.echo(f"🔍 Classifying {file_path}...")
+    result = classifier.classify_file(file_path, extract_content=True, max_preview_chars=preview)
+    
+    click.echo(f"\n📋  {result.filename}")
+    click.echo(f"   Type: {result.detected_type}")
+    click.echo(f"   MIME: {result.mime_type}")
+    click.echo(f"   Category: {result.category.name} ({result.category.id})")
+    click.echo(f"   Confidence: {result.confidence:.1%}")
+    
+    if result.is_high_confidence:
+        click.echo(f"   ✅ High confidence — auto-categorized")
+    elif result.needs_review:
+        click.echo(f"   ⚠️  Medium confidence — please review")
+    else:
+        click.echo(f"   ℹ️  Low confidence — placed in Personal Knowledge Vault")
+    
+    if result.warnings:
+        for warning in result.warnings:
+            click.echo(f"   ⚠️  {warning}")
+
+
+@prosumer.command("classify-folder")
+@click.argument("folder_path")
+@click.option("--recursive/--no-recursive", default=True, help="Scan subdirectories")
+@click.option("--max-files", default=1000, help="Maximum files to process")
+@click.pass_context
+def prosumer_classify_folder(ctx, folder_path, recursive, max_files):
+    """Classify all documents in a folder."""
+    from advanced_vault.prosumer.document_classifier import DocumentClassifier
+    
+    vault_path = ctx.obj.get('vault_path', "~/.vault")
+    classifier = DocumentClassifier(vault_path=vault_path)
+    
+    if not Path(folder_path).is_dir():
+        click.echo(f"❌ Not a directory: {folder_path}", err=True)
+        sys.exit(1)
+    
+    click.echo(f"📂 Scanning {folder_path}...")
+    results = classifier.classify_folder(folder_path, recursive=recursive, max_files=max_files)
+    
+    summary = classifier.get_category_summary(results)
+    
+    click.echo(f"\n📊 Classification Summary ({len(results)} files)\n")
+    for cat_id, stats in summary.items():
+        click.echo(f"{stats['category_name']}: {stats['count']} files "
+                   f"(avg confidence: {stats['avg_confidence']:.1%})")
+        if stats['needs_review'] > 0:
+            click.echo(f"   ⚠️  {stats['needs_review']} need review")
+
+
+@prosumer.group()
+def presets():
+    """Manage adapter training presets."""
+    pass
+
+
+@presets.command("list")
+def presets_list():
+    """List all training presets."""
+    from advanced_vault.prosumer.adapter_presets import list_presets
+    
+    click.echo("🎯  Training Presets\n")
+    for preset in list_presets():
+        click.echo(f"{preset.icon}  {preset.name} ({preset.id})")
+        click.echo(f"   Category: {preset.category_id}")
+        click.echo(f"   Method: {preset.training_method.value.upper()}")
+        click.echo(f"   Base model: {preset.base_model}")
+        click.echo(f"   Est. time: ~{preset.estimated_training_time_minutes} min")
+        click.echo(f"   Min docs: {preset.min_documents}")
+        if preset.require_disclaimer:
+            click.echo(f"   ⚠️  Requires disclaimer")
+        click.echo()
+
+
+@prosumer.group()
+def backup():
+    """Backup and restore encrypted adapters."""
+    pass
+
+
+@backup.command("export")
+@click.argument("adapter_path")
+@click.option("--name", default="", help="Adapter name")
+@click.option("--category", default="personal", help="Vault category ID")
+@click.option("--preset", default="general", help="Training preset ID")
+@click.option("--output", default="", help="Output file path")
+@click.pass_context
+def backup_export(ctx, adapter_path, name, category, preset, output):
+    """Export an encrypted adapter to a portable file."""
+    from advanced_vault.prosumer.adapter_backup import AdapterBackupManager, BackupFormat
+    
+    vault_path = ctx.obj.get('vault_path', "~/.vault")
+    manager = AdapterBackupManager(vault_path=vault_path)
+    
+    if not Path(adapter_path).exists():
+        click.echo(f"❌ Adapter not found: {adapter_path}", err=True)
+        sys.exit(1)
+    
+    adapter_name = name or Path(adapter_path).stem
+    
+    try:
+        output_path = manager.export_adapter(
+            adapter_path=adapter_path,
+            adapter_name=adapter_name,
+            category_id=category,
+            preset_id=preset,
+            output_path=output or None,
+            format=BackupFormat.ENCLAVE,
+        )
+        click.echo(f"✅ Exported adapter to: {output_path}")
+        click.echo(f"   Format: Enclave package (encrypted + metadata)")
+        click.echo(f"   No raw documents included — only encrypted learned weights")
+    except Exception as e:
+        click.echo(f"❌ Export failed: {e}", err=True)
+        sys.exit(1)
+
+
+@backup.command("import")
+@click.argument("backup_path")
+@click.option("--verify/--no-verify", default=True, help="Verify integrity after import")
+@click.pass_context
+def backup_import(ctx, backup_path, verify):
+    """Import an adapter from a backup file."""
+    from advanced_vault.prosumer.adapter_backup import AdapterBackupManager
+    
+    vault_path = ctx.obj.get('vault_path', "~/.vault")
+    manager = AdapterBackupManager(vault_path=vault_path)
+    
+    if not Path(backup_path).exists():
+        click.echo(f"❌ Backup not found: {backup_path}", err=True)
+        sys.exit(1)
+    
+    try:
+        adapter_path, manifest = manager.import_adapter(backup_path, verify_integrity=verify)
+        click.echo(f"✅ Imported adapter to: {adapter_path}")
+        if manifest:
+            click.echo(f"   Name: {manifest.adapter_name}")
+            click.echo(f"   Category: {manifest.category_id}")
+            click.echo(f"   Documents: {manifest.document_count}")
+            click.echo(f"   Training: {manifest.training_method}")
+    except Exception as e:
+        click.echo(f"❌ Import failed: {e}", err=True)
+        sys.exit(1)
+
+
+@backup.command("list")
+@click.pass_context
+def backup_list(ctx):
+    """List all adapter backups."""
+    from advanced_vault.prosumer.adapter_backup import AdapterBackupManager
+    
+    vault_path = ctx.obj.get('vault_path', "~/.vault")
+    manager = AdapterBackupManager(vault_path=vault_path)
+    
+    backups = manager.list_backups()
+    
+    if not backups:
+        click.echo("📦 No backups found")
+        return
+    
+    click.echo(f"💾  Adapter Backups ({len(backups)} total)\n")
+    for backup in backups:
+        size_kb = backup['size'] // 1024
+        click.echo(f"   {backup['filename']}")
+        click.echo(f"      Size: {size_kb} KB  |  Modified: {backup['modified'][:10]}")
+        click.echo()
+
+
+@backup.command("verify")
+@click.argument("backup_path")
+@click.pass_context
+def backup_verify(ctx, backup_path):
+    """Verify a backup file's integrity."""
+    from advanced_vault.prosumer.adapter_backup import AdapterBackupManager
+    
+    vault_path = ctx.obj.get('vault_path', "~/.vault")
+    manager = AdapterBackupManager(vault_path=vault_path)
+    
+    if not Path(backup_path).exists():
+        click.echo(f"❌ Backup not found: {backup_path}", err=True)
+        sys.exit(1)
+    
+    report = manager.verify_adapter(backup_path)
+    
+    click.echo(f"🔍 Verification Report: {backup_path}\n")
+    click.echo(f"   Exists: {'✅' if report['exists'] else '❌'}")
+    click.echo(f"   Readable: {'✅' if report['readable'] else '❌'}")
+    click.echo(f"   Encryption detected: {'✅' if report.get('encryption_detected') else '❌'}")
+    
+    if 'checksum_match' in report and report['checksum_match'] is not None:
+        click.echo(f"   Checksum: {'✅ Match' if report['checksum_match'] else '❌ Mismatch'}")
+    
+    if report.get('errors'):
+        for error in report['errors']:
+            click.echo(f"   ❌ Error: {error}")
+    
+    if report.get('warnings'):
+        for warning in report['warnings']:
+            click.echo(f"   ⚠️  Warning: {warning}")
+    
+    if report.get('valid'):
+        click.echo(f"\n✅ Backup is valid")
+    else:
+        click.echo(f"\n❌ Backup has issues")
+        sys.exit(1)
