@@ -137,6 +137,67 @@ Enclave exposes these tools to AI agents:
 | `vault_store` | Store secrets (API keys, passwords) |
 | `vault_recall` | Retrieve secrets with natural language |
 
+## Personal Data Vaults (New 🆕)
+
+Enclave now organizes your documents into **semantic vault categories** with domain-specific AI adapters:
+
+| Vault | Documents | AI Adapter |
+|-------|-----------|------------|
+| 🏥 **Health** | Medical records, prescriptions, lab results | Health Advisor |
+| 💰 **Finance** | Bank statements, tax returns, investments | Tax Assistant |
+| ⚖️ **Legal** | Contracts, wills, immigration papers | Legal Companion |
+| 🧠 **Personal** | Journals, emails, notes, memories | Life Archivist |
+
+### Auto-Classification
+
+Drop any file and Enclave automatically detects its type:
+
+```bash
+# Classify a single file
+vault prosumer classify blood_test.pdf
+
+# Classify an entire folder
+vault prosumer classify-folder ~/Documents --recursive
+```
+
+### One-Click Adapter Training
+
+Train a domain-specific AI on your documents:
+
+```bash
+# List training presets
+vault prosumer presets list
+
+# Train via GUI: Drop docs → Click "Train AI" → Done in 5-15 min
+```
+
+Each preset includes safety guardrails:
+- **Health Advisor**: Never prescribes, always recommends seeing a doctor
+- **Tax Assistant**: Shows calculations, suggests consulting a CPA
+- **Legal Companion**: Summarizes only, never gives legal advice
+
+### Encrypted Adapter Backup & Sharing
+
+Your trained adapter contains learned patterns — not your raw documents. Back it up or share it safely:
+
+```bash
+# Export encrypted adapter
+vault prosumer backup export ~/.vault/adapters/health.wdva \
+  --name "My Health Advisor" --category health
+
+# Import on another device
+vault prosumer backup import ./health.enclave
+
+# Verify integrity
+vault prosumer backup verify ./health.enclave
+
+# List all backups
+vault prosumer backup list
+```
+
+**What's included**: Encrypted learned weights (WDVA format) + metadata.  
+**What's NOT included**: Your raw documents, filenames, or personal data.
+
 **Key principle**: `agent_query` returns synthesized answers, not raw documents. External AIs never see your actual content.
 
 ## Architecture
@@ -180,6 +241,7 @@ slm-vault/
 ├── advanced_vault/          # Core application
 │   ├── gui/                 # Desktop GUI (Flet)
 │   ├── training/            # RAG index, embeddings, caching
+│   ├── prosumer/            # Personal data vaults (Health, Finance, Legal, Personal)
 │   ├── mcp_server/          # MCP server implementation
 │   └── backend/             # Supabase integration (optional)
 ├── browser-extension/       # Browser extension
