@@ -18,6 +18,22 @@ from .kv_cache import RAGCache, QueryCache, ChunkKVCache
 from .late_chunking import LateChunker, JinaLateChunker, LateChunk, create_late_chunker
 from .mlx_trainer import MLXTrainer, TrainingExample, TrainingResult, check_mlx_available, get_recommended_model
 
+try:
+    from .mlx_lora_backend import (
+        MLXLoRABackend,
+        AdvancedTrainingConfig,
+        AdvancedTrainingResult,
+        TRAIN_MODES,
+    )
+    _ADVANCED_EXPORTS = [
+        "MLXLoRABackend",
+        "AdvancedTrainingConfig",
+        "AdvancedTrainingResult",
+        "TRAIN_MODES",
+    ]
+except ImportError:
+    _ADVANCED_EXPORTS = []
+
 __all__ = [
     # Core RAG
     "RAGIndex",
@@ -48,4 +64,6 @@ __all__ = [
     "TrainingResult",
     "check_mlx_available",
     "get_recommended_model",
+    # Advanced training (mlx-lm-lora)
+    *(_ADVANCED_EXPORTS),
 ]

@@ -3,6 +3,9 @@ MLX Trainer for Enclave.
 
 Provides local LoRA/DoRA fine-tuning on Apple Silicon using mlx-lm.
 Supports encrypted adapter storage and progress callbacks.
+
+This module now integrates with mlx-lm-lora for advanced training algorithms
+(DPO, ORPO, GRPO, etc.) while maintaining backward compatibility.
 """
 
 import json
@@ -38,6 +41,17 @@ RECOMMENDED_MODELS = {
     "24GB": "mlx-community/Qwen2.5-7B-Instruct-4bit",
     "32GB+": "mlx-community/Qwen2.5-14B-Instruct-4bit",
 }
+
+# Advanced backend availability
+try:
+    from .mlx_lora_backend import (
+        MLXLoRABackend,
+        AdvancedTrainingConfig,
+        AdvancedTrainingResult,
+    )
+    _ADVANCED_BACKEND_AVAILABLE = True
+except ImportError:
+    _ADVANCED_BACKEND_AVAILABLE = False
 
 
 @dataclass
@@ -434,3 +448,231 @@ class MLXTrainer:
         shutil.rmtree(adapter_path)
         logger.info(f"Deleted adapter: {adapter_name}")
         return True
+
+    # ------------------------------------------------------------------ #
+    #  Advanced Training (via mlx-lm-lora backend)
+    # ------------------------------------------------------------------ #
+
+    def _get_advanced_backend(self) -> "MLXLoRABackend":
+        """Lazy-initialize the advanced training backend."""
+        if not _ADVANCED_BACKEND_AVAILABLE:
+            raise ImportError(
+                "Advanced training requires mlx-lm-lora. "
+                "Install with: pip install enclave-vault[advanced-training]"
+            )
+        if not hasattr(self, "_advanced_backend"):
+            self._advanced_backend = MLXLoRABackend(
+                output_dir=str(self.output_dir)
+            )
+        return self._advanced_backend
+
+    def train_advanced(
+        self,
+        examples: List[Dict[str, Any]],
+        adapter_name: str,
+        train_mode: str = "sft",
+        config_overrides: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+    ) -> "AdvancedTrainingResult":
+        """
+        Train using any mlx-lm-lora algorithm (DPO, ORPO, GRPO, etc.).
+
+        Args:
+            examples: Training examples (format depends on train_mode)
+            adapter_name: Name for the adapter
+            train_mode: Algorithm — sft, dpo, orpo, grpo, cpo, online_dpo, xpo
+            config_overrides: Override any AdvancedTrainingConfig fields
+            progress_callback: Optional Enclave-style progress callback
+
+        Returns:
+            AdvancedTrainingResult
+        """
+        backend = self._get_advanced_backend()
+
+        config = AdvancedTrainingConfig(
+            model=self.config.get("model", DEFAULT_CONFIG["model"]),
+            train_mode=train_mode,
+            train_type="dora" if self.config.get("use_dora", True) else "lora",
+            lora_rank=self.config.get("lora_rank", 8),
+            lora_alpha=self.config.get("lora_alpha", 16),
+            lora_dropout=self.config.get("lora_dropout", 0.05),
+            learning_rate=self.config.get("learning_rate", 1e-5),
+            batch_size=self.config.get("batch_size", 4),
+            max_seq_length=self.config.get("max_seq_length", 512),
+            grad_checkpoint=True,
+        )
+
+        if config_overrides:
+            for key, value in config_overrides.items():
+                if hasattr(config, key):
+                    setattr(config, key, value)
+                else:
+                    logger.warning(f"Unknown config override: {key}")
+
+        return backend.train(examples, adapter_name, config, progress_callback)
+
+    def train_dpo(
+        self,
+        examples: List[Dict[str, Any]],
+        adapter_name: str,
+        beta: float = 0.1,
+        loss_type: str = "sigmoid",
+        config_overrides: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+    ) -> "AdvancedTrainingResult":
+        """
+        Train a DPO (Direct Preference Optimization) adapter.
+
+        Examples format:
+            [{"prompt": "...", "chosen": "...", "rejected": "..."}, ...]
+
+        Args:
+            examples: Preference pairs
+            adapter_name: Name for the adapter
+            beta: KL penalty strength
+            loss_type: sigmoid, hinge, ipo, or dpop
+            config_overrides: Additional config overrides
+            progress_callback: Optional progress callback
+
+        Returns:
+            AdvancedTrainingResult
+        """
+        overrides = {"beta": beta, "dpo_cpo_loss_type": loss_type}
+        if config_overrides:
+            overrides.update(config_overrides)
+        return self.train_advanced(
+            examples,
+            adapter_name,
+            train_mode="dpo",
+            config_overrides=overrides,
+            progress_callback=progress_callback,
+        )
+
+    def train_orpo(
+        self,
+        examples: List[Dict[str, Any]],
+        adapter_name: str,
+        beta: float = 0.1,
+        reward_scaling: float = 1.0,
+        config_overrides: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+    ) -> "AdvancedTrainingResult":
+        """
+        Train an ORPO (Odds Ratio Preference Optimization) adapter.
+
+        Examples format:
+            [{"prompt": "...", "chosen": "...", "rejected": "..."}, ...]
+
+        Args:
+            examples: Preference pairs
+            adapter_name: Name for the adapter
+            beta: Temperature for logistic function
+            reward_scaling: Reward scaling factor
+            config_overrides: Additional config overrides
+            progress_callback: Optional progress callback
+
+        Returns:
+            AdvancedTrainingResult
+        """
+        overrides = {"beta": beta, "reward_scaling": reward_scaling}
+        if config_overrides:
+            overrides.update(config_overrides)
+        return self.train_advanced(
+            examples,
+            adapter_name,
+            train_mode="orpo",
+            config_overrides=overrides,
+            progress_callback=progress_callback,
+        )
+
+    def train_grpo(
+        self,
+        examples: List[Dict[str, Any]],
+        adapter_name: str,
+        group_size: int = 4,
+        reward_functions: Optional[str] = None,
+        reward_functions_file: Optional[str] = None,
+        reward_weights: Optional[List[float]] = None,
+        config_overrides: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+    ) -> "AdvancedTrainingResult":
+        """
+        Train a GRPO (Group Relative Policy Optimization) adapter.
+
+        Examples format:
+            [{"prompt": "...", "answer": "..."}, ...]
+
+        Args:
+            examples: Prompt-answer pairs
+            adapter_name: Name for the adapter
+            group_size: Number of responses per prompt
+            reward_functions: Comma-separated reward function names
+            reward_functions_file: Path to custom reward functions file
+            reward_weights: Weights for each reward function
+            config_overrides: Additional config overrides
+            progress_callback: Optional progress callback
+
+        Returns:
+            AdvancedTrainingResult
+        """
+        overrides = {
+            "group_size": group_size,
+            "reward_functions": reward_functions,
+            "reward_functions_file": reward_functions_file,
+            "reward_weights": reward_weights,
+        }
+        if config_overrides:
+            overrides.update(config_overrides)
+        return self.train_advanced(
+            examples,
+            adapter_name,
+            train_mode="grpo",
+            config_overrides=overrides,
+            progress_callback=progress_callback,
+        )
+
+    def train_sft_advanced(
+        self,
+        examples: List[TrainingExample],
+        adapter_name: str,
+        qat_enable: bool = False,
+        qat_bits: int = 8,
+        config_overrides: Optional[Dict[str, Any]] = None,
+        progress_callback: Optional[Callable[[float, str], None]] = None,
+    ) -> "AdvancedTrainingResult":
+        """
+        Train an SFT adapter via the advanced mlx-lm-lora backend.
+
+        Use this instead of train() when you need QAT or other advanced features.
+
+        Args:
+            examples: Training examples in chat format
+            adapter_name: Name for the adapter
+            qat_enable: Enable Quantization Aware Training
+            qat_bits: Bit-width for QAT
+            config_overrides: Additional config overrides
+            progress_callback: Optional progress callback
+
+        Returns:
+            AdvancedTrainingResult
+        """
+        # Convert TrainingExample list to dict list
+        dict_examples = [ex.to_dict() for ex in examples]
+
+        overrides = {"qat_enable": qat_enable, "qat_bits": qat_bits}
+        if config_overrides:
+            overrides.update(config_overrides)
+        return self.train_advanced(
+            dict_examples,
+            adapter_name,
+            train_mode="sft",
+            config_overrides=overrides,
+            progress_callback=progress_callback,
+        )
+
+    def list_adapters_advanced(self) -> List[Dict[str, Any]]:
+        """List adapters including advanced metadata (train_mode, qat, etc.)."""
+        if _ADVANCED_BACKEND_AVAILABLE:
+            return self._get_advanced_backend().list_adapters()
+        # Fallback to legacy list_adapters
+        return self.list_adapters()

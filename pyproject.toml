@@ -74,6 +74,13 @@ mlx = [
     "hf_transfer>=0.1.8",
 ]
 
+# Advanced training (mlx-lm-lora: DPO, ORPO, GRPO, QAT, etc.)
+advanced-training = [
+    "enclave-vault[mlx]",
+    "mlx-lm-lora>=0.1.0",
+    "datasets>=2.14.0",
+]
+
 # GPU training (NVIDIA)
 cuda = [
     "torch>=2.0.0",
@@ -118,7 +125,7 @@ dev = [
 
 # All optional dependencies
 all = [
-    "enclave-vault[mlx,gui,dev,mac-performance,liteparse]",
+    "enclave-vault[mlx,gui,dev,mac-performance,liteparse,advanced-training]",
 ]
 
 [project.urls]
