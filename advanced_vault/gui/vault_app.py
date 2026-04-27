@@ -113,12 +113,14 @@ try:
         show_connections_view as render_connections_view,
         show_library_view as render_library_view,
         show_security_view as render_security_view,
+        show_vaults_view as render_vaults_view,
         show_workspace_view as render_workspace_view,
     )
 except ImportError:
     render_connections_view = None
     render_library_view = None
     render_security_view = None
+    render_vaults_view = None
     render_workspace_view = None
 
 try:
@@ -2000,8 +2002,14 @@ class VaultApp:
         """Show onboarding or landing view after successful authentication."""
         if self._should_show_onboarding():
             self.current_view = "welcome"
-            self.show_welcome_screen()
-            return
+            # Try prosumer onboarding first, fallback to legacy welcome screen
+            try:
+                self._show_prosumer_onboarding()
+                return
+            except Exception as e:
+                logger.warning(f"Prosumer onboarding failed, falling back to legacy: {e}")
+                self.show_welcome_screen()
+                return
         self.show_landing_page()
 
     def _handle_onboarding_step_action(self, step_id: str) -> None:
@@ -2068,6 +2076,29 @@ class VaultApp:
         self._mark_onboarding_completed()
         # Always go to landing page after welcome screen
         self.show_landing_page()
+
+    def _show_prosumer_onboarding(self):
+        """Show the new prosumer onboarding flow with vault categories."""
+        from advanced_vault.gui.prosumer_components import OnboardingFlow
+
+        def on_onboarding_complete():
+            self._mark_onboarding_completed()
+            self.show_landing_page()
+            self._show_user_message(
+                "Your Enclave is ready! Upload documents to your vaults to get started.",
+                level="info",
+            )
+
+        onboarding = OnboardingFlow(on_complete=on_onboarding_complete)
+        self.page.clean()
+        self.page.add(
+            ft.Container(
+                content=onboarding,
+                expand=True,
+                alignment=ft.alignment.center,
+            )
+        )
+        self.page.update()
     
     def _add_sample_data(self):
         """Seed a lightweight demo workspace with sample private context."""
@@ -5519,6 +5550,12 @@ class VaultApp:
             raise RuntimeError("demo_shell module is unavailable")
         return render_connections_view(self)
 
+    def _show_vaults_view(self):
+        """Render the prosumer vault categories view."""
+        if render_vaults_view is None:
+            raise RuntimeError("demo_shell module is unavailable")
+        return render_vaults_view(self)
+
     def _show_security_view(self):
         """Render the Figma-aligned Security view."""
         if render_security_view is None:
@@ -8224,14 +8261,16 @@ class VaultApp:
         self.load_secrets()
 
     def on_nav_change(self, index: int):
-        """Handle navigation change for the Chat / Files / Settings shell."""
+        """Handle navigation change for the Chat / Vaults / Files / Settings shell."""
         if index == 7:
             routed_index = 1
         elif index in {-1, 0}:
             routed_index = 0
+        elif index == 3:
+            routed_index = 3
         elif index in {1}:
             routed_index = 1
-        elif index in {2, 3, 4, 5, 6, 8, 9}:
+        elif index in {2, 4, 5, 6, 8, 9}:
             routed_index = 2
         else:
             routed_index = 2
@@ -8243,6 +8282,8 @@ class VaultApp:
             self._show_workspace_view()
         elif routed_index == 1:
             self._show_library_view()
+        elif routed_index == 3:
+            self._show_vaults_view()
         else:
             if hasattr(self, "show_settings_hub"):
                 self.show_settings_hub()
@@ -11647,6 +11688,28 @@ class VaultApp:
                 chunk_count = len(result['text_chunks'])
                 logger.info(f"Extracted {chunk_count} chunks from {page_count} pages")
 
+                # Auto-classify document for vault categorization
+                detected_category = "personal"
+                try:
+                    from advanced_vault.prosumer.document_classifier import DocumentClassifier
+                    classifier = DocumentClassifier(vault_path=str(self.vault_path))
+                    full_text = "\n\n".join(result['text_chunks'])
+                    classification = classifier.classify_file(
+                        str(safe_pdf_path),
+                        extract_content=False,  # We already have text
+                    )
+                    # Override with actual text content
+                    classification.content_preview = full_text[:3000]
+                    classification.confidence = classification.category.classify_content(full_text[:3000])
+                    
+                    if classification.confidence >= 0.3:
+                        detected_category = classification.category.id
+                        logger.info(f"Auto-classified '{filename}' as {detected_category} (confidence: {classification.confidence:.2f})")
+                    else:
+                        logger.info(f"Low confidence classification for '{filename}', defaulting to personal")
+                except Exception as classify_err:
+                    logger.warning(f"Document classification failed (non-critical): {classify_err}")
+
                 # Index in RAG for instant querying
                 try:
                     full_text = "\n\n".join(result['text_chunks'])
@@ -11714,7 +11777,7 @@ class VaultApp:
                     service=filename,
                     secret_value=base64.b64encode(pdf_data).decode('utf-8'),
                     entry_type=EntryType.OTHER,
-                    tags=["pdf", "document", "knowledge"],
+                    tags=["pdf", "document", "knowledge", detected_category],
                     description=" | ".join(description_parts)
                 )
                 logger.info(f"Stored PDF as knowledge entry: {filename} (ID: {entry_id})")

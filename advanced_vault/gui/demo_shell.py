@@ -13,6 +13,14 @@ try:
 except ImportError:  # pragma: no cover - package import fallback
     from .light_theme import LightTheme
 
+try:
+    from prosumer_components import build_vaults_grid
+except ImportError:
+    try:
+        from .prosumer_components import build_vaults_grid
+    except ImportError:
+        build_vaults_grid = None
+
 
 def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> None:
     """Render the primary private chat workspace."""
@@ -463,6 +471,93 @@ def show_library_view(app: Any) -> None:
     )
 
     app._render_primary_shell(1, content)
+
+
+def show_vaults_view(app: Any) -> None:
+    """Render the prosumer vault categories view."""
+    app.current_view = "vaults"
+    app.page.clean()
+
+    # Get document counts per category from the app's private model profiles
+    category_counts: Dict[str, int] = {}
+    adapter_statuses: Dict[str, str] = {}
+
+    try:
+        profiles = app._get_private_model_profiles()
+        for profile in profiles:
+            # Map profile keywords to categories for counting
+            docs = app._get_private_model_documents(limit=100)
+            for doc in docs:
+                # Simple heuristic: use filename to guess category
+                name = doc.get("name", "").lower()
+                if any(k in name for k in ["medical", "prescription", "lab", "blood", "health"]):
+                    category_counts["health"] = category_counts.get("health", 0) + 1
+                elif any(k in name for k in ["bank", "tax", "statement", "investment", "finance"]):
+                    category_counts["finance"] = category_counts.get("finance", 0) + 1
+                elif any(k in name for k in ["contract", "legal", "will", "immigration", "nda"]):
+                    category_counts["legal"] = category_counts.get("legal", 0) + 1
+                else:
+                    category_counts["personal"] = category_counts.get("personal", 0) + 1
+
+        # Determine adapter status from wdva_adapters
+        for profile in profiles:
+            for adapter in profile.wdva_adapters:
+                cat = adapter.get("category_id", "personal")
+                adapter_statuses[cat] = "ready"
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"Could not load vault stats: {e}")
+
+    # Build vaults grid if components available
+    if build_vaults_grid is not None:
+        vaults_grid = build_vaults_grid(
+            classifier=None,  # Not needed here since we pre-counted
+            category_counts=category_counts,
+            adapter_statuses=adapter_statuses,
+            on_upload=lambda cid: app._open_private_files_picker(),
+            on_train=lambda cid: app._show_user_message(
+                f"Training adapter for {cid} vault...", level="info"
+            ),
+        )
+    else:
+        vaults_grid = ft.Text(
+            "Prosumer components not available. Install with: pip install -e '.[prosumer]'",
+            color=LightTheme.TEXT_SECONDARY,
+        )
+
+    content = ft.Container(
+        padding=24,
+        content=ft.Column(
+            [
+                ft.Row(
+                    [
+                        ft.Text("Vaults", size=24, weight=ft.FontWeight.W_700, color=LightTheme.TEXT_PRIMARY),
+                        ft.Container(expand=True),
+                        ft.ElevatedButton(
+                            "Upload Documents",
+                            icon=ft.Icons.UPLOAD_FILE_ROUNDED,
+                            on_click=lambda e: app._open_private_files_picker(),
+                            style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                        ),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
+                    vertical_alignment=ft.CrossAxisAlignment.CENTER,
+                ),
+                ft.Text(
+                    "Your documents are automatically organized into encrypted vault categories. "
+                    "Train a domain-specific AI for each vault.",
+                    size=13,
+                    color=LightTheme.TEXT_SECONDARY,
+                ),
+                ft.Container(height=8),
+                vaults_grid,
+            ],
+            spacing=16,
+            expand=True,
+        ),
+    )
+
+    app._render_primary_shell(3, content)
 
 
 def show_connections_view(app: Any) -> None:
