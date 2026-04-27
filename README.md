@@ -203,6 +203,9 @@ slm-vault/
 # Apple Silicon acceleration
 pip install mlx mlx-lm
 
+# Advanced training: DPO, ORPO, GRPO, QAT (requires mlx-lm-lora)
+pip install "enclave-vault[advanced-training]"
+
 # Fast embeddings (ONNX)
 pip install fastembed
 
@@ -211,6 +214,58 @@ pip install hnswlib
 
 # Desktop GUI
 pip install "flet[all]>=0.28.3,<0.29"
+```
+
+## Advanced Local Training
+
+Enclave supports advanced training algorithms via `mlx-lm-lora` on Apple Silicon:
+
+| Algorithm | Use Case | Env Var |
+|-----------|----------|---------|
+| **SFT** (default) | Standard fine-tuning on Q&A pairs | `ENCLAVE_LOCAL_TRAIN_MODE=sft` |
+| **DPO** | Preference optimization (good vs bad answers) | `ENCLAVE_LOCAL_TRAIN_MODE=dpo` |
+| **ORPO** | Odds-ratio preference optimization | `ENCLAVE_LOCAL_TRAIN_MODE=orpo` |
+| **GRPO** | Group-relative policy optimization with custom rewards | `ENCLAVE_LOCAL_TRAIN_MODE=grpo` |
+| **SFT+QAT** | Quantization-aware training for smaller adapters | `ENCLAVE_LOCAL_TRAIN_MODE=sft` + `ENCLAVE_LOCAL_QAT=true` |
+
+### Environment Variables
+
+```bash
+# Training algorithm
+export ENCLAVE_LOCAL_TRAIN_MODE=dpo      # sft | dpo | orpo | grpo
+
+# QAT (Quantization Aware Training)
+export ENCLAVE_LOCAL_QAT=true            # true/false
+
+# LoRA hyperparameters
+export ENCLAVE_LOCAL_LORA_RANK=8
+export ENCLAVE_LOCAL_LORA_ALPHA=16
+export ENCLAVE_LOCAL_LR=1e-5
+export ENCLAVE_LOCAL_BATCH_SIZE=4
+
+# DPO/ORPO specific
+export ENCLAVE_LOCAL_DPO_BETA=0.1
+
+# GRPO specific
+export ENCLAVE_LOCAL_GRPO_GROUP_SIZE=4
+export ENCLAVE_LOCAL_GRPO_REWARD_COMBO=rag_default  # rag_default | citation_heavy | concise | structured
+
+# Force local vs cloud training
+export ENCLAVE_LOCAL_TRAINING=true       # true | false | auto
+```
+
+### Package & Share Adapters
+
+```bash
+# Package a trained adapter
+vault model package ~/.enclave/adapters/my_adapter ./my_adapter.enclave \
+  --train-mode dpo --qat --password
+
+# Unpack
+vault model unpack ./my_adapter.enclave ~/.enclave/adapters/restored --password
+
+# Verify integrity
+vault model verify ./my_adapter.enclave --password
 ```
 
 ## Development
@@ -251,6 +306,8 @@ mypy advanced_vault/
 - [x] Desktop GUI (Flet)
 - [x] Local LLM inference (MLX)
 - [x] Browser extension
+- [x] Advanced local training (DPO, ORPO, GRPO, QAT via mlx-lm-lora)
+- [x] Encrypted adapter packaging & distribution
 - [ ] Multi-device sync (encrypted)
 - [ ] Adapter marketplace
 

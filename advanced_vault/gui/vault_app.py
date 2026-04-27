@@ -6656,7 +6656,19 @@ class VaultApp:
                     supabase_client=supabase_client  # Pass client for token refresh
                 )
                 logger.info("Q&A generator and training manager initialized")
-                
+
+                # Initialize local training manager (for DPO/ORPO/GRPO/QAT on Apple Silicon)
+                try:
+                    from advanced_vault.gui.local_training_manager import LocalTrainingManager
+                    self.local_training_manager = LocalTrainingManager(
+                        output_dir=str(self.vault_path / "local_adapters"),
+                    )
+                    caps = self.local_training_manager.get_capabilities()
+                    logger.info(f"Local training manager initialized: {caps}")
+                except Exception as lte:
+                    logger.warning(f"Local training manager not available: {lte}")
+                    self.local_training_manager = None
+
                 # Initialize training queue for batch processing and folder watching
                 self.training_queue = TrainingQueue(
                     vault_path=str(self.vault_path),
@@ -6670,6 +6682,7 @@ class VaultApp:
                 logger.error(f"Failed to initialize training services: {e}")
                 self.qa_generator = None
                 self.training_manager = None
+                self.local_training_manager = None
                 self.training_queue = None
                 self._component_status["qa"]["status"] = "error"
                 self._component_status["qa"]["message"] = f"Error: {str(e)}"
@@ -14715,15 +14728,114 @@ class VaultApp:
         return platform.machine() == "arm64"
 
     def _train_document_locally(self, filename: str, qa_pairs: List[Dict[str, str]], progress_callback) -> tuple:
-        """Run local MLX LoRA/DoRA training and store adapter metadata in the vault."""
-        progress_callback(60.0, "Starting local MLX training...")
+        """
+        Run local MLX training using LocalTrainingManager.
+
+        Supports SFT, DPO, ORPO, and GRPO via ENCLAVE_LOCAL_TRAIN_MODE env var.
+        Also supports SFT+QAT via ENCLAVE_LOCAL_QAT=true.
+        """
+        progress_callback(55.0, "Preparing local training...")
+
+        if self.local_training_manager is None:
+            raise ValueError(
+                "Local training manager unavailable. "
+                "Install advanced training deps: pip install enclave-vault[advanced-training]"
+            )
+
+        caps = self.local_training_manager.get_capabilities()
+        if not caps["advanced_backend_available"]:
+            # Fallback to legacy basic SFT
+            logger.info("Advanced backend unavailable, falling back to legacy SFT")
+            return self._train_document_locally_legacy(filename, qa_pairs, progress_callback)
+
+        train_mode = os.getenv("ENCLAVE_LOCAL_TRAIN_MODE", "sft").strip().lower()
+        if train_mode not in caps["train_modes"]:
+            logger.warning(f"Train mode '{train_mode}' not available, falling back to sft")
+            train_mode = "sft"
+
+        qat_enable = os.getenv("ENCLAVE_LOCAL_QAT", "false").strip().lower() in {"1", "true", "yes", "on"}
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        base_name = f"{Path(filename).stem}_{timestamp}"
+        adapter_name = "".join(c if (c.isalnum() or c in {"-", "_"}) else "_" for c in base_name).strip("_")
+
+        # Save dataset as JSONL for the local trainer
+        dataset_dir = self.vault_path / "local_datasets"
+        dataset_dir.mkdir(parents=True, exist_ok=True)
+        dataset_path = dataset_dir / f"{adapter_name}.jsonl"
+
+        import json
+        with open(dataset_path, "w") as f:
+            for pair in qa_pairs:
+                f.write(json.dumps(pair) + "\n")
+
+        progress_callback(60.0, f"Starting local {train_mode.upper()} training...")
+
+        def _local_progress(p: float, msg: str):
+            mapped = 60.0 + (max(0.0, min(p, 1.0)) * 35.0)
+            progress_callback(mapped, msg)
+
+        # Build training kwargs from env overrides
+        kwargs = {
+            "rank": int(os.getenv("ENCLAVE_LOCAL_LORA_RANK", "8")),
+            "alpha": int(os.getenv("ENCLAVE_LOCAL_LORA_ALPHA", "16")),
+            "learning_rate": float(os.getenv("ENCLAVE_LOCAL_LR", "1e-5")),
+            "batch_size": int(os.getenv("ENCLAVE_LOCAL_BATCH_SIZE", "4")),
+            "qat_enable": qat_enable,
+        }
+
+        if train_mode in ("dpo", "orpo"):
+            kwargs["beta"] = float(os.getenv("ENCLAVE_LOCAL_DPO_BETA", "0.1"))
+
+        if train_mode == "grpo":
+            kwargs["group_size"] = int(os.getenv("ENCLAVE_LOCAL_GRPO_GROUP_SIZE", "4"))
+            kwargs["reward_combo"] = os.getenv("ENCLAVE_LOCAL_GRPO_REWARD_COMBO", "rag_default")
+
+        result = self.local_training_manager.submit_training_job(
+            dataset_path=str(dataset_path),
+            adapter_id=adapter_name,
+            train_mode=train_mode,
+            **kwargs,
+        )
+
+        adapter_id = f"local:{result['adapter_id']}"
+        encryption_key_hex = os.urandom(32).hex()
+
+        entry_tags = [
+            "data_type:knowledge",
+            "source:pdf",
+            "training_mode:local",
+            f"train_mode:{train_mode}",
+            "training_status:completed",
+            f"local_adapter:{adapter_name}",
+        ]
+        if qat_enable:
+            entry_tags.append("qat:enabled")
+
+        self._store_or_update_knowledge_entry(
+            filename=filename,
+            adapter_id=adapter_id,
+            tags=entry_tags,
+            description=(
+                f"Local {train_mode.upper()} adapter trained from {filename}. "
+                f"Path: {result.get('adapter_path', 'unknown')}. "
+                f"Iters: {result.get('iters', 'N/A')}. "
+                f"Final loss: {result.get('final_loss', 'N/A')}"
+            ),
+        )
+
+        progress_callback(100.0, f"Local {train_mode.upper()} training complete")
+        return adapter_id, encryption_key_hex
+
+    def _train_document_locally_legacy(self, filename: str, qa_pairs: List[Dict[str, str]], progress_callback) -> tuple:
+        """Fallback legacy local training using basic MLXTrainer (SFT only)."""
+        progress_callback(60.0, "Starting local MLX training (legacy SFT)...")
 
         from advanced_vault.training import MLXTrainer, check_mlx_available
 
         if not check_mlx_available():
             raise ValueError("Local MLX training requires Apple Silicon MLX runtime (pip install mlx mlx-lm)")
 
-        # Keep queue jobs responsive on laptops.
         qa_pairs = qa_pairs[: min(len(qa_pairs), 100)]
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -14742,7 +14854,6 @@ class VaultApp:
         )
 
         def _local_progress(progress: float, message: str):
-            # Map trainer's 0..1 progress to queue phase segment 60..95.
             mapped = 60.0 + (max(0.0, min(progress, 1.0)) * 35.0)
             progress_callback(mapped, message)
 
@@ -14759,6 +14870,7 @@ class VaultApp:
             "data_type:knowledge",
             "source:pdf",
             "training_mode:local",
+            "train_mode:sft",
             "training_status:completed",
             f"local_adapter:{adapter_name}",
         ]
