@@ -2180,15 +2180,23 @@ class VaultApp:
                 progress_callback=_progress,
             )
 
-            # Tag the adapter entry with category
+            # Encrypt the trained adapter for multi-adapter engine compatibility
+            try:
+                self._package_vault_adapter_for_chat(category_id, adapter_id, encryption_key_hex)
+            except Exception as pkg_err:
+                logger.warning(f"Adapter packaging for chat failed (non-critical): {pkg_err}")
+
+            # Tag the adapter entry with category (also store training_job/key for _get_all_trained_adapters)
             self._store_or_update_knowledge_entry(
-                filename=f"{category_id}_adapter",
+                filename=f"{category_id.title()} Vault AI",
                 adapter_id=adapter_id,
                 tags=[
                     "data_type:adapter",
                     f"category_id:{category_id}",
                     "training_mode:local",
                     "training_status:completed",
+                    f"training_job:{adapter_id}",
+                    f"training_key:{encryption_key_hex}",
                 ],
                 description=f"Trained adapter for {category_id} vault from {len(docs)} documents.",
             )
@@ -2203,6 +2211,100 @@ class VaultApp:
             self._show_user_message(
                 f"Training failed for {category_id} vault: {e}", level="error"
             )
+
+    def _package_vault_adapter_for_chat(
+        self, category_id: str, adapter_id: str, encryption_key_hex: str
+    ):
+        """
+        Package a locally trained vault adapter for use in chat via the
+        Private Model multi-adapter engine.
+
+        Encrypts adapter safetensors with ChaCha20-Poly1305 (raw nonce+ciphertext
+        format compatible with MultiAdapterEngine) and attaches to the active
+        Private Model profile.
+        """
+        import os
+        from pathlib import Path
+
+        # Find the adapter directory (adapter_id is like "local:health_vault_20260427_163000")
+        adapter_name = adapter_id.replace("local:", "")
+        adapter_dir = self.vault_path / "local_adapters" / adapter_name
+        if not adapter_dir.exists():
+            logger.warning(f"Adapter directory not found: {adapter_dir}")
+            return
+
+        # Find safetensors files
+        safetensors_files = list(adapter_dir.glob("adapter*.safetensors"))
+        if not safetensors_files:
+            safetensors_files = list(adapter_dir.glob("*.safetensors"))
+        if not safetensors_files:
+            logger.warning(f"No safetensors found in {adapter_dir}")
+            return
+
+        # Read and concatenate all safetensors (or just use the first one)
+        # For simplicity, package the first adapter safetensors file
+        adapter_data = safetensors_files[0].read_bytes()
+
+        # Encrypt with ChaCha20-Poly1305 (raw format: nonce + ciphertext)
+        try:
+            from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
+            CRYPTO_OK = True
+        except ImportError:
+            CRYPTO_OK = False
+
+        if not CRYPTO_OK:
+            logger.warning("cryptography not available, skipping adapter encryption")
+            return
+
+        key = bytes.fromhex(encryption_key_hex)
+        if len(key) != 32:
+            # Derive 32-byte key if needed
+            import hashlib
+            key = hashlib.sha256(key).digest()
+            encryption_key_hex = key.hex()
+
+        nonce = os.urandom(12)
+        cipher = ChaCha20Poly1305(key)
+        ciphertext = cipher.encrypt(nonce, adapter_data, None)
+
+        # Save encrypted adapter
+        encrypted_dir = self.vault_path / "adapters"
+        encrypted_dir.mkdir(parents=True, exist_ok=True)
+        encrypted_path = encrypted_dir / f"{adapter_id}.encrypted"
+        encrypted_path.write_bytes(nonce + ciphertext)
+
+        # Save key to file
+        key_path = encrypted_dir / f"{adapter_id}.key"
+        key_path.write_bytes(key)
+
+        # Attach to active Private Model profile
+        profile = self._ensure_private_model_profile()
+        try:
+            from advanced_vault.prosumer.adapter_presets import get_preset_for_category
+            preset = get_preset_for_category(category_id)
+            system_prompt = preset.system_prompt if preset else ""
+        except Exception:
+            system_prompt = ""
+
+        self.private_model_manager.attach_adapter(
+            profile_name=profile.name,
+            adapter_name=f"{category_id}_vault",
+            encrypted_path=str(encrypted_path),
+            key_path=str(key_path),
+            weight=1.0,
+            description=f"Vault adapter for {category_id} category",
+            keywords=[category_id] + (preset.tags if preset else []),
+            metadata={
+                "category_id": category_id,
+                "adapter_id": adapter_id,
+                "system_prompt": system_prompt,
+            },
+        )
+        logger.info(f"Attached vault adapter '{category_id}_vault' to profile '{profile.name}'")
+
+        # Reset private model session so the new adapter is loaded on next chat
+        self._reset_private_model_session()
+        logger.info(f"Reset private model session to load new {category_id} vault adapter")
 
     def _start_vault_training(self, category_id: str):
         """Start vault adapter training in a background thread."""
