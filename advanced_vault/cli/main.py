@@ -1167,5 +1167,94 @@ def sheriff_status(ctx, output_json):
     click.echo(f"Message: {status['message']}")
 
 
+@model.command("package")
+@click.argument("adapter_dir")
+@click.argument("output_path")
+@click.option("--password", prompt=True, hide_input=True, help="Encryption password")
+@click.option("--name", default="", help="Adapter name metadata")
+@click.option("--description", default="", help="Adapter description")
+@click.option("--train-mode", type=click.Choice(["sft", "dpo", "orpo", "grpo"]), default="sft")
+@click.option("--qat", is_flag=True, help="Mark as QAT quantized")
+@click.option("--qat-bits", type=int, default=8, help="QAT bit width")
+@click.option("--base-model", default="", help="Base model name")
+@click.option("--format", "output_format", type=click.Choice(["enclave", "zip"]), default="enclave")
+@click.pass_context
+def model_package(ctx, adapter_dir, output_path, password, name, description, train_mode, qat, qat_bits, base_model, output_format):
+    """Package an adapter for distribution."""
+    from advanced_vault.training.adapter_packager import AdapterPackager, AdapterMetadata
+
+    packager = AdapterPackager()
+    metadata = {
+        "name": name or Path(adapter_dir).name,
+        "description": description,
+        "train_mode": train_mode,
+        "qat_enabled": qat,
+        "qat_bits": qat_bits,
+        "base_model": base_model,
+    }
+    try:
+        result = packager.package_adapter(
+            adapter_dir=adapter_dir,
+            output_path=output_path,
+            password=password,
+            metadata=metadata,
+            format=output_format,
+        )
+        click.echo(f"✅ Packaged adapter to {result}")
+    except Exception as e:
+        click.echo(f"❌ Packaging failed: {e}", err=True)
+        sys.exit(1)
+
+
+@model.command("unpack")
+@click.argument("package_path")
+@click.argument("output_dir")
+@click.option("--password", prompt=True, hide_input=True, help="Decryption password")
+@click.pass_context
+def model_unpack(ctx, package_path, output_dir, password):
+    """Unpack an adapter package."""
+    from advanced_vault.training.adapter_packager import AdapterPackager
+
+    packager = AdapterPackager()
+    try:
+        meta = packager.unpack_adapter(
+            package_path=package_path,
+            output_dir=output_dir,
+            password=password,
+        )
+        click.echo(f"✅ Unpacked adapter '{meta.name}' to {output_dir}")
+        click.echo(f"   Train mode: {meta.train_mode}")
+        click.echo(f"   QAT: {meta.qat_enabled} ({meta.qat_bits}-bit)")
+        if meta.base_model:
+            click.echo(f"   Base model: {meta.base_model}")
+    except Exception as e:
+        click.echo(f"❌ Unpacking failed: {e}", err=True)
+        sys.exit(1)
+
+
+@model.command("verify")
+@click.argument("package_path")
+@click.option("--password", prompt=True, hide_input=True, help="Decryption password")
+@click.pass_context
+def model_verify(ctx, package_path, password):
+    """Verify an adapter package integrity."""
+    from advanced_vault.training.adapter_packager import AdapterPackager
+
+    packager = AdapterPackager()
+    try:
+        result = packager.verify_package(package_path, password=password)
+        if result["valid"]:
+            meta = result["metadata"]
+            click.echo(f"✅ Package is valid")
+            click.echo(f"   Name: {meta.name}")
+            click.echo(f"   Checksum match: {result['checksum_match']}")
+        else:
+            click.echo(f"❌ Package invalid: {result.get('error')}", err=True)
+            sys.exit(1)
+    except Exception as e:
+        click.echo(f"❌ Verification failed: {e}", err=True)
+        sys.exit(1)
+
+
 if __name__ == '__main__':
     cli()

@@ -31,6 +31,7 @@ try:
         get_reward_function_names,
         build_reward_combo,
     )
+    from .adapter_packager import AdapterPackager, AdapterMetadata
     _ADVANCED_EXPORTS = [
         "MLXLoRABackend",
         "AdvancedTrainingConfig",
@@ -41,6 +42,8 @@ try:
         "register_enclave_rewards",
         "get_reward_function_names",
         "build_reward_combo",
+        "AdapterPackager",
+        "AdapterMetadata",
     ]
 except ImportError:
     _ADVANCED_EXPORTS = []
