@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from enum import Enum
 from typing import Optional
 
 import flet as ft
@@ -10,6 +11,75 @@ try:
     from light_theme import LightTheme
 except ImportError:  # pragma: no cover - package import fallback
     from .light_theme import LightTheme
+
+
+class ButtonVariant(Enum):
+    """Semantic button variants for consistent styling across views."""
+
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    OUTLINE = "outline"
+    GHOST = "ghost"
+
+
+def build_button(
+    label: str,
+    variant: ButtonVariant = ButtonVariant.PRIMARY,
+    icon: Optional[str] = None,
+    on_click=None,
+    disabled: bool = False,
+) -> ft.ElevatedButton | ft.OutlinedButton | ft.TextButton:
+    """Factory for consistently styled buttons."""
+    if variant == ButtonVariant.PRIMARY:
+        return ft.ElevatedButton(
+            label,
+            icon=icon,
+            on_click=on_click,
+            disabled=disabled,
+            style=ft.ButtonStyle(
+                bgcolor=LightTheme.ACCENT_PRIMARY,
+                color="white",
+                shape=ft.RoundedRectangleBorder(radius=12),
+                padding=ft.padding.symmetric(horizontal=14, vertical=12),
+            ),
+        )
+    if variant == ButtonVariant.SECONDARY:
+        return ft.ElevatedButton(
+            label,
+            icon=icon,
+            on_click=on_click,
+            disabled=disabled,
+            style=ft.ButtonStyle(
+                bgcolor=LightTheme.BG_HOVER,
+                color=LightTheme.TEXT_PRIMARY,
+                shape=ft.RoundedRectangleBorder(radius=12),
+                padding=ft.padding.symmetric(horizontal=14, vertical=12),
+            ),
+        )
+    if variant == ButtonVariant.OUTLINE:
+        return ft.OutlinedButton(
+            label,
+            icon=icon,
+            on_click=on_click,
+            disabled=disabled,
+            style=ft.ButtonStyle(
+                color=LightTheme.TEXT_PRIMARY,
+                shape=ft.RoundedRectangleBorder(radius=12),
+                padding=ft.padding.symmetric(horizontal=14, vertical=12),
+            ),
+        )
+    # GHOST
+    return ft.TextButton(
+        label,
+        icon=icon,
+        on_click=on_click,
+        disabled=disabled,
+        style=ft.ButtonStyle(
+            color=LightTheme.TEXT_PRIMARY,
+            shape=ft.RoundedRectangleBorder(radius=12),
+            padding=ft.padding.symmetric(horizontal=14, vertical=12),
+        ),
+    )
 
 
 def build_status_badge(
@@ -43,7 +113,7 @@ def build_surface_card(
         content=content,
         padding=padding,
         bgcolor=bgcolor or LightTheme.BG_ELEVATED,
-        border_radius=16,
+        border_radius=LightTheme.CARD_BORDER_RADIUS,
         border=ft.border.all(1, LightTheme.BORDER_COLOR),
     )
 

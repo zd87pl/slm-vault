@@ -85,9 +85,9 @@ class ModernSidebar:
     def _build_nav_section(self) -> ft.Column:
         nav_items = [
             (self._tr("Chat"), 0),
-            (self._tr("Vaults"), 3),
-            (self._tr("Files"), 1),
-            (self._tr("Settings"), 2),
+            (self._tr("Vaults"), 1),
+            (self._tr("Files"), 2),
+            (self._tr("Settings"), 3),
         ]
         return ft.Column(
             controls=[self._nav_item(label, index) for label, index in nav_items],

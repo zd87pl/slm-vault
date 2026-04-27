@@ -470,7 +470,7 @@ def show_library_view(app: Any) -> None:
         ),
     )
 
-    app._render_primary_shell(1, content)
+    app._render_primary_shell(2, content)
 
 
 def show_vaults_view(app: Any) -> None:
@@ -559,7 +559,7 @@ def show_vaults_view(app: Any) -> None:
         ),
     )
 
-    app._render_primary_shell(3, content)
+    app._render_primary_shell(1, content)
 
 
 def show_connections_view(app: Any) -> None:
@@ -826,7 +826,7 @@ def show_connections_view(app: Any) -> None:
         ),
     )
 
-    app._render_primary_shell(2, content)
+    app._render_primary_shell(-1, content)
 
 
 def show_security_view(app: Any) -> None:
@@ -851,7 +851,7 @@ def show_security_view(app: Any) -> None:
                         content=ft.Icon(icon, size=24, color=icon_color),
                         width=52,
                         height=52,
-                        border_radius=16,
+                        border_radius=12,
                         bgcolor=LightTheme.ACCENT_BLUE_LIGHT if icon_color != LightTheme.ACCENT_SUCCESS else LightTheme.ACCENT_SUCCESS + "12",
                         alignment=ft.alignment.center,
                     ),
@@ -1174,4 +1174,4 @@ def show_security_view(app: Any) -> None:
         ),
     )
 
-    app._render_primary_shell(2, content)
+    app._render_primary_shell(3, content)

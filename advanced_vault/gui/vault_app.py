@@ -1072,25 +1072,25 @@ class VaultApp:
             label="Profile name",
             value=suggested_name,
             autofocus=True,
-            border_radius=10,
+            border_radius=12,
         )
         description_field = ft.TextField(
             label="What is this profile for?",
             multiline=True,
             min_lines=2,
             max_lines=3,
-            border_radius=10,
+            border_radius=12,
             value="A local workspace for private company and project context.",
         )
         keywords_field = ft.TextField(
             label="Keywords (comma separated)",
-            border_radius=10,
+            border_radius=12,
             value="private, local, secure",
         )
         model_dropdown = ft.Dropdown(
             label="Base model",
             value=DEFAULT_PRIVATE_MODEL_NAME,
-            border_radius=10,
+            border_radius=12,
             options=[
                 ft.dropdown.Option("mlx-community/Qwen2.5-1.5B-Instruct-4bit", "Qwen 2.5 1.5B Instruct"),
                 ft.dropdown.Option("mlx-community/Qwen3-0.6B-4bit", "Qwen 3 0.6B"),
@@ -2680,7 +2680,7 @@ class VaultApp:
 
         return ft.Container(
             padding=ft.padding.symmetric(horizontal=16, vertical=12),
-            border_radius=10,
+            border_radius=12,
             bgcolor=LightTheme.BG_ELEVATED,
             border=ft.border.all(1, LightTheme.BORDER_COLOR),
             content=ft.Column(
@@ -3028,7 +3028,7 @@ class VaultApp:
                         spacing=8,
                     ),
                     padding=ft.padding.all(12),
-                    border_radius=10,
+                    border_radius=12,
                     bgcolor=LightTheme.BG_ELEVATED,
                     border=ft.border.all(
                         1,
@@ -4149,7 +4149,7 @@ class VaultApp:
                         ft.Container(
                             content=ft.Icon(icon, size=18, color=color),
                             padding=10,
-                            border_radius=10,
+                            border_radius=12,
                             bgcolor=color + "12",
                         ),
                         ft.Column(
@@ -4177,7 +4177,7 @@ class VaultApp:
                         ft.Container(
                             content=ft.Icon(ft.Icons.DESCRIPTION_ROUNDED, size=18, color=LightTheme.ACCENT_PRIMARY),
                             padding=10,
-                            border_radius=10,
+                            border_radius=12,
                             bgcolor=LightTheme.ACCENT_PRIMARY + "12",
                         ),
                         ft.Column(
@@ -4218,7 +4218,7 @@ class VaultApp:
                         ft.Container(
                             content=ft.Icon(ft.Icons.AUTO_AWESOME_ROUNDED, size=18, color=LightTheme.ACCENT_WARNING),
                             padding=10,
-                            border_radius=10,
+                            border_radius=12,
                             bgcolor=LightTheme.ACCENT_WARNING + "12",
                         ),
                         ft.Column(
@@ -4473,7 +4473,7 @@ class VaultApp:
             ),
             padding=20,
             bgcolor=LightTheme.ACCENT_SUCCESS + "08",
-            border_radius=16,
+            border_radius=12,
             border=ft.border.all(1, LightTheme.ACCENT_SUCCESS + "25"),
         )
 
@@ -5245,7 +5245,7 @@ class VaultApp:
                                     ),
                                     padding=ft.padding.symmetric(horizontal=12, vertical=6),
                                     bgcolor=LightTheme.BG_HOVER,
-                                    border_radius=16,
+                                    border_radius=12,
                                 ),
                                 ft.IconButton(
                                     ft.Icons.SETTINGS_ROUNDED,
@@ -5888,7 +5888,7 @@ class VaultApp:
             ),
             width=32,
             height=32,
-            border_radius=10,
+            border_radius=12,
             bgcolor=LightTheme.BG_SECONDARY if is_user else LightTheme.ACCENT_PRIMARY,
             alignment=ft.alignment.center,
         )
@@ -6294,7 +6294,7 @@ class VaultApp:
                             ),
                             padding=16,
                             bgcolor=LightTheme.BG_ELEVATED,
-                            border_radius=16,
+                            border_radius=12,
                         ),
                         ft.Container(width=40),
                     ],
@@ -8480,29 +8480,17 @@ class VaultApp:
 
     def on_nav_change(self, index: int):
         """Handle navigation change for the Chat / Vaults / Files / Settings shell."""
-        if index == 7:
-            routed_index = 1
-        elif index in {-1, 0}:
-            routed_index = 0
-        elif index == 3:
-            routed_index = 3
-        elif index in {1}:
-            routed_index = 1
-        elif index in {2, 4, 5, 6, 8, 9}:
-            routed_index = 2
-        else:
-            routed_index = 2
-
+        # Sequential indices: 0=Chat, 1=Vaults, 2=Files, 3=Settings
         if hasattr(self, "sidebar") and self.sidebar is not None:
-            self.sidebar.selected_index = routed_index
+            self.sidebar.selected_index = index
 
-        if routed_index == 0:
+        if index == 0:
             self._show_workspace_view()
-        elif routed_index == 1:
-            self._show_library_view()
-        elif routed_index == 3:
+        elif index == 1:
             self._show_vaults_view()
-        else:
+        elif index == 2:
+            self._show_library_view()
+        elif index == 3:
             if hasattr(self, "show_settings_hub"):
                 self.show_settings_hub()
             else:
@@ -8585,9 +8573,9 @@ class VaultApp:
 
         # Initialize sidebar
         if not hasattr(self, 'sidebar') or self.sidebar is None:
-            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=0)
+            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=2)
         else:
-            self.sidebar.selected_index = 0
+            self.sidebar.selected_index = 2
         sidebar_container = self.sidebar.build()
 
         self.page.add(ft.Row([sidebar_container, main_content], spacing=0, expand=True))
@@ -8737,7 +8725,7 @@ class VaultApp:
                     ),
                     padding=24,
                     bgcolor=LightTheme.BG_ELEVATED,
-                    border_radius=16,
+                    border_radius=12,
                     border=ft.border.all(1, LightTheme.BORDER_COLOR),
                 )
             )
@@ -8830,7 +8818,7 @@ class VaultApp:
                 ),
                 padding=24,
                 bgcolor=LightTheme.BG_ELEVATED,
-                border_radius=16,
+                border_radius=12,
                 border=ft.border.all(1, LightTheme.BORDER_COLOR),
             ),
             ft.Container(height=16),
@@ -8892,7 +8880,7 @@ class VaultApp:
                         ),
                         padding=20,
                         bgcolor=LightTheme.BG_ELEVATED,
-                        border_radius=16,
+                        border_radius=12,
                         border=ft.border.all(1, LightTheme.ACCENT_PRIMARY + "25" if is_active else LightTheme.BORDER_COLOR),
                     )
                 )
@@ -8960,9 +8948,9 @@ class VaultApp:
         )
 
         if not hasattr(self, 'sidebar') or self.sidebar is None:
-            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=1)
+            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=0)
         else:
-            self.sidebar.selected_index = 1
+            self.sidebar.selected_index = 0
         sidebar_container = self.sidebar.build()
 
         self.page.add(ft.Row([sidebar_container, main_content], spacing=0, expand=True))
@@ -9336,7 +9324,7 @@ class VaultApp:
                     ),
                     padding=24,
                     bgcolor=LightTheme.BG_ELEVATED,
-                    border_radius=16,
+                    border_radius=12,
                     border=ft.border.all(1, LightTheme.BORDER_COLOR),
                 )
             ]
@@ -9362,24 +9350,24 @@ class VaultApp:
                     ),
                     ft.Container(
                         content=ft.Column(content_items, scroll=ft.ScrollMode.AUTO, expand=True),
-                        padding=ft.padding.symmetric(horizontal=32, vertical=16),
-                        expand=True,
-                    ),
-                ],
-                expand=True,
-            ),
+                    padding=ft.padding.symmetric(horizontal=32, vertical=16),
+                    expand=True,
+                ),
+            ],
             expand=True,
-            bgcolor=LightTheme.BG_PRIMARY,
-        )
+        ),
+        expand=True,
+        bgcolor=LightTheme.BG_PRIMARY,
+    )
 
-        if not hasattr(self, 'sidebar') or self.sidebar is None:
-            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=2)
-        else:
-            self.sidebar.selected_index = 2
-        sidebar_container = self.sidebar.build()
+    if not hasattr(self, 'sidebar') or self.sidebar is None:
+        self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=3)
+    else:
+        self.sidebar.selected_index = 3
+    sidebar_container = self.sidebar.build()
 
-        self.page.add(ft.Row([sidebar_container, main_content], spacing=0, expand=True))
-        self.page.update()
+    self.page.add(ft.Row([sidebar_container, main_content], spacing=0, expand=True))
+    self.page.update()
 
     def _build_setup_content(self) -> list:
         """Build setup/configuration content."""
@@ -9804,7 +9792,7 @@ class VaultApp:
                 ),
                 padding=ft.padding.all(12),
                 border=ft.border.all(1, posture["color"] + "40"),
-                border_radius=10,
+                border_radius=12,
                 bgcolor=LightTheme.BG_ELEVATED,
             ),
             ft.Container(height=12),
@@ -9863,7 +9851,7 @@ class VaultApp:
                 ),
                 padding=16,
                 border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                border_radius=10,
+                border_radius=12,
                 bgcolor=LightTheme.BG_ELEVATED,
             ),
             ft.Container(height=12),
@@ -9925,7 +9913,7 @@ class VaultApp:
                 ),
                 padding=16,
                 border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                border_radius=10,
+                border_radius=12,
                 bgcolor=LightTheme.BG_ELEVATED,
             ),
             ft.Container(height=16),
@@ -9987,7 +9975,7 @@ class VaultApp:
                 ),
                 padding=16,
                 border=ft.border.all(1, LightTheme.BORDER_COLOR),
-                border_radius=10,
+                border_radius=12,
                 bgcolor=LightTheme.BG_ELEVATED,
             ),
             ft.Container(height=12),
@@ -10207,7 +10195,7 @@ class VaultApp:
                         content=ft.Text("All", size=12, color="white" if filter_granted == "all" else LightTheme.TEXT_PRIMARY),
                         padding=ft.padding.symmetric(horizontal=12, vertical=6),
                         bgcolor=LightTheme.ACCENT_PRIMARY if filter_granted == "all" else LightTheme.BG_ELEVATED,
-                        border_radius=16,
+                        border_radius=12,
                         border=ft.border.all(1, LightTheme.BORDER_COLOR),
                         on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted="all", filter_days=filter_days),
                     ),
@@ -10215,7 +10203,7 @@ class VaultApp:
                         content=ft.Text("Granted", size=12, color="white" if filter_granted == "granted" else LightTheme.ACCENT_SUCCESS),
                         padding=ft.padding.symmetric(horizontal=12, vertical=6),
                         bgcolor=LightTheme.ACCENT_SUCCESS if filter_granted == "granted" else LightTheme.BG_ELEVATED,
-                        border_radius=16,
+                        border_radius=12,
                         border=ft.border.all(1, LightTheme.BORDER_COLOR),
                         on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted="granted", filter_days=filter_days),
                     ),
@@ -10223,7 +10211,7 @@ class VaultApp:
                         content=ft.Text("Denied", size=12, color="white" if filter_granted == "denied" else LightTheme.ACCENT_ERROR),
                         padding=ft.padding.symmetric(horizontal=12, vertical=6),
                         bgcolor=LightTheme.ACCENT_ERROR if filter_granted == "denied" else LightTheme.BG_ELEVATED,
-                        border_radius=16,
+                        border_radius=12,
                         border=ft.border.all(1, LightTheme.BORDER_COLOR),
                         on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted="denied", filter_days=filter_days),
                     ),
@@ -10232,7 +10220,7 @@ class VaultApp:
                         content=ft.Text("Today", size=12, color="white" if filter_days == "today" else LightTheme.TEXT_PRIMARY),
                         padding=ft.padding.symmetric(horizontal=12, vertical=6),
                         bgcolor=LightTheme.ACCENT_PRIMARY if filter_days == "today" else LightTheme.BG_ELEVATED,
-                        border_radius=16,
+                        border_radius=12,
                         border=ft.border.all(1, LightTheme.BORDER_COLOR),
                         on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted=filter_granted, filter_days="today"),
                     ),
@@ -10240,7 +10228,7 @@ class VaultApp:
                         content=ft.Text("This Week", size=12, color="white" if filter_days == "week" else LightTheme.TEXT_PRIMARY),
                         padding=ft.padding.symmetric(horizontal=12, vertical=6),
                         bgcolor=LightTheme.ACCENT_PRIMARY if filter_days == "week" else LightTheme.BG_ELEVATED,
-                        border_radius=16,
+                        border_radius=12,
                         border=ft.border.all(1, LightTheme.BORDER_COLOR),
                         on_click=lambda e: self.show_activity_view(search_query=search_query, filter_granted=filter_granted, filter_days="week"),
                     ),
@@ -11660,7 +11648,7 @@ class VaultApp:
                             ),
                             width=40,
                             height=40,
-                            border_radius=10,
+                            border_radius=12,
                             bgcolor=LightTheme.ACCENT_SUCCESS,
                             alignment=ft.alignment.center,
                         ),

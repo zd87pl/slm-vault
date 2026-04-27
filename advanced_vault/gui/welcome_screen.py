@@ -89,7 +89,7 @@ class WelcomeScreen:
                                             style=ft.ButtonStyle(
                                                 bgcolor=LightTheme.ACCENT_PRIMARY,
                                                 color="white",
-                                                shape=ft.RoundedRectangleBorder(radius=10),
+                                                shape=ft.RoundedRectangleBorder(radius=12),
                                                 padding=ft.padding.symmetric(horizontal=26, vertical=14),
                                             ),
                                         ),
@@ -100,7 +100,7 @@ class WelcomeScreen:
                                             style=ft.ButtonStyle(
                                                 color=LightTheme.TEXT_PRIMARY,
                                                 side=ft.BorderSide(1, LightTheme.BORDER_COLOR),
-                                                shape=ft.RoundedRectangleBorder(radius=10),
+                                                shape=ft.RoundedRectangleBorder(radius=12),
                                             ),
                                         ),
                                         ft.TextButton(

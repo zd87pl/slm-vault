@@ -12,6 +12,11 @@ Designed to integrate with the existing Flet-based vault_app.py.
 """
 
 import flet as ft
+
+try:
+    from light_theme import LightTheme
+except ImportError:
+    from .light_theme import LightTheme
 import logging
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Callable
@@ -41,18 +46,6 @@ logger = logging.getLogger(__name__)
 
 
 # --- Color Palette (matches existing light theme) ---
-COLORS = {
-    "health": "#E53935",
-    "finance": "#43A047",
-    "legal": "#1E88E5",
-    "personal": "#8E24AA",
-    "primary": "#1565C0",
-    "surface": "#F5F5F5",
-    "on_surface": "#212121",
-    "success": "#2E7D32",
-    "warning": "#F9A825",
-    "error": "#C62828",
-}
 
 
 class VaultCategoryCard(ft.Card):
@@ -87,9 +80,9 @@ class VaultCategoryCard(ft.Card):
         # Status indicator
         status_colors = {
             "none": "#9E9E9E",
-            "training": COLORS["warning"],
-            "ready": COLORS["success"],
-            "error": COLORS["error"],
+            "training": LightTheme.ACCENT_WARNING,
+            "ready": LightTheme.ACCENT_SUCCESS,
+            "error": LightTheme.ACCENT_ERROR,
         }
         status_labels = {
             "none": "No adapter",
@@ -133,7 +126,7 @@ class VaultCategoryCard(ft.Card):
                     [
                         ft.Row(
                             [
-                                ft.Icon(ft.icons.DESCRIPTION, size=16, color="#616161"),
+                                ft.Icon(ft.Icons.DESCRIPTION, size=16, color="#616161"),
                                 ft.Text(
                                     f"{self.document_count} documents",
                                     size=13,
@@ -171,16 +164,16 @@ class VaultCategoryCard(ft.Card):
                     [
                         ft.ElevatedButton(
                             "Upload",
-                            icon=ft.icons.UPLOAD_FILE,
+                            icon=ft.Icons.UPLOAD_FILE,
                             on_click=self.on_upload,
                             style=ft.ButtonStyle(
-                                color=COLORS["on_surface"],
+                                color=LightTheme.TEXT_PRIMARY,
                                 bgcolor="#E0E0E0",
                             ),
                         ),
                         ft.ElevatedButton(
                             "Train AI",
-                            icon=ft.icons.MODEL_TRAINING,
+                            icon=ft.Icons.MODEL_TRAINING,
                             on_click=self.on_train,
                             style=ft.ButtonStyle(
                                 color="white",
@@ -230,12 +223,12 @@ class OnboardingFlow(ft.Column):
     
     def _build_welcome_step(self):
         self.controls.extend([
-            ft.Icon(ft.icons.SECURITY, size=64, color=COLORS["primary"]),
+            ft.Icon(ft.Icons.SECURITY, size=64, color=LightTheme.ACCENT_PRIMARY),
             ft.Text(
                 "Welcome to Enclave",
                 size=28,
                 weight=ft.FontWeight.BOLD,
-                color=COLORS["on_surface"],
+                color=LightTheme.TEXT_PRIMARY,
             ),
             ft.Text(
                 "Your personal AI that learns from your documents \u2014\n"
@@ -247,11 +240,11 @@ class OnboardingFlow(ft.Column):
             ft.Divider(height=24, color="transparent"),
             ft.ElevatedButton(
                 "Get Started",
-                icon=ft.icons.ARROW_FORWARD,
+                icon=ft.Icons.ARROW_FORWARD,
                 on_click=lambda _: self._next_step(),
                 style=ft.ButtonStyle(
                     color="white",
-                    bgcolor=COLORS["primary"],
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
                     padding=ft.padding.symmetric(horizontal=32, vertical=16),
                 ),
             ),
@@ -295,7 +288,7 @@ class OnboardingFlow(ft.Column):
                 disabled=len(self.selected_categories) == 0,
                 style=ft.ButtonStyle(
                     color="white",
-                    bgcolor=COLORS["primary"],
+                    bgcolor=LightTheme.ACCENT_PRIMARY,
                 ),
             ),
         ])
@@ -321,7 +314,7 @@ class OnboardingFlow(ft.Column):
             ft.Container(
                 content=ft.Column(
                     [
-                        ft.Icon(ft.icons.CLOUD_UPLOAD, size=48, color="#9E9E9E"),
+                        ft.Icon(ft.Icons.CLOUD_UPLOAD, size=48, color="#9E9E9E"),
                         ft.Text(
                             "Drag & drop files here",
                             size=16,
@@ -372,7 +365,7 @@ class OnboardingFlow(ft.Column):
             ft.Container(
                 content=ft.Column(
                     [
-                        ft.Icon(ft.icons.PSYCHOLOGY, size=48, color=COLORS["primary"]),
+                        ft.Icon(ft.Icons.PSYCHOLOGY, size=48, color=LightTheme.ACCENT_PRIMARY),
                         ft.Text(
                             "Estimated time: 5-15 minutes",
                             size=14,
@@ -401,11 +394,11 @@ class OnboardingFlow(ft.Column):
                     ),
                     ft.ElevatedButton(
                         "Train My AI",
-                        icon=ft.icons.MODEL_TRAINING,
+                        icon=ft.Icons.MODEL_TRAINING,
                         on_click=lambda _: self._start_training(),
                         style=ft.ButtonStyle(
                             color="white",
-                            bgcolor=COLORS["primary"],
+                            bgcolor=LightTheme.ACCENT_PRIMARY,
                         ),
                     ),
                 ],
@@ -415,7 +408,7 @@ class OnboardingFlow(ft.Column):
     
     def _build_complete_step(self):
         self.controls.extend([
-            ft.Icon(ft.icons.CHECK_CIRCLE, size=64, color=COLORS["success"]),
+            ft.Icon(ft.Icons.CHECK_CIRCLE, size=64, color=LightTheme.ACCENT_SUCCESS),
             ft.Text(
                 "Your Enclave is ready",
                 size=28,
@@ -431,11 +424,11 @@ class OnboardingFlow(ft.Column):
             ft.Divider(height=24, color="transparent"),
             ft.ElevatedButton(
                 "Start Chatting",
-                icon=ft.icons.CHAT,
+                icon=ft.Icons.CHAT,
                 on_click=lambda _: self._complete(),
                 style=ft.ButtonStyle(
                     color="white",
-                    bgcolor=COLORS["success"],
+                    bgcolor=LightTheme.ACCENT_SUCCESS,
                     padding=ft.padding.symmetric(horizontal=32, vertical=16),
                 ),
             ),
@@ -524,7 +517,7 @@ class OneClickTrainingPanel(ft.Column):
             ft.Container(
                 content=ft.Row(
                     [
-                        ft.Icon(ft.icons.SECURITY, size=20, color=COLORS["primary"]),
+                        ft.Icon(ft.Icons.SECURITY, size=20, color=LightTheme.ACCENT_PRIMARY),
                         ft.Text(
                             "Your documents never leave this device. Only encrypted learned weights are saved.",
                             size=12,
@@ -561,7 +554,7 @@ class OneClickTrainingPanel(ft.Column):
         
         return ft.ElevatedButton(
             f"Train {get_preset_for_category(self.category.id).name}",
-            icon=ft.icons.MODEL_TRAINING,
+            icon=ft.Icons.MODEL_TRAINING,
             on_click=self._on_train_click,
             disabled=not can_train,
             style=ft.ButtonStyle(
@@ -587,7 +580,7 @@ def _info_row(label: str, value: str) -> ft.Row:
     return ft.Row(
         [
             ft.Text(label, size=13, color="#9E9E9E", width=100),
-            ft.Text(value, size=13, color=COLORS["on_surface"], expand=True),
+            ft.Text(value, size=13, color=LightTheme.TEXT_PRIMARY, expand=True),
         ],
         spacing=8,
     )
@@ -619,7 +612,7 @@ class AdapterBackupPanel(ft.Column):
         for backup in backups:
             backup_list.append(
                 ft.ListTile(
-                    leading=ft.Icon(ft.icons.SHIELD, color=COLORS["primary"]),
+                    leading=ft.Icon(ft.Icons.SHIELD, color=LightTheme.ACCENT_PRIMARY),
                     title=ft.Text(backup["filename"]),
                     subtitle=ft.Text(
                         f"{backup['size'] // 1024} KB \u00b7 {backup['modified'][:10]}"
@@ -638,7 +631,7 @@ class AdapterBackupPanel(ft.Column):
                 ft.Container(
                     content=ft.Column(
                         [
-                            ft.Icon(ft.icons.BACKUP, size=48, color="#E0E0E0"),
+                            ft.Icon(ft.Icons.BACKUP, size=48, color="#E0E0E0"),
                             ft.Text(
                                 "No backups yet",
                                 size=16,
@@ -670,12 +663,12 @@ class AdapterBackupPanel(ft.Column):
                 [
                     ft.ElevatedButton(
                         "Export Adapter",
-                        icon=ft.icons.UPLOAD,
+                        icon=ft.Icons.UPLOAD,
                         on_click=lambda _: self.on_export() if self.on_export else None,
                     ),
                     ft.ElevatedButton(
                         "Import Adapter",
-                        icon=ft.icons.DOWNLOAD,
+                        icon=ft.Icons.DOWNLOAD,
                         on_click=lambda _: self.on_import() if self.on_import else None,
                     ),
                 ],
