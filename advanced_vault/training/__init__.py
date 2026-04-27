@@ -26,6 +26,11 @@ try:
         TRAIN_MODES,
     )
     from .document_dpo_pipeline import DocumentDPOPipeline, PreferencePair
+    from .grpo_rewards import (
+        register_enclave_rewards,
+        get_reward_function_names,
+        build_reward_combo,
+    )
     _ADVANCED_EXPORTS = [
         "MLXLoRABackend",
         "AdvancedTrainingConfig",
@@ -33,6 +38,9 @@ try:
         "TRAIN_MODES",
         "DocumentDPOPipeline",
         "PreferencePair",
+        "register_enclave_rewards",
+        "get_reward_function_names",
+        "build_reward_combo",
     ]
 except ImportError:
     _ADVANCED_EXPORTS = []

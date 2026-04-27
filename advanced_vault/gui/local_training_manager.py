@@ -171,6 +171,24 @@ class LocalTrainingManager:
                 progress_callback=_progress,
             )
         elif train_mode == "grpo":
+            # Auto-register Enclave reward functions if using default rewards
+            reward_functions = kwargs.get("reward_functions")
+            reward_functions_file = kwargs.get("reward_functions_file")
+            if not reward_functions and not reward_functions_file:
+                try:
+                    from advanced_vault.training.grpo_rewards import (
+                        register_enclave_rewards,
+                        build_reward_combo,
+                    )
+                    register_enclave_rewards()
+                    combo = build_reward_combo(kwargs.get("reward_combo", "rag_default"))
+                    reward_functions = ",".join(combo["functions"])
+                    kwargs["reward_functions"] = reward_functions
+                    kwargs["reward_weights"] = combo["weights"]
+                    logger.info(f"Auto-configured GRPO rewards: {reward_functions}")
+                except ImportError:
+                    logger.warning("Enclave reward functions not available for GRPO")
+
             result = trainer.train_grpo(
                 examples=examples,
                 adapter_name=adapter_name,

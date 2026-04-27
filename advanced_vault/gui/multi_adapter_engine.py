@@ -681,6 +681,47 @@ class MultiAdapterEngine:
         self._adapters_applied = False
         logger.info("Deactivated all adapters")
 
+    def save_reasoning_profile(
+        self,
+        reasoning_adapter: str,
+        knowledge_adapter: Optional[str] = None,
+        name: str = "reasoning",
+        description: str = "Reasoning-focused profile using GRPO-trained adapter",
+    ):
+        """
+        Create a reasoning profile optimized for GRPO-trained adapters.
+
+        This profile prioritizes the reasoning adapter for complex queries
+        while optionally blending in a knowledge adapter for factual grounding.
+
+        Args:
+            reasoning_adapter: Name of the GRPO-trained reasoning adapter
+            knowledge_adapter: Optional knowledge adapter for factual grounding
+            name: Profile name (default: "reasoning")
+            description: Profile description
+        """
+        adapters = {reasoning_adapter: 0.8}
+        keywords = [
+            "explain", "why", "how", "reason", "think", "analyze",
+            "compare", "evaluate", "step by step", "logic", "derive",
+            "what is the reasoning", "walk me through", "justify",
+        ]
+
+        if knowledge_adapter:
+            adapters[knowledge_adapter] = 0.2
+            keywords.extend([
+                "what is", "who is", "when", "where", "fact",
+                "document", "according to", "reference",
+            ])
+
+        self.save_profile(
+            name=name,
+            adapters=adapters,
+            description=description,
+            keywords=keywords,
+        )
+        logger.info(f"Saved reasoning profile '{name}' with adapter weights: {adapters}")
+
     def detect_context(self, query: str) -> Optional[str]:
         """
         Detect which profile best matches a query.
