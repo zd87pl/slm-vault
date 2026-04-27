@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import re
 import shutil
@@ -18,6 +19,7 @@ from advanced_vault.training import MLXTrainer, RAGIndex, TrainingExample
 from .adapter_packaging import package_adapter_file, write_adapter_key
 from .models import DEFAULT_SYSTEM_PROMPT, PrivateModelProfile, WDVAAdapterReference
 
+logger = logging.getLogger(__name__)
 
 LocalInferenceEngine = None
 MultiAdapterEngine = None
@@ -495,6 +497,15 @@ class PrivateModelSession:
             }
 
         prompt = self._build_prompt(question, context, include_history=include_history)
+
+        # Keyword-based adapter weight boosting (multi-adapter only)
+        if self._engine_kind == "multi" and self.profile.wdva_adapters:
+            boosted_weights = self._detect_and_boost_adapter_weights(question)
+            try:
+                engine.set_adapters(boosted_weights)
+            except Exception as boost_err:
+                logger.warning(f"Adapter weight boost failed: {boost_err}")
+
         try:
             answer = engine.generate(prompt=prompt, max_tokens=max_tokens, temperature=temperature)
         except Exception as exc:
@@ -676,6 +687,52 @@ class PrivateModelSession:
         self.history.append((question, answer.strip()))
         if len(self.history) > DEFAULT_HISTORY_TURNS:
             self.history = self.history[-DEFAULT_HISTORY_TURNS :]
+
+    def _detect_and_boost_adapter_weights(self, question: str) -> Dict[str, float]:
+        """
+        Detect which vault adapter best matches the query keywords and boost its weight.
+
+        Scores each adapter's keyword list against the query. If a match is found,
+        that adapter's weight is multiplied by BOOST_FACTOR (3x) and weights are
+        re-normalized so the matched adapter dominates the response style.
+        """
+        base_weights = self.manager._normalized_adapter_weights(self.profile)
+        if not self.profile.wdva_adapters or len(self.profile.wdva_adapters) < 2:
+            return base_weights
+
+        query_lower = question.lower()
+        best_adapter = None
+        best_score = 0
+
+        for adapter in self.profile.wdva_adapters:
+            if not adapter.keywords:
+                continue
+            score = sum(1 for kw in adapter.keywords if kw.lower() in query_lower)
+            if score > best_score:
+                best_score = score
+                best_adapter = adapter.name
+
+        if best_adapter is None or best_score == 0:
+            return base_weights
+
+        # Boost the matched adapter (3x) and renormalize
+        BOOST_FACTOR = 3.0
+        boosted = {}
+        total = 0.0
+        for name, weight in base_weights.items():
+            if name == best_adapter:
+                boosted[name] = weight * BOOST_FACTOR
+            else:
+                boosted[name] = weight
+            total += boosted[name]
+
+        if total > 0:
+            boosted = {k: v / total for k, v in boosted.items()}
+
+        logger.info(
+            f"Keyword boost: '{best_adapter}' matched ({best_score} hits) → weight {boosted.get(best_adapter, 0):.2f}"
+        )
+        return boosted
 
     def _iter_supported_files(self, paths: Sequence[str]) -> Iterable[Path]:
         for raw_path in paths:

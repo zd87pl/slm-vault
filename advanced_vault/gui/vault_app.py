@@ -2286,7 +2286,7 @@ class VaultApp:
         except Exception:
             system_prompt = ""
 
-        self.private_model_manager.attach_adapter(
+        self.private_model_manager.attach_wdva_adapter(
             profile_name=profile.name,
             adapter_name=f"{category_id}_vault",
             encrypted_path=str(encrypted_path),
