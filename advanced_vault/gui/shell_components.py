@@ -28,8 +28,10 @@ def build_button(
     icon: Optional[str] = None,
     on_click=None,
     disabled: bool = False,
+    padding=None,
 ) -> ft.ElevatedButton | ft.OutlinedButton | ft.TextButton:
     """Factory for consistently styled buttons."""
+    pad = padding or ft.padding.symmetric(horizontal=14, vertical=12)
     if variant == ButtonVariant.PRIMARY:
         return ft.ElevatedButton(
             label,
@@ -40,7 +42,7 @@ def build_button(
                 bgcolor=LightTheme.ACCENT_PRIMARY,
                 color="white",
                 shape=ft.RoundedRectangleBorder(radius=12),
-                padding=ft.padding.symmetric(horizontal=14, vertical=12),
+                padding=pad,
             ),
         )
     if variant == ButtonVariant.SECONDARY:
@@ -53,7 +55,7 @@ def build_button(
                 bgcolor=LightTheme.BG_HOVER,
                 color=LightTheme.TEXT_PRIMARY,
                 shape=ft.RoundedRectangleBorder(radius=12),
-                padding=ft.padding.symmetric(horizontal=14, vertical=12),
+                padding=pad,
             ),
         )
     if variant == ButtonVariant.OUTLINE:
@@ -65,7 +67,7 @@ def build_button(
             style=ft.ButtonStyle(
                 color=LightTheme.TEXT_PRIMARY,
                 shape=ft.RoundedRectangleBorder(radius=12),
-                padding=ft.padding.symmetric(horizontal=14, vertical=12),
+                padding=pad,
             ),
         )
     # GHOST
@@ -77,7 +79,7 @@ def build_button(
         style=ft.ButtonStyle(
             color=LightTheme.TEXT_PRIMARY,
             shape=ft.RoundedRectangleBorder(radius=12),
-            padding=ft.padding.symmetric(horizontal=14, vertical=12),
+            padding=pad,
         ),
     )
 

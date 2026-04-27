@@ -14,6 +14,15 @@ Designed to integrate with the existing Flet-based vault_app.py.
 import flet as ft
 
 try:
+    from shell_components import build_button, ButtonVariant
+except ImportError:
+    try:
+        from .shell_components import build_button, ButtonVariant
+    except ImportError:
+        build_button = None
+        ButtonVariant = None
+
+try:
     from light_theme import LightTheme
 except ImportError:
     from .light_theme import LightTheme
@@ -238,15 +247,12 @@ class OnboardingFlow(ft.Column):
                 text_align=ft.TextAlign.CENTER,
             ),
             ft.Divider(height=24, color="transparent"),
-            ft.ElevatedButton(
+            build_button(
                 "Get Started",
                 icon=ft.Icons.ARROW_FORWARD,
                 on_click=lambda _: self._next_step(),
-                style=ft.ButtonStyle(
-                    color="white",
-                    bgcolor=LightTheme.ACCENT_PRIMARY,
-                    padding=ft.padding.symmetric(horizontal=32, vertical=16),
-                ),
+                variant=ButtonVariant.PRIMARY,
+                padding=ft.padding.symmetric(horizontal=32, vertical=16),
             ),
         ])
     
@@ -282,14 +288,11 @@ class OnboardingFlow(ft.Column):
                 alignment=ft.WrapAlignment.CENTER,
             ),
             ft.Divider(height=24, color="transparent"),
-            ft.ElevatedButton(
+            build_button(
                 "Continue",
                 on_click=lambda _: self._next_step(),
                 disabled=len(self.selected_categories) == 0,
-                style=ft.ButtonStyle(
-                    color="white",
-                    bgcolor=LightTheme.ACCENT_PRIMARY,
-                ),
+                variant=ButtonVariant.PRIMARY,
             ),
         ])
     
@@ -388,18 +391,16 @@ class OnboardingFlow(ft.Column):
             ft.Divider(height=24, color="transparent"),
             ft.Row(
                 [
-                    ft.OutlinedButton(
+                    build_button(
                         "Skip",
                         on_click=lambda _: self._next_step(),
+                        variant=ButtonVariant.OUTLINE,
                     ),
-                    ft.ElevatedButton(
+                    build_button(
                         "Train My AI",
                         icon=ft.Icons.MODEL_TRAINING,
                         on_click=lambda _: self._start_training(),
-                        style=ft.ButtonStyle(
-                            color="white",
-                            bgcolor=LightTheme.ACCENT_PRIMARY,
-                        ),
+                        variant=ButtonVariant.PRIMARY,
                     ),
                 ],
                 spacing=12,

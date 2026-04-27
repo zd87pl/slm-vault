@@ -21,6 +21,15 @@ except ImportError:
     except ImportError:
         build_vaults_grid = None
 
+try:
+    from shell_components import build_button, ButtonVariant
+except ImportError:
+    try:
+        from .shell_components import build_button, ButtonVariant
+    except ImportError:
+        build_button = None
+        ButtonVariant = None
+
 
 def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> None:
     """Render the primary private chat workspace."""
@@ -408,11 +417,11 @@ def show_library_view(app: Any) -> None:
                     size=13,
                     color=LightTheme.TEXT_SECONDARY,
                 ),
-                ft.ElevatedButton(
+                build_button(
                     "Create Profile",
                     icon=ft.Icons.ADD_ROUNDED,
                     on_click=lambda e: app._open_create_profile_dialog(),
-                    style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                    variant=ButtonVariant.PRIMARY,
                 ),
                 ft.TextField(
                     hint_text="Search documents, adapters...",
@@ -535,11 +544,11 @@ def show_vaults_view(app: Any) -> None:
                     [
                         ft.Text("Vaults", size=24, weight=ft.FontWeight.W_700, color=LightTheme.TEXT_PRIMARY),
                         ft.Container(expand=True),
-                        ft.ElevatedButton(
+                        build_button(
                             "Upload Documents",
                             icon=ft.Icons.UPLOAD_FILE_ROUNDED,
                             on_click=lambda e: app._open_private_files_picker(),
-                            style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                            variant=ButtonVariant.PRIMARY,
                         ),
                     ],
                     alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
@@ -655,10 +664,10 @@ def show_connections_view(app: Any) -> None:
                         ),
                         ft.Row(
                             [
-                                ft.ElevatedButton(
+                                build_button(
                                     state_cta,
                                     on_click=lambda e, action=configure_action: action(),
-                                    style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white"),
+                                    variant=ButtonVariant.PRIMARY,
                                 ),
                                 ft.TextButton(
                                     "Revoke Access",
@@ -1132,9 +1141,9 @@ def show_security_view(app: Any) -> None:
                             ),
                             ft.Row(
                                 [
-                                    ft.ElevatedButton("Create Wallet", icon=ft.Icons.ADD_CARD_ROUNDED, on_click=lambda e: (app._ensure_demo_wallet_envelope(), app._show_security_view()), style=ft.ButtonStyle(bgcolor=LightTheme.ACCENT_PRIMARY, color="white")),
-                                    ft.OutlinedButton("$19 test", icon=ft.Icons.PLAY_ARROW_ROUNDED, on_click=lambda e: app._request_demo_wallet_purchase(19.0, "github.com", "Auto-approved demo spend")),
-                                    ft.OutlinedButton("$85 approval", icon=ft.Icons.HOURGLASS_TOP_ROUNDED, on_click=lambda e: app._request_demo_wallet_purchase(85.0, "openai.com", "Pending approval demo spend")),
+                                    build_button("Create Wallet", icon=ft.Icons.ADD_CARD_ROUNDED, on_click=lambda e: (app._ensure_demo_wallet_envelope(), app._show_security_view()), variant=ButtonVariant.PRIMARY),
+                                    build_button("$19 test", icon=ft.Icons.PLAY_ARROW_ROUNDED, on_click=lambda e: app._request_demo_wallet_purchase(19.0, "github.com", "Auto-approved demo spend"), variant=ButtonVariant.OUTLINE),
+                                    build_button("$85 approval", icon=ft.Icons.HOURGLASS_TOP_ROUNDED, on_click=lambda e: app._request_demo_wallet_purchase(85.0, "openai.com", "Pending approval demo spend"), variant=ButtonVariant.OUTLINE),
                                 ],
                                 spacing=10,
                                 wrap=True,

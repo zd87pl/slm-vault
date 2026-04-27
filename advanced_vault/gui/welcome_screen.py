@@ -6,6 +6,7 @@ import flet as ft
 
 from light_theme import LightTheme
 from localization import get_text
+from shell_components import build_button, ButtonVariant
 
 
 class WelcomeScreen:
@@ -82,31 +83,24 @@ class WelcomeScreen:
                                 ft.Container(height=28),
                                 ft.Row(
                                     [
-                                        ft.ElevatedButton(
+                                        build_button(
                                             self.t("onboarding.primary"),
                                             icon=ft.Icons.FILE_UPLOAD_ROUNDED,
                                             on_click=lambda e: self._run_step_action("add"),
-                                            style=ft.ButtonStyle(
-                                                bgcolor=LightTheme.ACCENT_PRIMARY,
-                                                color="white",
-                                                shape=ft.RoundedRectangleBorder(radius=12),
-                                                padding=ft.padding.symmetric(horizontal=26, vertical=14),
-                                            ),
+                                            variant=ButtonVariant.PRIMARY,
+                                            padding=ft.padding.symmetric(horizontal=26, vertical=14),
                                         ),
-                                        ft.OutlinedButton(
+                                        build_button(
                                             self.t("onboarding.add_sample"),
                                             icon=ft.Icons.AUTO_AWESOME_ROUNDED,
                                             on_click=self._on_add_sample,
-                                            style=ft.ButtonStyle(
-                                                color=LightTheme.TEXT_PRIMARY,
-                                                side=ft.BorderSide(1, LightTheme.BORDER_COLOR),
-                                                shape=ft.RoundedRectangleBorder(radius=12),
-                                            ),
+                                            variant=ButtonVariant.OUTLINE,
+                                            padding=ft.padding.symmetric(horizontal=26, vertical=14),
                                         ),
-                                        ft.TextButton(
+                                        build_button(
                                             self.t("onboarding.skip"),
                                             on_click=self._on_continue,
-                                            style=ft.ButtonStyle(color=LightTheme.TEXT_MUTED),
+                                            variant=ButtonVariant.GHOST,
                                         ),
                                     ],
                                     spacing=12,
