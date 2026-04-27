@@ -25,11 +25,14 @@ try:
         AdvancedTrainingResult,
         TRAIN_MODES,
     )
+    from .document_dpo_pipeline import DocumentDPOPipeline, PreferencePair
     _ADVANCED_EXPORTS = [
         "MLXLoRABackend",
         "AdvancedTrainingConfig",
         "AdvancedTrainingResult",
         "TRAIN_MODES",
+        "DocumentDPOPipeline",
+        "PreferencePair",
     ]
 except ImportError:
     _ADVANCED_EXPORTS = []
