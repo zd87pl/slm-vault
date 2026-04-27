@@ -287,7 +287,9 @@ class VaultApp:
             "training": {"status": "ready", "message": self.tr("settings.status.ready")},
             "qa": {"status": "checking", "message": self.tr("settings.status.checking")},  # checking, ready, installing, error
         }
-        # Flag to prevent infinite refresh loops
+        # Prosumer vault adapter training status (category_id -> none|training|ready|error)
+        self._vault_adapter_statuses: Dict[str, str] = {}
+        # Data Sheriff core and UI state
         self._refreshing_settings = False
         
         # Training view auto-refresh timer (for pending/training jobs)
@@ -2100,6 +2102,120 @@ class VaultApp:
         )
         self.page.update()
     
+    def _get_vault_documents_for_category(self, category_id: str) -> List[Dict[str, Any]]:
+        """Query vault entries tagged with a specific category."""
+        if not self.vault:
+            return []
+        try:
+            from advanced_vault.encrypted_kv import QueryFilter
+            query_filter = QueryFilter(tags=[category_id])
+            results = self.vault.kv_store.search(query_filter)
+            return [
+                {
+                    "service": r.service,
+                    "description": r.description or "",
+                    "tags": r.tags or [],
+                    "created_at": str(r.created_at),
+                }
+                for r in results
+            ]
+        except Exception as e:
+            logger.warning(f"Could not query vault for category '{category_id}': {e}")
+            return []
+
+    def _build_qa_pairs_from_documents(self, docs: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+        """Build simple QA pairs from document descriptions for training."""
+        qa_pairs = []
+        for doc in docs:
+            desc = doc.get("description", "")
+            if not desc:
+                continue
+            qa_pairs.append({
+                "question": "What information is contained in this document?",
+                "answer": desc[:800],
+            })
+            if len(desc) > 200:
+                qa_pairs.append({
+                    "question": "Summarize the key points from this record.",
+                    "answer": desc[:800],
+                })
+        return qa_pairs
+
+    def _train_vault_adapter(self, category_id: str):
+        """Train an adapter for a vault category using its documents."""
+        self._vault_adapter_statuses[category_id] = "training"
+        try:
+            docs = self._get_vault_documents_for_category(category_id)
+            if len(docs) < 3:
+                self._vault_adapter_statuses[category_id] = "error"
+                self._show_user_message(
+                    f"Need at least 3 documents in {category_id} vault to train.", level="warning"
+                )
+                return
+
+            # Prefer QAGenerator if available, otherwise build synthetic pairs
+            qa_pairs = []
+            if self.qa_generator:
+                for doc in docs:
+                    desc = doc.get("description", "")
+                    if len(desc) > 50:
+                        qa_pairs.append({
+                            "question": "What information is contained in this document?",
+                            "answer": desc[:800],
+                        })
+            if not qa_pairs:
+                qa_pairs = self._build_qa_pairs_from_documents(docs)
+
+            if not qa_pairs:
+                self._vault_adapter_statuses[category_id] = "error"
+                self._show_user_message("Could not generate training data from documents.", level="error")
+                return
+
+            def _progress(p: float, msg: str):
+                logger.info(f"[Vault {category_id}] {p:.0f}% - {msg}")
+
+            adapter_id, encryption_key_hex = self._train_document_locally(
+                filename=f"{category_id}_vault",
+                qa_pairs=qa_pairs,
+                progress_callback=_progress,
+            )
+
+            # Tag the adapter entry with category
+            self._store_or_update_knowledge_entry(
+                filename=f"{category_id}_adapter",
+                adapter_id=adapter_id,
+                tags=[
+                    "data_type:adapter",
+                    f"category_id:{category_id}",
+                    "training_mode:local",
+                    "training_status:completed",
+                ],
+                description=f"Trained adapter for {category_id} vault from {len(docs)} documents.",
+            )
+
+            self._vault_adapter_statuses[category_id] = "ready"
+            self._show_user_message(
+                f"{category_id.title()} vault AI trained successfully!", level="success"
+            )
+        except Exception as e:
+            logger.exception(f"Vault training failed for {category_id}: {e}")
+            self._vault_adapter_statuses[category_id] = "error"
+            self._show_user_message(
+                f"Training failed for {category_id} vault: {e}", level="error"
+            )
+
+    def _start_vault_training(self, category_id: str):
+        """Start vault adapter training in a background thread."""
+        def _run():
+            try:
+                self._train_vault_adapter(category_id)
+            except Exception as e:
+                logger.exception(f"Vault training thread failed: {e}")
+                self._vault_adapter_statuses[category_id] = "error"
+
+        self._show_user_message(f"Starting training for {category_id} vault...", level="info")
+        threading.Thread(target=_run, daemon=True, name=f"vault-train-{category_id}").start()
+
     def _add_sample_data(self):
         """Seed a lightweight demo workspace with sample private context."""
         try:

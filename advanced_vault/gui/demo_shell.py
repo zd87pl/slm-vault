@@ -499,11 +499,15 @@ def show_vaults_view(app: Any) -> None:
                 else:
                     category_counts["personal"] = category_counts.get("personal", 0) + 1
 
-        # Determine adapter status from wdva_adapters
+    # Determine adapter status from wdva_adapters + vault training status
         for profile in profiles:
             for adapter in profile.wdva_adapters:
                 cat = adapter.get("category_id", "personal")
                 adapter_statuses[cat] = "ready"
+        # Overlay prosumer vault adapter statuses
+        if hasattr(app, "_vault_adapter_statuses"):
+            for cat, status in app._vault_adapter_statuses.items():
+                adapter_statuses[cat] = status
     except Exception as e:
         import logging
         logging.getLogger(__name__).warning(f"Could not load vault stats: {e}")
@@ -515,9 +519,7 @@ def show_vaults_view(app: Any) -> None:
             category_counts=category_counts,
             adapter_statuses=adapter_statuses,
             on_upload=lambda cid: app._open_private_files_picker(),
-            on_train=lambda cid: app._show_user_message(
-                f"Training adapter for {cid} vault...", level="info"
-            ),
+            on_train=lambda cid: app._start_vault_training(cid),
         )
     else:
         vaults_grid = ft.Text(
