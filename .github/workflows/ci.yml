@@ -26,16 +26,16 @@ jobs:
         run: pip install ruff mypy
 
       - name: Ruff lint
-        run: ruff check advanced_vault/ --output-format=github
+        run: ruff check advanced_vault/ src/ --output-format=github
 
       - name: Ruff format check
-        run: ruff format --check advanced_vault/
+        run: ruff format --check advanced_vault/ src/
 
       - name: Mypy type check
         run: mypy advanced_vault/ --ignore-missing-imports
 
-  test:
-    name: Unit Tests
+  quick-test:
+    name: Quick Tests (no heavy deps)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,27 +45,21 @@ jobs:
           python-version: "3.11"
           cache: pip
 
-      - name: Install core dependencies
+      - name: Install core + dev deps
         run: |
           pip install -e ".[dev]"
-          # Install lightweight stubs for packages unavailable in CI
-          pip install flet --no-deps 2>/dev/null || true
 
-      - name: Run unit tests (non-GUI)
+      - name: Run fast unit tests
         run: |
-          pytest tests/ -v --tb=short \
-            --ignore=advanced_vault/gui/tests \
+          pytest tests/ advanced_vault/core/tests/ advanced_vault/encrypted_kv/tests/ \
+            advanced_vault/enclave_control/tests/ advanced_vault/mcp_server/tests/ \
+            advanced_vault/backend/tests/ \
+            -v --tb=short \
             --cov=advanced_vault \
             --cov-report=xml \
-            --cov-report=term-missing
-
-      - name: Run GUI tests (mock display)
-        run: |
-          # GUI tests use mocking so no display needed
-          pytest advanced_vault/gui/tests/ -v --tb=short \
-            -p no:warnings \
-            --timeout=30
-        continue-on-error: false
+            --cov-report=term-missing \
+            --timeout=60 \
+            -p no:warnings
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
@@ -73,6 +67,28 @@ jobs:
         with:
           files: coverage.xml
           fail_ci_if_error: false
+
+  gui-test:
+    name: GUI Tests (mock display)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -e ".[dev,gui]"
+
+      - name: Run GUI tests
+        run: |
+          pytest advanced_vault/gui/tests/ -v --tb=short \
+            -p no:warnings \
+            --timeout=30
+        continue-on-error: false
 
   security:
     name: Security Scan
@@ -87,15 +103,15 @@ jobs:
       - name: Install bandit
         run: pip install bandit[toml]
 
-      - name: Bandit security scan
+      - name: Bandit security scan (full codebase)
         run: |
-          bandit -r advanced_vault/ \
-            -x advanced_vault/gui/tests \
+          bandit -r advanced_vault/ src/ \
+            -x '**/tests/**' \
             --severity-level medium \
             --confidence-level medium \
             -f json -o bandit-report.json || true
-          bandit -r advanced_vault/ \
-            -x advanced_vault/gui/tests \
+          bandit -r advanced_vault/ src/ \
+            -x '**/tests/**' \
             --severity-level high \
             --confidence-level high
 

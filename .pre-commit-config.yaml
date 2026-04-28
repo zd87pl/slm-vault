@@ -8,7 +8,7 @@ repos:
     rev: v1.4.0
     hooks:
       - id: detect-secrets
-        args: ['--baseline', '.secrets.baseline']
+        args: ['--baseline', '.secrets.baseline', '--fail-on-unaudited']
         exclude: |
           (?x)^(
             .*test.*|
@@ -17,7 +17,7 @@ repos:
             .*fixture.*
           )$
 
-  # Alternative: gitleaks (faster, more patterns)
+  # GitLeaks - faster Go-based secret scanner (catches more patterns)
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.18.1
     hooks:
@@ -31,7 +31,7 @@ repos:
         args: [--fix, --exit-non-zero-on-fix]
       - id: ruff-format
 
-  # Check for large files
+  # General pre-commit checks
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v4.5.0
     hooks:
