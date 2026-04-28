@@ -150,10 +150,14 @@ class WDVAEncryptor:
             True if successful
         """
         if user_id in self.key_cache:
-            # Overwrite key memory with random data
-            key = self.key_cache[user_id]
-            for _ in range(3):  # Multiple passes
-                key = bytearray(os.urandom(len(key)))
+            # Overwrite key memory in-place with random data (multiple passes)
+            key_ref = self.key_cache[user_id]
+            for i in range(len(key_ref)):
+                key_ref[i] = 0
+            for _ in range(3):  # Multiple overwrite passes
+                random_bytes = os.urandom(len(key_ref))
+                for i in range(len(key_ref)):
+                    key_ref[i] = random_bytes[i] ^ key_ref[i]
 
             # Remove from cache
             del self.key_cache[user_id]

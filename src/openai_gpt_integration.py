@@ -134,7 +134,12 @@ class SecureGateway:
         self.redis_client = None
         self.encryption_key = Fernet.generate_key()
         self.cipher = Fernet(self.encryption_key)
-        self.jwt_secret = os.getenv("JWT_SECRET", "your-secret-key")
+        self.jwt_secret = os.getenv("JWT_SECRET")
+        if not self.jwt_secret:
+            raise ValueError(
+                "JWT_SECRET environment variable is required. "
+                "Generate a secure random secret: python -c 'import secrets; print(secrets.token_urlsafe(32))'"
+            )
 
     async def initialize(self):
         """Initialize Redis connection"""

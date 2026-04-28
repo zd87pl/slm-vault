@@ -92,7 +92,10 @@ class KeyManagement:
             self.master_key + user_id.encode()
         )
 
-        return Fernet.generate_key()  # In production, use derived key
+        # Fernet requires a url-safe base64-encoded 32-byte key.
+        # Encode the derived key so it is both deterministic and Fernet-compatible.
+        from base64 import urlsafe_b64encode
+        return urlsafe_b64encode(user_key)
 
     def rotate_keys(self, user_id: str) -> Tuple[bytes, bytes]:
         """Rotate user encryption keys"""

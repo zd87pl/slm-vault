@@ -10,6 +10,7 @@ from collections import OrderedDict
 from typing import Dict, Optional, Tuple, Any
 import hashlib
 import logging
+import os
 import time
 from .memory_security import secure_zero_dict, estimate_memory_cost
 
@@ -52,13 +53,17 @@ class AdapterCache:
         logger.info(f"Initialized AdapterCache with max_size={max_size}, "
                    f"max_memory_mb={max_memory_mb}")
 
-    def _compute_hash(self, adapter_path: str, encryption_key: bytes) -> str:
+    def _compute_hash(self, adapter_path: str, encryption_key: bytes, file_stat: Optional[Tuple[float, int]] = None) -> str:
         """
-        Compute unique hash for adapter + key combination.
+        Compute unique hash for adapter + key + file identity combination.
+
+        Including file modification time and size ensures cache invalidation
+        when the adapter file is replaced on disk while the server is running.
 
         Args:
             adapter_path: Path to encrypted adapter
             encryption_key: Encryption key
+            file_stat: Optional (mtime, size) tuple from os.stat
 
         Returns:
             SHA256 hash as hex string
@@ -66,6 +71,9 @@ class AdapterCache:
         hasher = hashlib.sha256()
         hasher.update(adapter_path.encode('utf-8'))
         hasher.update(encryption_key)
+        if file_stat:
+            hasher.update(str(file_stat[0]).encode('utf-8'))
+            hasher.update(str(file_stat[1]).encode('utf-8'))
         return hasher.hexdigest()
 
     def get(self, adapter_path: str, encryption_key: bytes) -> Optional[Dict[str, torch.Tensor]]:
@@ -79,7 +87,15 @@ class AdapterCache:
         Returns:
             Decrypted adapter weights if cached, None otherwise
         """
-        cache_key = self._compute_hash(adapter_path, encryption_key)
+        # Include file stat in cache key to detect replaced files
+        file_stat = None
+        try:
+            st = os.stat(adapter_path)
+            file_stat = (st.st_mtime, st.st_size)
+        except OSError:
+            pass
+
+        cache_key = self._compute_hash(adapter_path, encryption_key, file_stat)
 
         if cache_key in self.cache:
             # Cache hit - move to end (most recently used)
@@ -107,7 +123,15 @@ class AdapterCache:
             encryption_key: Encryption key
             weights: Decrypted adapter weights
         """
-        cache_key = self._compute_hash(adapter_path, encryption_key)
+        # Include file stat in cache key to detect replaced files
+        file_stat = None
+        try:
+            st = os.stat(adapter_path)
+            file_stat = (st.st_mtime, st.st_size)
+        except OSError:
+            pass
+
+        cache_key = self._compute_hash(adapter_path, encryption_key, file_stat)
 
         # Calculate memory cost
         size_bytes = estimate_memory_cost(weights)
@@ -169,7 +193,15 @@ class AdapterCache:
         Returns:
             True if adapter was cached and removed, False otherwise
         """
-        cache_key = self._compute_hash(adapter_path, encryption_key)
+        # Include file stat in cache key
+        file_stat = None
+        try:
+            st = os.stat(adapter_path)
+            file_stat = (st.st_mtime, st.st_size)
+        except OSError:
+            pass
+
+        cache_key = self._compute_hash(adapter_path, encryption_key, file_stat)
 
         if cache_key in self.cache:
             weights, _, size_bytes = self.cache.pop(cache_key)
@@ -232,7 +264,13 @@ class AdapterCache:
     def __contains__(self, key: Tuple[str, bytes]) -> bool:
         """Check if adapter is in cache."""
         adapter_path, encryption_key = key
-        cache_key = self._compute_hash(adapter_path, encryption_key)
+        file_stat = None
+        try:
+            st = os.stat(adapter_path)
+            file_stat = (st.st_mtime, st.st_size)
+        except OSError:
+            pass
+        cache_key = self._compute_hash(adapter_path, encryption_key, file_stat)
         return cache_key in self.cache
 
     def __del__(self):

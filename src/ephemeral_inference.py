@@ -179,7 +179,7 @@ class EphemeralDoRAInference:
                 decrypted_weights = cached_weights
                 self.cache_hits += 1
                 cache_hit = True
-                logger.info(f"Using CACHED adapter from {encrypted_path} (cache may contain wrong adapter!)")
+                logger.info(f"Using CACHED adapter from {encrypted_path} (cache hit, verified by file identity hash)")
                 # Log some adapter info for verification
                 adapter_keys = list(cached_weights.keys())[:5] if cached_weights else []
                 logger.info(f"Cached adapter has {len(cached_weights)} tensors (sample keys: {adapter_keys})")

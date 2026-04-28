@@ -165,9 +165,18 @@ class HybridVault:
 
         elif data_type == "knowledge":
             # Layer 2: Fuzzy knowledge
-            # For now, just acknowledge (full DoRA training in future)
-            logger.info(f"Knowledge stored (Layer 2 training not yet implemented)")
-            return "knowledge_pending"
+            # For now, store in Layer 1 KV store as a fallback until full DoRA training is implemented.
+            # This ensures knowledge entries are persisted and retrievable immediately.
+            service = service or "knowledge"
+            entry_id = self.kv_store.put(
+                service=service,
+                secret_value=content,
+                entry_type=EntryType.KNOWLEDGE,
+                tags=tags,
+                description=description
+            )
+            logger.info(f"Stored knowledge in Layer 1 fallback: {service} (entry: {entry_id})")
+            return entry_id
 
         else:
             raise ValueError(f"Unknown data_type: {data_type}")

@@ -18,6 +18,7 @@ class EntryType(Enum):
     PASSWORD = "password"
     TOKEN = "token"
     CREDENTIAL = "credential"
+    KNOWLEDGE = "knowledge"  # Fuzzy/knowledge entries (Layer 2 fallback)
     FOLDER = "folder"  # Folder with optional password protection
     OTHER = "other"
 

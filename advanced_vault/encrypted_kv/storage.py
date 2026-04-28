@@ -436,8 +436,14 @@ class EncryptedKVStore:
                     tag_set.update(row[0].split(','))
             tags = sorted(tag_set)
 
-            # Size
-            total_size = conn.execute("SELECT SUM(LENGTH(encrypted_data)) FROM encrypted_entries").fetchone()[0] or 0
+            # Compute total encrypted size directly from stored blobs
+            # Use actual byte-length of stored encrypted_data, not hex-encoded estimate
+            raw_size = conn.execute(
+                "SELECT COALESCE(SUM(LENGTH(encrypted_data)), 0) FROM encrypted_entries"
+            ).fetchone()[0]
+            # encrypted_data is stored as hex, so raw size ≈ 2× byte size.
+            # Report approximate unencoded byte count.
+            total_size = raw_size // 2 if raw_size > 0 else 0
 
             # Timestamps
             oldest = conn.execute("SELECT MIN(created_at) FROM encrypted_entries").fetchone()[0]
@@ -449,7 +455,7 @@ class EncryptedKVStore:
             entries_by_type=type_counts,
             services=services,
             tags=tags,
-            total_size_bytes=total_size // 2,  # Hex encoding doubles size
+            total_size_bytes=total_size,
             oldest_entry=datetime.fromisoformat(oldest) if oldest else None,
             newest_entry=datetime.fromisoformat(newest) if newest else None,
             last_accessed=datetime.fromisoformat(last_accessed) if last_accessed else None

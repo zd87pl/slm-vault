@@ -161,15 +161,15 @@ class EncryptedDoRAManager:
 
         # Step 7: Save to file
         output_path = Path(output_path)
-        # Create directory with world-readable permissions (755) so inference endpoint can access
+        # Create directory with owner-only permissions (700) — encrypted data should not be world-readable.
         output_path.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(output_path.parent, 0o755)  # rwxr-xr-x - readable by all users
-        
+        os.chmod(output_path.parent, 0o700)  # rwx------ owner only
+
         with open(output_path, 'w') as f:
             json.dump(encrypted_package, f, indent=2)
-        
-        # Set file permissions to world-readable (644) so inference endpoint can read
-        os.chmod(output_path, 0o644)  # rw-r--r-- - readable by all users
+
+        # Set file permissions to owner-only (600) — encrypted adapters are sensitive material.
+        os.chmod(output_path, 0o600)  # rw------- owner only
 
         logger.info(f"Encrypted adapter saved to {output_path}")
         return encrypted_package
