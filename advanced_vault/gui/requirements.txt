@@ -1,5 +1,10 @@
-# Enclave GUI Requirements
-# All packages listed here will be bundled into the macOS app bundle
+# Enclave GUI Requirements — macOS APP BUNDLE BUILDS ONLY
+#
+# This manifest is consumed when packaging the standalone .app
+# (make build-mac / enclave.spec). For a normal install use pyproject.toml:
+#     ./setup.sh              (recommended)
+#     pip install -e ".[mac]"
+# Note: pyproject uses `pypdf` (successor of PyPDF2); the code accepts both.
 
 # GUI Framework
 flet>=0.28.3

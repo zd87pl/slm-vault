@@ -24,7 +24,7 @@ class TestAdapterPresets:
         assert HEALTH_ADVISOR.category_id == "health"
         assert HEALTH_ADVISOR.training_method == TrainingMethod.DPO
         assert HEALTH_ADVISOR.require_disclaimer is True
-        assert "medical" in HEALTH_ADVISOR.safety_checks
+        assert "medical_disclaimer" in HEALTH_ADVISOR.safety_checks
         assert HEALTH_ADVISOR.lora_rank == 16
 
     def test_tax_assistant_preset(self):

@@ -61,7 +61,10 @@ class TestEndToEndFlow(unittest.TestCase):
                 self.assertTrue(query_result["rag_used"])
                 self.assertEqual(len(query_result["sources"]), 1)
                 self.assertEqual(query_result["sources"][0]["document"], "q3_report.pdf")
-                self.assertIn("4.2M", query_result["answer"])
+                # Without a local model the agent must fall back safely —
+                # never leaking raw document text into the answer.
+                self.assertEqual(query_result["model_used"], "no-model-safe-fallback")
+                self.assertNotIn("4.2M", query_result["answer"])
 
     def test_query_with_activity_logging(self):
         """Query through agent → activity is logged."""

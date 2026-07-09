@@ -19,8 +19,12 @@ jobs:
           fetch-depth: 0
 
       - name: Verify PR has description
+        # PR body is attacker-controlled — never interpolate it into the
+        # script; pass it through the environment instead.
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
-          if [ -z "${{ github.event.pull_request.body }}" ]; then
+          if [ -z "$PR_BODY" ]; then
             echo "::error::PR description is required. Please describe what this PR does and why."
             exit 1
           fi

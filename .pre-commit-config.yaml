@@ -23,13 +23,16 @@ repos:
     hooks:
       - id: gitleaks
 
-  # Python code quality
+  # Python code quality — correctness rules only, matching the CI gate.
+  # (Style/format rules stay advisory until the whole tree is migrated.)
   - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.1.9
+    rev: v0.15.0
     hooks:
       - id: ruff
-        args: [--fix, --exit-non-zero-on-fix]
-      - id: ruff-format
+        args:
+          - --fix
+          - --exit-non-zero-on-fix
+          - --select=F821,F811,F823,E9,F63,F7
 
   # General pre-commit checks
   - repo: https://github.com/pre-commit/pre-commit-hooks

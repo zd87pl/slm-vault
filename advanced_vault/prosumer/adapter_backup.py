@@ -95,7 +95,9 @@ class AdapterBackupManager:
     """Manages encrypted adapter backup, restore, and sharing."""
     
     def __init__(self, vault_path: str, cloud_provider: Optional[str] = None):
-        self.vault_path = Path(vault_path)
+        # expanduser so a default like "~/.vault" never creates a literal
+        # "~" directory in the current working directory
+        self.vault_path = Path(vault_path).expanduser()
         self.backup_path = self.vault_path / "backups"
         self.backup_path.mkdir(parents=True, exist_ok=True)
         

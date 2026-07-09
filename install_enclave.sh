@@ -1,5 +1,9 @@
 #!/bin/bash
 # Install Enclave.app to Applications folder
+#
+# NOTE: this script ships INSIDE the packaged distribution ZIP (see
+# scripts/package_for_distribution.sh) and expects a pre-built Enclave.app
+# next to it. Installing from source? Use ./setup.sh instead.
 
 set -e
 

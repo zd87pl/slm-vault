@@ -88,7 +88,8 @@ class TestDocumentDPOPipeline:
         """Mocked end-to-end test with fake model generation."""
         with tempfile.TemporaryDirectory() as tmp:
             # We need to mock the actual MLX load/generate inside the pipeline
-            with patch("advanced_vault.training.document_dpo_pipeline.generate") as mock_gen:
+            with patch.object(DocumentDPOPipeline, "_load_model"), \
+                 patch("advanced_vault.training.document_dpo_pipeline.generate") as mock_gen:
                 mock_gen.side_effect = [
                     "Rejected answer 1",  # rejected for Q1
                     "Rejected answer 2",  # rejected for Q2

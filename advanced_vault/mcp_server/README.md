@@ -1,6 +1,11 @@
-# Personal Vault MCP Server
+# Enclave MCP Server
 
-Model Context Protocol (MCP) server that exposes the Personal Vault to AI agents like Claude Desktop and Cursor.
+Model Context Protocol (MCP) server that exposes the Enclave vault to AI agents like Claude Desktop and Cursor.
+
+> **Fastest setup**: from the project root run `enclave mcp install` — it
+> detects Claude Desktop / Cursor, uses your venv's Python automatically, and
+> merges into the existing config without overwriting other servers. The
+> manual steps below are only needed for unusual setups.
 
 ## Features
 
@@ -12,10 +17,11 @@ Model Context Protocol (MCP) server that exposes the Personal Vault to AI agents
 
 ## Installation
 
-### 1. Install dependencies
+### 1. Install the package
 
 ```bash
-pip install mcp
+# From the repo root (installs the `enclave` CLI, MCP server, and deps)
+pip install -e .
 ```
 
 ### 2. Configure Claude Desktop
@@ -31,8 +37,8 @@ Add the vault server:
 ```json
 {
   "mcpServers": {
-    "personal-vault": {
-      "command": "python",
+    "enclave": {
+      "command": "/ABSOLUTE/PATH/TO/slm-vault/.venv/bin/python",
       "args": ["-m", "advanced_vault.mcp_server"],
       "env": {
         "VAULT_PATH": "/Users/YOUR_USERNAME/.vault"
@@ -42,7 +48,10 @@ Add the vault server:
 }
 ```
 
-**Important**: Replace `/Users/YOUR_USERNAME/.vault` with your actual home directory path.
+**Important**: use the absolute path to the Python inside the venv where you
+installed Enclave (a bare `python` is not on Claude Desktop's PATH), and
+replace `/Users/YOUR_USERNAME/.vault` with your actual home directory path.
+`enclave mcp config` prints this JSON with the right paths filled in.
 
 ### 3. Restart Claude Desktop
 
@@ -219,7 +228,7 @@ Claude: [calls vault_delete with service="github"]
 
 Make sure you're in the project directory:
 ```bash
-cd /path/to/slm-vault/.conductor/tianjin
+cd /path/to/slm-vault
 python -m advanced_vault.mcp_server
 ```
 

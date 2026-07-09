@@ -66,7 +66,13 @@ for directory in (HF_HOME_DIR, HF_HUB_CACHE_DIR, TRANSFORMERS_CACHE_DIR):
 os.environ.setdefault("HF_HOME", str(HF_HOME_DIR))
 os.environ.setdefault("HF_HUB_CACHE", str(HF_HUB_CACHE_DIR))
 os.environ.setdefault("TRANSFORMERS_CACHE", str(TRANSFORMERS_CACHE_DIR))
-os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+# Only enable the fast-download path when hf_transfer is actually installed —
+# huggingface_hub raises at download time if the flag is set without it.
+try:
+    import hf_transfer  # noqa: F401
+    os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
+except ImportError:
+    os.environ.pop("HF_HUB_ENABLE_HF_TRANSFER", None)
 
 
 def _ensure_fast_downloads():

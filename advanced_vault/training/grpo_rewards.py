@@ -160,14 +160,20 @@ def format_reward(
     if re.search(r"^\s*\d+\.\s+", completion, re.MULTILINE):
         score += 0.2
 
-    # Check for JSON structure
-    try:
-        stripped = completion.strip()
-        if stripped.startswith("{") and stripped.endswith("}"):
-            json.loads(stripped)
+    # Check for JSON structure — the whole completion or an embedded line
+    stripped = completion.strip()
+    json_candidates = [stripped] + [
+        line.strip() for line in completion.splitlines()
+    ]
+    for candidate in json_candidates:
+        if not (candidate.startswith("{") and candidate.endswith("}")):
+            continue
+        try:
+            json.loads(candidate)
             score += 0.4
-    except (json.JSONDecodeError, ValueError):
-        pass
+            break
+        except (json.JSONDecodeError, ValueError):
+            continue
 
     return min(1.0, score)
 

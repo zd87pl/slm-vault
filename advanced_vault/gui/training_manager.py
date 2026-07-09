@@ -118,7 +118,6 @@ class TrainingManager:
             # No expiry info, assume token might be expired if we get 401
             return False
         
-        import time
         # Refresh if token expires in < 60 seconds
         return time.time() >= (expires_at - 60)
     

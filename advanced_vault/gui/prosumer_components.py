@@ -105,19 +105,19 @@ class VaultCategoryCard(ft.Card):
                 ft.Row(
                     [
                         ft.Text(
-                            category.icon,
+                            self.category.icon,
                             size=32,
                         ),
                         ft.Column(
                             [
                                 ft.Text(
-                                    category.name,
+                                    self.category.name,
                                     size=18,
                                     weight=ft.FontWeight.BOLD,
-                                    color=category.color,
+                                    color=self.category.color,
                                 ),
                                 ft.Text(
-                                    category.description,
+                                    self.category.description,
                                     size=12,
                                     color="#616161",
                                     max_lines=2,
@@ -186,9 +186,9 @@ class VaultCategoryCard(ft.Card):
                             on_click=self.on_train,
                             style=ft.ButtonStyle(
                                 color="white",
-                                bgcolor=category.color,
+                                bgcolor=self.category.color,
                             ),
-                            disabled=self.document_count < category.min_documents_for_training,
+                            disabled=self.document_count < self.category.min_documents_for_training,
                         ),
                     ],
                     spacing=8,

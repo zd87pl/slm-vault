@@ -43,6 +43,10 @@ all: build
 # Development
 # ============================================================================
 
+# One-command setup for beta users (venv + platform-appropriate extras + doctor)
+quickstart:
+	./setup.sh
+
 install:
 	$(PIP) install -e .
 
@@ -180,12 +184,10 @@ msi: build-win
 mcp-server:
 	$(PYTHON) -m advanced_vault.mcp_server
 
-# Install MCP server config for Claude Desktop
+# Install MCP server config for Claude Desktop (merges into the existing
+# config at the correct per-platform path — never clobbers other servers)
 install-mcp:
-	@echo "Installing MCP server configuration..."
-	@mkdir -p ~/.config/claude/
-	@echo '{"mcpServers": {"enclave": {"command": "enclave-mcp"}}}' > ~/.config/claude/claude_desktop_config.json
-	@echo "MCP server configured. Restart Claude Desktop to use."
+	$(PYTHON) -m advanced_vault.cli mcp install
 
 # ============================================================================
 # Docker (for self-hosted deployment)

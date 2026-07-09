@@ -3,8 +3,9 @@
 ## 🚀 Fastest Way to Start
 
 ```bash
-# From project root
-./launch_gui.sh
+# From the project root (after ./setup.sh)
+source .venv/bin/activate
+enclave-gui
 ```
 
 That's it! The GUI will open in a new window.
@@ -94,12 +95,11 @@ When the app opens, you'll see:
 ### Package as Standalone App
 
 ```bash
-# Package as .app bundle
-./package_gui.sh
+# Package as .app bundle (from the project root)
+make build-mac
 
-# Result: Personal Vault.app
-# Move to Applications folder:
-mv "Personal Vault.app" /Applications/
+# Result: dist/Enclave.app — move it to Applications:
+mv dist/Enclave.app /Applications/
 ```
 
 Now you can:
@@ -110,7 +110,7 @@ Now you can:
 ### Run from Python Directly
 
 ```bash
-python3 advanced_vault/gui/vault_app.py
+python -m advanced_vault.gui.vault_app
 ```
 
 ### Use with CLI
@@ -119,10 +119,10 @@ The GUI shares the same vault as the CLI:
 
 ```bash
 # Add via CLI
-vault add-secret github ghp_abc123
+enclave add-secret github ghp_abc123
 
 # View in GUI - it will appear immediately!
-./launch_gui.sh
+enclave-gui
 ```
 
 ## 🐛 Troubleshooting
@@ -171,7 +171,7 @@ ls -la ~/.vault/
 ## 🔗 Integration
 
 The GUI integrates with:
-- ✅ CLI tool (`vault` command)
+- ✅ CLI tool (`enclave` command)
 - ✅ MCP Server (Claude Desktop integration)
 - 🚧 Web UI (coming soon)
 - 🚧 Multi-tenant backend (coming soon)

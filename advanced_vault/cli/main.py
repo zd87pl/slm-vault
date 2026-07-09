@@ -67,10 +67,10 @@ def cli(ctx, vault_path):
     Personal Vault CLI - Secure storage for secrets and knowledge
 
     Examples:
-        vault add secret stripe sk_live_ABC123 --tags payment
-        vault add note "Stripe setup documentation"
-        vault get stripe
-        vault list
+        enclave add secret stripe sk_live_ABC123 --tags payment
+        enclave add note "Stripe setup documentation"
+        enclave get stripe
+        enclave list
     """
     ctx.ensure_object(dict)
     ctx.obj['vault_path'] = vault_path
@@ -128,9 +128,9 @@ def add_secret(ctx, service, content, tags, description):
     Add a secret to the vault.
 
     Examples:
-        vault add-secret stripe sk_live_ABC123
-        vault add-secret stripe sk_live_ABC123 --tags payment,production
-        vault add-secret github ghp_token123 --description "GitHub PAT"
+        enclave add-secret stripe sk_live_ABC123
+        enclave add-secret stripe sk_live_ABC123 --tags payment,production
+        enclave add-secret github ghp_token123 --description "GitHub PAT"
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 
@@ -163,17 +163,19 @@ def add_note(ctx, content, tags, description):
     Add a knowledge note to the vault.
 
     Examples:
-        vault add-note "I chose Stripe for best webhook support"
-        vault add-note "Setup: Configure webhooks at dashboard.stripe.com" --tags stripe,setup
+        enclave add-note "I chose Stripe for best webhook support"
+        enclave add-note "Setup: Configure webhooks at dashboard.stripe.com" --tags stripe,setup
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 
     try:
-        # For Layer 1, we'll store as a note with a special service name
+        # For Layer 1, we'll store as a note with a unique service name
+        from uuid import uuid4
+
         entry_id = vault_cli.vault.store(
             content=content,
             data_type="secret",  # Using KV store for now
-            service=f"note_{entry_id[:8] if 'entry_id' in locals() else 'new'}",
+            service=f"note_{uuid4().hex[:8]}",
             tags=list(tags) if tags else [],
             description=description or "Knowledge note"
         )
@@ -194,8 +196,8 @@ def get(ctx, service):
     Get a secret by service name.
 
     Examples:
-        vault get stripe
-        vault get github
+        enclave get stripe
+        enclave get github
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 
@@ -222,10 +224,10 @@ def list_entries(ctx, tag, service, output_json):
     List all vault entries.
 
     Examples:
-        vault list
-        vault list --tag payment
-        vault list --service stripe
-        vault list --json
+        enclave list
+        enclave list --tag payment
+        enclave list --service stripe
+        enclave list --json
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 
@@ -280,7 +282,7 @@ def delete(ctx, service):
     Delete a secret by service name.
 
     Examples:
-        vault delete stripe
+        enclave delete stripe
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 
@@ -303,7 +305,7 @@ def stats(ctx):
     Show vault statistics.
 
     Examples:
-        vault stats
+        enclave stats
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 
@@ -334,8 +336,8 @@ def import_file(ctx, file, format):
     Import secrets from a file.
 
     Examples:
-        vault import secrets.json
-        vault import --format 1password export.json
+        enclave import secrets.json
+        enclave import --format 1password export.json
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 
@@ -380,7 +382,7 @@ def export(ctx, file, format):
     Export secrets to a file.
 
     Examples:
-        vault export secrets.json
+        enclave export secrets.json
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 
@@ -416,8 +418,8 @@ def query(ctx, query):
     Query the vault using natural language (Smart Router).
 
     Examples:
-        vault query "What's my Stripe API key?"
-        vault query "Why did I choose Stripe?"
+        enclave query "What's my Stripe API key?"
+        enclave query "Why did I choose Stripe?"
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 
@@ -535,11 +537,16 @@ def model_ingest(ctx, name, paths):
         sys.exit(1)
 
     manager = _get_model_manager(ctx.obj["vault_path"])
-    session = manager.open_session(name)
     try:
-        result = session.ingest_paths(paths)
-    finally:
-        session.close()
+        session = manager.open_session(name)
+        try:
+            result = session.ingest_paths(paths)
+        finally:
+            session.close()
+    except (ImportError, RuntimeError) as e:
+        click.echo(f"❌ Local model backend unavailable: {e}", err=True)
+        click.echo("   Run `enclave doctor` to see what is missing and how to install it.", err=True)
+        sys.exit(1)
 
     click.echo(f"✅ Added {result.added} documents")
     if result.skipped:
@@ -558,16 +565,21 @@ def model_ingest(ctx, name, paths):
 def model_chat(ctx, name, question, top_k, temperature, max_tokens):
     """Ask a Private Language Model a question."""
     manager = _get_model_manager(ctx.obj["vault_path"])
-    session = manager.open_session(name)
     try:
-        result = session.ask(
-            question=question,
-            top_k=top_k,
-            temperature=temperature,
-            max_tokens=max_tokens,
-        )
-    finally:
-        session.close()
+        session = manager.open_session(name)
+        try:
+            result = session.ask(
+                question=question,
+                top_k=top_k,
+                temperature=temperature,
+                max_tokens=max_tokens,
+            )
+        finally:
+            session.close()
+    except (ImportError, RuntimeError) as e:
+        click.echo(f"❌ Local model backend unavailable: {e}", err=True)
+        click.echo("   Run `enclave doctor` to see what is missing and how to install it.", err=True)
+        sys.exit(1)
 
     click.echo(f"\n🧠 {name}\n")
     click.echo(result["answer"])
@@ -590,7 +602,12 @@ def model_chat(ctx, name, question, top_k, temperature, max_tokens):
 def model_repl(ctx, name, top_k, temperature, max_tokens):
     """Start an interactive local chat session for a profile."""
     manager = _get_model_manager(ctx.obj["vault_path"])
-    session = manager.open_session(name)
+    try:
+        session = manager.open_session(name)
+    except (ImportError, RuntimeError) as e:
+        click.echo(f"❌ Local model backend unavailable: {e}", err=True)
+        click.echo("   Run `enclave doctor` to see what is missing and how to install it.", err=True)
+        sys.exit(1)
     click.echo("Type your question and press enter. Type 'exit' to quit.")
     try:
         while True:
@@ -1510,3 +1527,92 @@ def backup_verify(ctx, backup_path):
     else:
         click.echo(f"\n❌ Backup has issues")
         sys.exit(1)
+
+
+# ============================================================================
+# Environment doctor
+# ============================================================================
+
+@cli.command()
+@click.option('--json', 'as_json', is_flag=True, help='Machine-readable output')
+@click.pass_context
+def doctor(ctx, as_json):
+    """Check this machine for everything Enclave needs and print fixes."""
+    from advanced_vault.cli.doctor import print_report, run_checks
+
+    report = run_checks(vault_path=ctx.obj['vault_path'])
+    print_report(report, as_json=as_json)
+    if report.failures:
+        sys.exit(1)
+
+
+# ============================================================================
+# MCP client integration (Claude Desktop / Cursor)
+# ============================================================================
+
+@cli.group()
+def mcp():
+    """Connect Enclave to MCP clients like Claude Desktop and Cursor."""
+
+
+@mcp.command("install")
+@click.option('--target', type=click.Choice(['claude', 'cursor', 'all']), default='claude',
+              help='Which MCP client to configure')
+@click.pass_context
+def mcp_install(ctx, target):
+    """Register Enclave as an MCP server (merges into the existing config)."""
+    from advanced_vault.gui.mcp_setup import MCPSetupHelper
+
+    helper = MCPSetupHelper(vault_path=ctx.obj['vault_path'])
+
+    if target == 'all':
+        outcome = helper.auto_configure_all_clients()
+        for client, result in outcome['results'].items():
+            if result.get('success'):
+                click.echo(f"✅ {client}: configured ({result.get('config_path')})")
+            else:
+                click.echo(f"⚠️  {client}: {result.get('error')}")
+        if not outcome['success']:
+            sys.exit(1)
+        click.echo("\nRestart the configured app(s) to pick up the new MCP server.")
+        return
+
+    result = helper.auto_configure(target=target)
+    if result.get('success'):
+        click.echo(f"✅ {target.capitalize()} configured: {result.get('config_path')}")
+        click.echo(f"\nRestart {target.capitalize()} and ask it about your documents —")
+        click.echo("Enclave answers locally; your files never leave this machine.")
+    else:
+        click.echo(f"❌ {result.get('error')}")
+        click.echo("\nManual setup: run `enclave mcp config` and paste the JSON into your client's MCP config.")
+        sys.exit(1)
+
+
+@mcp.command("status")
+@click.pass_context
+def mcp_status(ctx):
+    """Show MCP client detection and configuration status."""
+    from advanced_vault.gui.mcp_setup import MCPSetupHelper
+
+    helper = MCPSetupHelper(vault_path=ctx.obj['vault_path'])
+    status = helper.get_setup_status()
+
+    for client, info in status['clients'].items():
+        installed = '✅ installed' if info['installed'] else '⚪ not detected'
+        configured = '✅ configured' if info['configured'] else '⚪ not configured'
+        click.echo(f"{client:10s} {installed:18s} {configured}")
+        if info.get('config_path'):
+            click.echo(f"{'':10s} config: {info['config_path']}")
+
+    ok, message = helper.test_mcp_server(use_cache=False)
+    click.echo(f"\nMCP server self-test: {'✅' if ok else '❌'} {message}")
+
+
+@mcp.command("config")
+@click.pass_context
+def mcp_config(ctx):
+    """Print the MCP server JSON for manual client configuration."""
+    from advanced_vault.gui.mcp_setup import MCPSetupHelper
+
+    helper = MCPSetupHelper(vault_path=ctx.obj['vault_path'])
+    click.echo(helper.get_config_json())

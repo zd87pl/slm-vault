@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+UTC = timezone.utc  # datetime.UTC alias needs 3.11+; project supports 3.10
 
 
 def _utcnow() -> str:

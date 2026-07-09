@@ -157,7 +157,7 @@ class TrainingQueue:
             on_item_completed: Callback when item completes successfully
             on_item_failed: Callback when item fails
         """
-        self.vault_path = Path(vault_path)
+        self.vault_path = Path(vault_path).expanduser()
         self.queue_dir = self.vault_path / "training_queue"
         self.queue_dir.mkdir(parents=True, exist_ok=True)
         

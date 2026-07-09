@@ -291,7 +291,6 @@ class MLXLoRABackend:
         Returns:
             AdvancedTrainingResult
         """
-        import time
 
         start_time = time.time()
         adapter_output = self.output_dir / adapter_name

@@ -36,6 +36,14 @@ try:
 except ImportError:
     logger.debug("MLX not available - MLX DoRA inference disabled")
 
+    class _MLXUnavailableModule:
+        """Stand-in base class so this module stays importable without MLX."""
+
+    class _NNShim:
+        Module = _MLXUnavailableModule
+
+    nn = _NNShim()
+
 # Check crypto availability
 CRYPTO_AVAILABLE = False
 try:

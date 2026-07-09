@@ -194,7 +194,6 @@ class TestAgentPermissionSerialization(unittest.TestCase):
 
         d = perm.to_dict()
         # Simulate JSON roundtrip
-        import json
         json_str = json.dumps(d)
         d2 = json.loads(json_str)
         restored = AgentPermission.from_dict(d2)

@@ -49,6 +49,19 @@ def _check_advanced_backend() -> bool:
         return False
 
 
+# Module-level handle to mlx_lm.generate. Bound lazily on first use so that
+# mlx_lm stays optional; unit tests patch this attribute directly.
+generate = None
+
+
+def _bind_generate():
+    global generate
+    if generate is None:
+        from mlx_lm import generate as _generate
+        generate = _generate
+    return generate
+
+
 class PreferencePair:
     """A single preference pair for DPO/ORPO training."""
 
@@ -151,7 +164,7 @@ class DocumentDPOPipeline:
             A deliberately inferior response
         """
         self._load_model()
-        from mlx_lm import generate
+        generate = _bind_generate()
 
         strategy = strategy or random.choice(self.REJECTION_STRATEGIES)
 
@@ -294,7 +307,7 @@ class DocumentDPOPipeline:
             List of PreferencePair objects
         """
         self._load_model()
-        from mlx_lm import generate
+        generate = _bind_generate()
 
         pairs: List[PreferencePair] = []
         total = len(chunks) * questions_per_chunk

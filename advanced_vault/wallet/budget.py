@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from fnmatch import fnmatch
 from typing import Iterable, Optional
 
 from .models import Envelope, WalletState
+
+UTC = timezone.utc  # datetime.UTC alias needs 3.11+; project supports 3.10
 
 
 @dataclass
