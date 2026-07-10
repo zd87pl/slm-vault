@@ -5792,8 +5792,22 @@ class VaultApp:
         if self.current_view == "connections_shell":
             self._show_connections_view()
 
-    def _render_primary_shell(self, active_index: int, content: ft.Control) -> None:
-        """Render the main investor-demo shell with the modern sidebar."""
+    def _render_primary_shell(
+        self,
+        active_index: int,
+        content: ft.Control,
+        fill: bool = False,
+    ) -> None:
+        """Render the main shell with the modern sidebar.
+
+        Args:
+            active_index: which sidebar destination is active.
+            content: the view content to render in the main pane.
+            fill: True for views that fill the viewport and manage their own
+                internal scrolling (e.g. the chat workspace, whose input bar is
+                pinned to the bottom). False wraps content in a scrollable
+                ListView for long, top-anchored pages (Vaults/Files/Settings).
+        """
         profile_status = self._get_private_model_status()
         document_count = int(profile_status.get("document_count", 0) or 0)
         if getattr(self, "vault_service", None) is not None:
@@ -5816,20 +5830,44 @@ class VaultApp:
             self.sidebar.translate = self.tr
             self.sidebar.document_count = document_count
         sidebar_container = self.sidebar.build()
+
+        if fill:
+            # Fill the viewport height; the view manages its own scrolling.
+            main_pane = ft.Container(
+                content=content,
+                expand=True,
+                bgcolor=LightTheme.BG_PRIMARY,
+            )
+        else:
+            # Scrollable page: center content to a comfortable max width so it
+            # doesn't stretch edge-to-edge on wide windows. ListView children
+            # fill the width, so a full-width row centers the capped container.
+            main_pane = ft.Container(
+                content=ft.ListView(
+                    controls=[
+                        ft.Row(
+                            [
+                                ft.Container(
+                                    content=content,
+                                    width=LightTheme.MAX_CONTENT_WIDTH,
+                                )
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                        )
+                    ],
+                    expand=True,
+                    spacing=0,
+                    padding=0,
+                ),
+                expand=True,
+                bgcolor=LightTheme.BG_PRIMARY,
+            )
+
         self.page.add(
             ft.Row(
                 [
                     sidebar_container,
-                    ft.Container(
-                        content=ft.ListView(
-                            controls=[content],
-                            expand=True,
-                            spacing=0,
-                            padding=0,
-                        ),
-                        expand=True,
-                        bgcolor=LightTheme.BG_PRIMARY,
-                    ),
+                    main_pane,
                 ],
                 spacing=0,
                 expand=True,
@@ -8609,6 +8647,7 @@ class VaultApp:
                         ft.Text(label, size=12, color=LightTheme.TEXT_PRIMARY if is_selected else LightTheme.TEXT_SECONDARY, weight=ft.FontWeight.W_600 if is_selected else ft.FontWeight.W_400),
                     ],
                     spacing=8,
+                    tight=True,  # hug content so the pill doesn't stretch full-width in a wrap
                 ),
                 padding=ft.padding.symmetric(horizontal=14, vertical=10),
                 bgcolor=LightTheme.ACCENT_PRIMARY + "10" if is_selected else LightTheme.BG_ELEVATED,
@@ -9375,6 +9414,7 @@ class VaultApp:
                         ft.Text(label, size=12, color=LightTheme.TEXT_PRIMARY if is_selected else LightTheme.TEXT_SECONDARY, weight=ft.FontWeight.W_600 if is_selected else ft.FontWeight.W_400),
                     ],
                     spacing=8,
+                    tight=True,  # hug content so the pill doesn't stretch full-width in a wrap
                 ),
                 padding=ft.padding.symmetric(horizontal=14, vertical=10),
                 bgcolor=LightTheme.ACCENT_PRIMARY + "10" if is_selected else LightTheme.BG_ELEVATED,
@@ -9416,31 +9456,41 @@ class VaultApp:
                 )
             ]
 
+        settings_column = ft.Column(
+            [
+                ft.Container(
+                    content=ft.Text("Security & Integrations", size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
+                    padding=ft.padding.only(left=32, top=24, bottom=8),
+                ),
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            filter_button("Security", "security", ft.Icons.GPP_GOOD_ROUNDED),
+                            filter_button("Integrations", "integrations", ft.Icons.CABLE_ROUNDED),
+                            filter_button("Advanced", "advanced", ft.Icons.TUNE_ROUNDED),
+                        ],
+                        spacing=10,
+                        wrap=True,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=32),
+                ),
+                ft.Container(
+                    content=ft.Column(content_items, scroll=ft.ScrollMode.AUTO, expand=True),
+                    padding=ft.padding.symmetric(horizontal=32, vertical=16),
+                    expand=True,
+                ),
+            ],
+            expand=True,
+        )
+
+        # Center to the same max width as the other primary screens. The Row's
+        # STRETCH cross-alignment lets the fixed-width column fill height while
+        # its width stays capped (setting expand=True would override width).
         main_content = ft.Container(
-            content=ft.Column(
-                [
-                    ft.Container(
-                        content=ft.Text("Security & Integrations", size=24, weight=ft.FontWeight.BOLD, color=LightTheme.TEXT_PRIMARY),
-                        padding=ft.padding.only(left=32, top=24, bottom=8),
-                    ),
-                    ft.Container(
-                        content=ft.Row(
-                            [
-                                filter_button("Security", "security", ft.Icons.GPP_GOOD_ROUNDED),
-                                filter_button("Integrations", "integrations", ft.Icons.CABLE_ROUNDED),
-                                filter_button("Advanced", "advanced", ft.Icons.TUNE_ROUNDED),
-                            ],
-                            spacing=10,
-                            wrap=True,
-                        ),
-                        padding=ft.padding.symmetric(horizontal=32),
-                    ),
-                    ft.Container(
-                        content=ft.Column(content_items, scroll=ft.ScrollMode.AUTO, expand=True),
-                        padding=ft.padding.symmetric(horizontal=32, vertical=16),
-                        expand=True,
-                    ),
-                ],
+            content=ft.Row(
+                [ft.Container(content=settings_column, width=LightTheme.MAX_CONTENT_WIDTH)],
+                alignment=ft.MainAxisAlignment.CENTER,
+                vertical_alignment=ft.CrossAxisAlignment.STRETCH,
                 expand=True,
             ),
             expand=True,

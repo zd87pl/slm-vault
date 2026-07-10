@@ -79,10 +79,12 @@ class VaultCategoryCard(ft.Card):
         super().__init__(
             content=ft.Container(
                 content=self._build_content(),
-                padding=16,
-                border_radius=12,
+                padding=18,
+                border_radius=14,
+                border=ft.border.all(1, LightTheme.BORDER_COLOR),
+                bgcolor=LightTheme.BG_ELEVATED,
             ),
-            elevation=2,
+            elevation=0,
         )
     
     def _build_content(self) -> ft.Column:
@@ -104,22 +106,28 @@ class VaultCategoryCard(ft.Card):
             [
                 ft.Row(
                     [
-                        ft.Text(
-                            self.category.icon,
-                            size=32,
+                        # Category color lives in the icon chip, not the whole
+                        # card — keeps the palette calm and on-brand.
+                        ft.Container(
+                            width=44,
+                            height=44,
+                            border_radius=12,
+                            bgcolor=f"{self.category.color}1a",
+                            alignment=ft.alignment.center,
+                            content=ft.Text(self.category.icon, size=24),
                         ),
                         ft.Column(
                             [
                                 ft.Text(
                                     self.category.name,
-                                    size=18,
-                                    weight=ft.FontWeight.BOLD,
-                                    color=self.category.color,
+                                    size=16,
+                                    weight=ft.FontWeight.W_600,
+                                    color=LightTheme.TEXT_PRIMARY,
                                 ),
                                 ft.Text(
                                     self.category.description,
                                     size=12,
-                                    color="#616161",
+                                    color=LightTheme.TEXT_MUTED,
                                     max_lines=2,
                                     overflow=ft.TextOverflow.ELLIPSIS,
                                 ),
@@ -129,6 +137,7 @@ class VaultCategoryCard(ft.Card):
                         ),
                     ],
                     spacing=12,
+                    vertical_alignment=ft.CrossAxisAlignment.START,
                 ),
                 ft.Divider(height=8, color="transparent"),
                 ft.Row(
@@ -177,7 +186,9 @@ class VaultCategoryCard(ft.Card):
                             on_click=self.on_upload,
                             style=ft.ButtonStyle(
                                 color=LightTheme.TEXT_PRIMARY,
-                                bgcolor="#E0E0E0",
+                                bgcolor=LightTheme.BG_HOVER,
+                                elevation=0,
+                                shape=ft.RoundedRectangleBorder(radius=10),
                             ),
                         ),
                         ft.ElevatedButton(
@@ -186,7 +197,9 @@ class VaultCategoryCard(ft.Card):
                             on_click=self.on_train,
                             style=ft.ButtonStyle(
                                 color="white",
-                                bgcolor=self.category.color,
+                                bgcolor=LightTheme.ACCENT_PRIMARY,
+                                elevation=0,
+                                shape=ft.RoundedRectangleBorder(radius=10),
                             ),
                             disabled=self.document_count < self.category.min_documents_for_training,
                         ),
@@ -227,8 +240,12 @@ class OnboardingFlow(ft.Column):
             self._build_training_step()
         elif self.current_step == 4:
             self._build_complete_step()
-        
-        self.update()
+
+        # Only push an update once the control is actually mounted. During
+        # __init__ the control isn't on the page yet, and calling update()
+        # then raises "Control must be added to the page first".
+        if self.page is not None:
+            self.update()
     
     def _build_welcome_step(self):
         self.controls.extend([

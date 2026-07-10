@@ -129,7 +129,7 @@ class ModernSidebar:
                                 color=LightTheme.TEXT_PRIMARY,
                             ),
                             ft.Text(
-                                self._tr("Local × Private"),
+                                self._tr("Local · Private"),
                                 size=10,
                                 color=LightTheme.TEXT_MUTED,
                             ),

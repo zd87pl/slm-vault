@@ -37,9 +37,13 @@ class LightTheme:
     TEXT_DISABLED = "#9ca3af"
     TEXT_LINK = "#0d7c8c"
     
-    # Borders (subtle, light)
-    BORDER_COLOR = "rgba(0, 0, 0, 0.08)"
-    BORDER_COLOR_HOVER = "rgba(0, 0, 0, 0.12)"
+    # Borders (subtle, light).
+    # NOTE: these MUST be solid hex, not rgba() strings. Flet's BorderSide does
+    # not parse rgba() and silently falls back to the theme accent (teal), and
+    # the `BORDER_COLOR + "12"` tint pattern used across the app only produces a
+    # valid 8-digit hex when the base is hex.
+    BORDER_COLOR = "#e6e7eb"
+    BORDER_COLOR_HOVER = "#d7d9df"
     BORDER_COLOR_ACTIVE = "#0d7c8c"
     
     # Glassmorphism (light theme version)
@@ -97,8 +101,14 @@ class LightTheme:
     
     CARD_PADDING = 16
     CARD_BORDER_RADIUS = 12
-    
+
     SIDEBAR_WIDTH = 240
+
+    # Max width for centered page content on wide windows (keeps dashboards
+    # readable instead of stretching edge-to-edge).
+    MAX_CONTENT_WIDTH = 1120
+    # Narrower cap for reading/conversation columns (chat).
+    MAX_READING_WIDTH = 760
     
     @staticmethod
     def get_gradient(colors, begin="top_left", end="bottom_right"):

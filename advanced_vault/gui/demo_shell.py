@@ -253,32 +253,51 @@ def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> Non
 
     chat_area = ft.Container(
         expand=True,
+        alignment=ft.alignment.top_center,
         padding=ft.padding.symmetric(horizontal=24, vertical=24),
-        content=ft.Stack(
-            [
-                ft.Container(expand=True, content=app.workspace_empty_state),
-                ft.Container(expand=True, content=chat_messages_list),
-            ],
+        content=ft.Container(
+            width=LightTheme.MAX_READING_WIDTH,
             expand=True,
+            content=ft.Stack(
+                [
+                    ft.Container(expand=True, content=app.workspace_empty_state),
+                    ft.Container(expand=True, content=chat_messages_list),
+                ],
+                expand=True,
+            ),
         ),
     )
 
     input_bar = ft.Container(
         padding=ft.padding.only(left=24, top=16, right=24, bottom=24),
-        border=ft.border.only(top=ft.BorderSide(1, "#e0e0e0")),
-        content=ft.Row(
-            [
-                chat_input,
-                send_button,
-            ],
-            spacing=12,
-            vertical_alignment=ft.CrossAxisAlignment.CENTER,
+        border=ft.border.only(top=ft.BorderSide(1, LightTheme.BORDER_COLOR)),
+        alignment=ft.alignment.center,
+        content=ft.Container(
+            width=LightTheme.MAX_READING_WIDTH,
+            content=ft.Row(
+                [
+                    chat_input,
+                    send_button,
+                ],
+                spacing=12,
+                vertical_alignment=ft.CrossAxisAlignment.CENTER,
+            ),
         ),
+    )
+
+    centered_setup_card = (
+        ft.Container(
+            alignment=ft.alignment.center,
+            padding=ft.padding.only(left=24, right=24, top=16),
+            content=ft.Container(width=LightTheme.MAX_READING_WIDTH, content=model_setup_card),
+        )
+        if model_setup_card is not None
+        else ft.Container()
     )
 
     content_controls: List[ft.Control] = [
         top_bar,
-        model_setup_card if model_setup_card is not None else ft.Container(),
+        centered_setup_card,
         chat_area,
         input_bar,
     ]
@@ -293,7 +312,7 @@ def show_workspace_view(app: Any, initial_question: Optional[str] = None) -> Non
         ),
     )
 
-    app._render_primary_shell(0, content)
+    app._render_primary_shell(0, content, fill=True)
 
     if initial_question:
         chat_input.value = initial_question

@@ -173,10 +173,25 @@ class TestWorkspaceDemo(unittest.TestCase):
             self.assertIn("Ask about your 1 file(s)...", strings)
             self.assertIn("Ask anything about your files", strings)
 
-    def test_primary_shell_wraps_content_in_scrollable_list(self) -> None:
+    def test_workspace_shell_fills_viewport(self) -> None:
+        # The chat workspace pins its input bar to the bottom, so the shell
+        # must fill the viewport (a plain expanding Container) rather than wrap
+        # content in a scrollable ListView that would collapse it to the top.
         with tempfile.TemporaryDirectory() as tmpdir:
             app, page = self._make_app(tmpdir)
             app.show_landing_page()
+
+            shell = page.controls[0]
+            content_panel = shell.controls[1]
+            self.assertIsInstance(content_panel, ft.Container)
+            self.assertTrue(content_panel.expand)
+            self.assertNotIsInstance(content_panel.content, ft.ListView)
+
+    def test_scrollable_shell_uses_centered_list(self) -> None:
+        # Long, top-anchored pages keep a scrollable ListView.
+        with tempfile.TemporaryDirectory() as tmpdir:
+            app, page = self._make_app(tmpdir)
+            app._render_primary_shell(1, ft.Text("content"), fill=False)
 
             shell = page.controls[0]
             content_panel = shell.controls[1]
