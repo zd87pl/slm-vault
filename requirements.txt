@@ -1,3 +1,12 @@
+# ============================================================================
+# LEGACY: cloud GPU training stack (RunPod Docker images only).
+#
+# Do NOT use this file for a local install. For the desktop app / MCP server
+# on your machine, use the extras in pyproject.toml instead:
+#     ./setup.sh            (recommended)
+#     pip install -e ".[mac]"
+# ============================================================================
+
 # Core ML/AI
 torch==2.1.0
 transformers==4.35.0

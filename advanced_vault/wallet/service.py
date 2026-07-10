@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -11,6 +11,8 @@ from .budget import BudgetEngine, BudgetEvaluation
 from .models import ApprovalDecision, Envelope, PurchaseRequest, Transaction, WalletState
 from .provider import MockWalletProvider, WalletProvider
 from .store import WalletStore
+
+UTC = timezone.utc  # datetime.UTC alias needs 3.11+; project supports 3.10
 
 
 @dataclass

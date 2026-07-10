@@ -22,7 +22,7 @@ class OllamaSetup:
     Handles automatic installation and setup of Ollama for OCR.
     """
     
-    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2-vision:1b"):
+    def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2-vision:11b"):
         """
         Initialize Ollama setup manager.
         
@@ -73,7 +73,7 @@ class OllamaSetup:
             return True
         
         if progress_callback:
-            progress_callback("Instalowanie Ollama...")
+            progress_callback("Installing Ollama...")
         
         logger.info("Installing Ollama...")
         
@@ -82,7 +82,7 @@ class OllamaSetup:
                 # Try Homebrew first (most common)
                 if shutil.which("brew"):
                     if progress_callback:
-                        progress_callback("Instalowanie przez Homebrew...")
+                        progress_callback("Installing via Homebrew...")
                     logger.info("Installing Ollama via Homebrew...")
                     result = subprocess.run(
                         ["brew", "install", "ollama"],
@@ -98,7 +98,7 @@ class OllamaSetup:
                 
                 # Fallback to curl script
                 if progress_callback:
-                    progress_callback("Instalowanie przez skrypt instalacyjny...")
+                    progress_callback("Installing via install script...")
                 logger.info("Installing Ollama via curl script...")
                 result = subprocess.run(
                     ["curl", "-fsSL", "https://ollama.com/install.sh"],
@@ -125,7 +125,7 @@ class OllamaSetup:
             elif self.system == "Linux":
                 # Use curl script for Linux
                 if progress_callback:
-                    progress_callback("Instalowanie przez skrypt instalacyjny...")
+                    progress_callback("Installing via install script...")
                 logger.info("Installing Ollama via curl script...")
                 result = subprocess.run(
                     ["curl", "-fsSL", "https://ollama.com/install.sh"],
@@ -162,7 +162,7 @@ class OllamaSetup:
         except Exception as e:
             logger.error(f"Error installing Ollama: {e}")
             if progress_callback:
-                progress_callback(f"Błąd instalacji: {str(e)}")
+                progress_callback(f"Installation error: {str(e)}")
             return False
     
     def start_ollama_server(self, progress_callback: Optional[Callable[[str], None]] = None) -> bool:
@@ -185,7 +185,7 @@ class OllamaSetup:
         
         try:
             if progress_callback:
-                progress_callback("Uruchamianie serwera Ollama...")
+                progress_callback("Starting Ollama server...")
             
             logger.info("Starting Ollama server...")
             # Start Ollama in background (non-blocking)
@@ -213,7 +213,7 @@ class OllamaSetup:
         except Exception as e:
             logger.error(f"Error starting Ollama server: {e}")
             if progress_callback:
-                progress_callback(f"Błąd uruchamiania serwera: {str(e)}")
+                progress_callback(f"Server start error: {str(e)}")
             return False
     
     def is_model_available(self) -> bool:
@@ -255,7 +255,7 @@ class OllamaSetup:
         if self.is_model_available():
             logger.info(f"Model {self.model} already available")
             if progress_callback:
-                progress_callback(f"Model {self.model} już dostępny", 100.0, None)
+                progress_callback(f"Model {self.model} already available", 100.0, None)
             return True
         
         if not self.is_ollama_running():
@@ -266,7 +266,7 @@ class OllamaSetup:
         
         try:
             if progress_callback:
-                progress_callback(f"Pobieranie modelu {self.model}...", 0.0, None)
+                progress_callback(f"Downloading model {self.model}...", 0.0, None)
             
             logger.info(f"Downloading model {self.model}...")
             
@@ -360,9 +360,9 @@ class OllamaSetup:
                             if status and progress_callback:
                                 if "pulling" in status.lower() or "downloading" in status.lower():
                                     if percent is not None:
-                                        message = f"Pobieranie: {percent:.1f}%"
+                                        message = f"Downloading: {percent:.1f}%"
                                     else:
-                                        message = f"Pobieranie: {status}"
+                                        message = f"Downloading: {status}"
                                 elif "verifying" in status.lower():
                                     message = f"Weryfikacja: {status}"
                                 elif "success" in status.lower() or "complete" in status.lower():
@@ -383,12 +383,12 @@ class OllamaSetup:
                 if self.is_model_available():
                     logger.info(f"Model {self.model} downloaded successfully")
                     if progress_callback:
-                        progress_callback(f"Model {self.model} pobrany pomyślnie", 100.0, None)
+                        progress_callback(f"Model {self.model} downloaded successfully", 100.0, None)
                     return True
                 else:
                     logger.warning(f"Model {self.model} downloaded but not available")
                     if progress_callback:
-                        progress_callback("Model pobrany, ale niedostępny", None, None)
+                        progress_callback("Model downloaded but not available", None, None)
                     return False
             else:
                 logger.error(f"Failed to download model: {response.status_code} {response.text}")
@@ -399,7 +399,7 @@ class OllamaSetup:
         except Exception as e:
             logger.error(f"Error downloading model: {e}")
             if progress_callback:
-                progress_callback(f"Błąd pobierania modelu: {str(e)}", None, None)
+                progress_callback(f"Model download error: {str(e)}", None, None)
             return False
     
     def setup_ollama(self, progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None) -> Tuple[bool, str]:

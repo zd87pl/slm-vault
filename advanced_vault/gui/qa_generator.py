@@ -209,12 +209,12 @@ class QAGenerator:
         if self.is_qa_model_available():
             logger.info("Q&A model already available")
             if progress_callback:
-                progress_callback("Q&A model już dostępny", 100.0, None)
+                progress_callback("Q&A model already available", 100.0, None)
             return True, "Q&A model already available"
         
         try:
             if progress_callback:
-                progress_callback(f"Pobieranie modelu {self.ollama_model}...", 0.0, None)
+                progress_callback(f"Downloading model {self.ollama_model}...", 0.0, None)
             
             logger.info(f"Downloading Q&A model {self.ollama_model}...")
             
@@ -291,7 +291,7 @@ class QAGenerator:
                             
                             # Update progress callback
                             if progress_callback:
-                                status_msg = status if status else f"Pobieranie {self.ollama_model}..."
+                                status_msg = status if status else f"Downloading {self.ollama_model}..."
                                 progress_callback(status_msg, percent, time_remaining)
                             
                             last_update_time = current_time
@@ -304,25 +304,25 @@ class QAGenerator:
                 time.sleep(2)  # Give Ollama time to register the model
                 if self.is_qa_model_available():
                     if progress_callback:
-                        progress_callback(f"Model {self.ollama_model} pobrany pomyślnie", 100.0, None)
+                        progress_callback(f"Model {self.ollama_model} downloaded successfully", 100.0, None)
                     logger.info(f"Model {self.ollama_model} downloaded successfully")
                     return True, f"Model {self.ollama_model} downloaded successfully"
                 else:
                     if progress_callback:
-                        progress_callback(f"Model pobrany, ale nie dostępny", None, None)
+                        progress_callback(f"Model downloaded but not available", None, None)
                     logger.warning(f"Model {self.ollama_model} downloaded but not available")
                     return False, f"Model downloaded but not available"
             else:
                 error_msg = f"Failed to download model: {response.status_code} {response.text}"
                 logger.error(error_msg)
                 if progress_callback:
-                    progress_callback(f"Błąd pobierania modelu: {response.status_code}", None, None)
+                    progress_callback(f"Model download error: {response.status_code}", None, None)
                 return False, error_msg
                 
         except Exception as e:
             logger.error(f"Error downloading Q&A model: {e}")
             if progress_callback:
-                progress_callback(f"Błąd pobierania modelu: {str(e)}", None, None)
+                progress_callback(f"Model download error: {str(e)}", None, None)
             return False, f"Error downloading model: {str(e)}"
     
     def get_qa_status(self) -> dict:

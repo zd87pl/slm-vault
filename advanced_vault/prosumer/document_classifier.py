@@ -110,11 +110,11 @@ class DocumentClassifier:
         except ImportError:
             logger.debug("DocumentClassifier: liteparse not available")
         
-        # Fallback to PyPDF2
+        # Fallback to pypdf (or legacy PyPDF2)
         try:
-            import PyPDF2
+            self._import_pypdf()
             self._text_extractors["pypdf2"] = self._extract_pdf_pypdf2
-            logger.info("DocumentClassifier: PyPDF2 backend available")
+            logger.info("DocumentClassifier: pypdf backend available")
         except ImportError:
             pass
         
@@ -394,12 +394,22 @@ class DocumentClassifier:
         
         return "", metadata
     
+    @staticmethod
+    def _import_pypdf():
+        """Import pypdf, falling back to legacy PyPDF2 (same PdfReader API)."""
+        try:
+            import pypdf
+            return pypdf
+        except ImportError:
+            import PyPDF2
+            return PyPDF2
+
     def _extract_pdf_pypdf2(self, path: Path, max_chars: int) -> str:
-        """Extract text using PyPDF2."""
-        import PyPDF2
+        """Extract text using pypdf (or legacy PyPDF2)."""
+        pypdf_mod = self._import_pypdf()
         text = ""
         with open(path, "rb") as f:
-            reader = PyPDF2.PdfReader(f)
+            reader = pypdf_mod.PdfReader(f)
             for page in reader.pages:
                 text += page.extract_text() + "\n"
                 if len(text) >= max_chars:

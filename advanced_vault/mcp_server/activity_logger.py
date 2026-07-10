@@ -126,7 +126,7 @@ class ActivityLogger:
 
     def _module_for_tool(self, tool_name: str) -> str:
         """Map tool names into shared control-plane modules."""
-        if tool_name.startswith("sheriff."):
+        if tool_name.startswith(("sheriff_", "sheriff.")):
             return "security"
         if tool_name in {
             "check_budget",

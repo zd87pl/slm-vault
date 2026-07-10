@@ -64,13 +64,11 @@ class VaultMCPServer:
         # Local Data Sheriff core: deny-by-default consent + lease controls
         self.sheriff = SheriffCore(vault_path=str(self.vault_path), runtime=self.runtime)
 
-        # API configuration (for LangChain tools)
-        # Can be set via environment variable or configured later
+        # Optional cloud API configuration (for langchain_* tools only).
+        # Privacy default: no baked-in third-party endpoint — cloud tools stay
+        # inert unless the user explicitly sets BOTH env vars.
         self.api_key = os.getenv("ENCLAVE_API_KEY")
-        self.api_base_url = os.getenv(
-            "ENCLAVE_API_BASE_URL",
-            "https://keen-curiosity-production-1288.up.railway.app"
-        )
+        self.api_base_url = os.getenv("ENCLAVE_API_BASE_URL")
 
         # Create MCP server
         self.server = Server("enclave-vault")
@@ -351,7 +349,7 @@ class VaultMCPServer:
                     }
                 ),
                 Tool(
-                    name="sheriff.request_access",
+                    name="sheriff_request_access",
                     description="Request access to a resource through Data Sheriff policy engine. Returns ALLOW_WITH_LEASE, PROMPT, or DENY.",
                     inputSchema={
                         "type": "object",
@@ -374,7 +372,7 @@ class VaultMCPServer:
                     }
                 ),
                 Tool(
-                    name="sheriff.read",
+                    name="sheriff_read",
                     description="Read a file only when a valid lease_id is provided. Content is redacted by default.",
                     inputSchema={
                         "type": "object",
@@ -397,7 +395,7 @@ class VaultMCPServer:
                     }
                 ),
                 Tool(
-                    name="sheriff.list_audit",
+                    name="sheriff_list_audit",
                     description="List recent Data Sheriff audit events with optional filters.",
                     inputSchema={
                         "type": "object",
@@ -424,7 +422,7 @@ class VaultMCPServer:
                     }
                 ),
                 Tool(
-                    name="sheriff.revoke",
+                    name="sheriff_revoke",
                     description="Immediately revoke an active lease by lease_id.",
                     inputSchema={
                         "type": "object",
@@ -438,7 +436,7 @@ class VaultMCPServer:
                     }
                 ),
                 Tool(
-                    name="sheriff.risk_summary",
+                    name="sheriff_risk_summary",
                     description="Run local risk scan and return classification summary + recommendations.",
                     inputSchema={
                         "type": "object",
@@ -457,7 +455,7 @@ class VaultMCPServer:
                     }
                 ),
                 Tool(
-                    name="sheriff.protect_now",
+                    name="sheriff_protect_now",
                     description="Create prompt-based protection rules for selected paths.",
                     inputSchema={
                         "type": "object",
@@ -472,7 +470,7 @@ class VaultMCPServer:
                     }
                 ),
                 Tool(
-                    name="sheriff.hardening_report",
+                    name="sheriff_hardening_report",
                     description="Inspect Claude/Cursor MCP configs and return hardening alerts.",
                     inputSchema={
                         "type": "object",
@@ -480,7 +478,7 @@ class VaultMCPServer:
                     }
                 ),
                 Tool(
-                    name="sheriff.enforcement_status",
+                    name="sheriff_enforcement_status",
                     description="Return status of system-level enforcement backend.",
                     inputSchema={
                         "type": "object",
@@ -606,24 +604,24 @@ class VaultMCPServer:
                     query_preview = f"Draft: {args.get('description', '')[:30]}"
                 elif name == "agent_status":
                     query_preview = "Check agent status"
-                elif name == "sheriff.request_access":
+                elif name == "sheriff_request_access":
                     purpose = args.get("purpose", "")
                     resource = args.get("resource", "")
                     query_preview = f"{purpose[:30]} -> {resource[:30]}"
-                elif name == "sheriff.read":
+                elif name == "sheriff_read":
                     query_preview = f"Read {args.get('resource', '')[:40]}"
-                elif name == "sheriff.list_audit":
+                elif name == "sheriff_list_audit":
                     query_preview = "List sheriff audit"
-                elif name == "sheriff.revoke":
+                elif name == "sheriff_revoke":
                     query_preview = f"Revoke lease {args.get('lease_id', '')[:18]}"
-                elif name == "sheriff.risk_summary":
+                elif name == "sheriff_risk_summary":
                     query_preview = "Run risk summary scan"
-                elif name == "sheriff.protect_now":
+                elif name == "sheriff_protect_now":
                     paths = args.get("paths", [])
                     query_preview = f"Protect {len(paths) if isinstance(paths, list) else 0} paths"
-                elif name == "sheriff.hardening_report":
+                elif name == "sheriff_hardening_report":
                     query_preview = "Run hardening report"
-                elif name == "sheriff.enforcement_status":
+                elif name == "sheriff_enforcement_status":
                     query_preview = "Check enforcement status"
                 elif name == "create_envelope":
                     query_preview = f"Create envelope {args.get('name', '')[:30]}"
@@ -670,7 +668,7 @@ class VaultMCPServer:
                         )
                     ]
 
-                if not name.startswith("sheriff."):
+                if not name.startswith("sheriff_"):
                     granted = self.consent_manager.request_consent(
                         tool_name=name,
                         query_preview=query_preview,
@@ -737,28 +735,28 @@ class VaultMCPServer:
                 elif name == "agent_status":
                     result = await self._handle_agent_status(args)
                     result_summary = "Retrieved agent status"
-                elif name == "sheriff.request_access":
+                elif name == "sheriff_request_access":
                     result = await self._handle_sheriff_request_access(args, app_identifier)
                     result_summary = f"Sheriff request_access for {args.get('resource', '')[:40]}"
-                elif name == "sheriff.read":
+                elif name == "sheriff_read":
                     result = await self._handle_sheriff_read(args, app_identifier)
                     result_summary = f"Sheriff read {args.get('resource', '')[:40]}"
-                elif name == "sheriff.list_audit":
+                elif name == "sheriff_list_audit":
                     result = await self._handle_sheriff_list_audit(args)
                     result_summary = "Sheriff audit listed"
-                elif name == "sheriff.revoke":
+                elif name == "sheriff_revoke":
                     result = await self._handle_sheriff_revoke(args)
                     result_summary = f"Sheriff lease revoked {args.get('lease_id', '')[:18]}"
-                elif name == "sheriff.risk_summary":
+                elif name == "sheriff_risk_summary":
                     result = await self._handle_sheriff_risk_summary(args)
                     result_summary = "Sheriff risk summary generated"
-                elif name == "sheriff.protect_now":
+                elif name == "sheriff_protect_now":
                     result = await self._handle_sheriff_protect_now(args)
                     result_summary = "Sheriff protection rules created"
-                elif name == "sheriff.hardening_report":
+                elif name == "sheriff_hardening_report":
                     result = await self._handle_sheriff_hardening_report(args)
                     result_summary = "Sheriff hardening report generated"
-                elif name == "sheriff.enforcement_status":
+                elif name == "sheriff_enforcement_status":
                     result = await self._handle_sheriff_enforcement_status(args)
                     result_summary = "Sheriff enforcement status checked"
                 elif name == "create_envelope":
@@ -940,10 +938,10 @@ class VaultMCPServer:
 
     async def _handle_langchain_get_secret(self, args: dict) -> Sequence[TextContent]:
         """Handle langchain_get_secret tool call."""
-        if not self.api_key:
+        if not self.api_key or not self.api_base_url:
             return [TextContent(
                 type="text",
-                text="❌ Error: Enclave API key not configured. Set ENCLAVE_API_KEY environment variable."
+                text="❌ Error: cloud API not configured. Set both ENCLAVE_API_KEY and ENCLAVE_API_BASE_URL environment variables."
             )]
 
         service = args.get("service")
@@ -1011,10 +1009,10 @@ class VaultMCPServer:
 
     async def _handle_langchain_query_knowledge(self, args: dict) -> Sequence[TextContent]:
         """Handle langchain_query_knowledge tool call."""
-        if not self.api_key:
+        if not self.api_key or not self.api_base_url:
             return [TextContent(
                 type="text",
-                text="❌ Error: Enclave API key not configured. Set ENCLAVE_API_KEY environment variable."
+                text="❌ Error: cloud API not configured. Set both ENCLAVE_API_KEY and ENCLAVE_API_BASE_URL environment variables."
             )]
 
         adapter_id = args.get("adapter_id")
@@ -1116,10 +1114,6 @@ class VaultMCPServer:
                 text="❌ Error: Question is required"
             )]
 
-    async def _handle_query_knowledge(self, args: dict) -> Sequence[TextContent]:
-        """Additive alias for the synthesized private knowledge query path."""
-        return await self._handle_agent_query(args)
-
         try:
             agent = self._get_agent()
             result = agent.query(
@@ -1154,6 +1148,10 @@ class VaultMCPServer:
                 type="text",
                 text=f"❌ Agent query failed: {str(e)}"
             )]
+
+    async def _handle_query_knowledge(self, args: dict) -> Sequence[TextContent]:
+        """Additive alias for the synthesized private knowledge query path."""
+        return await self._handle_agent_query(args)
 
     async def _handle_agent_summarize(self, args: dict) -> Sequence[TextContent]:
         """Handle agent_summarize tool call."""
@@ -1297,7 +1295,7 @@ class VaultMCPServer:
         # Bridge PROMPT decisions to existing OS consent flow for MCP agents.
         if result.decision == AccessDecision.PROMPT:
             granted = self.consent_manager.request_consent(
-                tool_name="sheriff.request_access",
+                tool_name="sheriff_request_access",
                 query_preview=f"{purpose[:30]} -> {resource[:40]}",
             )
             result = self.sheriff.consent_decide(
@@ -1518,7 +1516,7 @@ class VaultMCPServer:
 
     def _module_for_tool(self, tool_name: str) -> str:
         """Map public tool names to shared runtime module names."""
-        if tool_name.startswith("sheriff."):
+        if tool_name.startswith(("sheriff_", "sheriff.")):
             return "security"
         if tool_name in {
             "create_envelope",
@@ -1536,19 +1534,29 @@ class VaultMCPServer:
     def _update_runtime_module_status(self) -> None:
         """Refresh lightweight Vault + Wallet module snapshots."""
         try:
-            agent = self._get_agent()
-            agent_status = agent.get_status()
-            self.runtime.update_module_status(
-                "vault",
-                status="ready",
-                headline="Vault ready",
-                details={
-                    "document_count": agent_status.get("document_count", 0),
-                    "model_loaded": agent_status.get("model_loaded", False),
-                    "backend": agent_status.get("backend"),
-                    "document_names": [doc.get("name") for doc in agent_status.get("documents", [])[:5]],
-                },
-            )
+            if self._agent is not None:
+                agent_status = self._agent.get_status()
+                self.runtime.update_module_status(
+                    "vault",
+                    status="ready",
+                    headline="Vault ready",
+                    details={
+                        "document_count": agent_status.get("document_count", 0),
+                        "model_loaded": agent_status.get("model_loaded", False),
+                        "backend": agent_status.get("backend"),
+                        "document_names": [doc.get("name") for doc in agent_status.get("documents", [])[:5]],
+                    },
+                )
+            else:
+                # Don't force the vault/agent (and their ML models) to load
+                # just for a status snapshot — MCP clients expect the server
+                # to start fast, and the agent loads lazily on first use.
+                self.runtime.update_module_status(
+                    "vault",
+                    status="ready",
+                    headline="Vault ready",
+                    details={"lazy_initialized": True},
+                )
         except Exception:
             self.runtime.update_module_status("vault", status="warning", headline="Vault initialized with limited status")
 

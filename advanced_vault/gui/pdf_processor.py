@@ -18,7 +18,13 @@ import platform
 import subprocess
 from pathlib import Path
 from typing import Dict, List, Any, Optional, Callable, Tuple
-import PyPDF2
+
+try:
+    # pypdf is the maintained successor to PyPDF2 with the same PdfReader API
+    import pypdf as PyPDF2
+except ImportError:
+    import PyPDF2
+
 import requests
 
 from advanced_vault.parsing import extract_pdf_text, has_liteparse_backend, is_text_quality_good
@@ -151,7 +157,7 @@ def _install_smoldocling_dependencies(progress_callback: Optional[Callable[[str]
         ]
         
         if progress_callback:
-            progress_callback("Instalowanie zależności SmolDocling...")
+            progress_callback("Installing SmolDocling dependencies...")
         
         logger.info("Installing SmolDocling dependencies...")
         
@@ -168,7 +174,7 @@ def _install_smoldocling_dependencies(progress_callback: Optional[Callable[[str]
         
         for package in packages:
             if progress_callback:
-                progress_callback(f"Instalowanie {package}...")
+                progress_callback(f"Installing {package}...")
             logger.info(f"Installing {package}...")
             
             # Try installation with initial flags
@@ -222,7 +228,7 @@ def _install_smoldocling_dependencies(progress_callback: Optional[Callable[[str]
     except Exception as e:
         logger.error(f"Error installing SmolDocling dependencies: {e}")
         if progress_callback:
-            progress_callback(f"Błąd instalacji: {str(e)}")
+            progress_callback(f"Installation error: {str(e)}")
         return False
 
 
@@ -245,7 +251,8 @@ class PDFProcessor:
             progress_callback: Optional callback function(status_message) for setup progress updates
         """
         self.ollama_base_url = ollama_base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.ollama_model = ollama_model or os.getenv("OLLAMA_OCR_MODEL", "llama3.2-vision:1b")
+        # NOTE: llama3.2-vision ships in 11b/90b only; a "1b" tag does not exist
+        self.ollama_model = ollama_model or os.getenv("OLLAMA_OCR_MODEL", "llama3.2-vision:11b")
         self.ollama_setup = OllamaSetup(base_url=self.ollama_base_url, model=self.ollama_model)
 
         self.parser_backend_preference = os.getenv(

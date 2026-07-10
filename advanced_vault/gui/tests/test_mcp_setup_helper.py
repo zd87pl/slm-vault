@@ -14,26 +14,33 @@ from advanced_vault.gui.mcp_setup import MCPSetupHelper
 class TestMCPSetupHelper(unittest.TestCase):
     """Validate MCP setup behavior and backward compatibility."""
 
-    def test_generate_config_uses_sheriff_server(self):
+    def test_generate_config_uses_enclave_server(self):
         helper = MCPSetupHelper(vault_path="~/.vault")
         config = helper.generate_mcp_config()
         self.assertIn("mcpServers", config)
-        self.assertIn("sheriff", config["mcpServers"])
-        self.assertNotIn("enclave", config["mcpServers"])
+        self.assertIn("enclave", config["mcpServers"])
+        self.assertNotIn("sheriff", config["mcpServers"])
+
+    def test_generate_config_uses_running_interpreter(self):
+        import sys
+
+        helper = MCPSetupHelper(vault_path="~/.vault")
+        entry = helper.generate_mcp_server_entry()
+        self.assertEqual(entry["command"], sys.executable)
 
     def test_merge_migrates_legacy_server_names(self):
         helper = MCPSetupHelper(vault_path="~/.vault")
         existing = {
             "mcpServers": {
-                "enclave": {"command": "old"},
+                "sheriff": {"command": "old"},
                 "personal-vault": {"command": "older"},
                 "other": {"command": "keep"},
             }
         }
         merged = helper._merge_mcp_servers(existing, helper.generate_mcp_config())
-        self.assertIn("sheriff", merged["mcpServers"])
+        self.assertIn("enclave", merged["mcpServers"])
         self.assertIn("other", merged["mcpServers"])
-        self.assertNotIn("enclave", merged["mcpServers"])
+        self.assertNotIn("sheriff", merged["mcpServers"])
         self.assertNotIn("personal-vault", merged["mcpServers"])
 
     def test_auto_configure_claude_writes_config(self):
@@ -48,7 +55,7 @@ class TestMCPSetupHelper(unittest.TestCase):
             self.assertTrue(result.get("success"))
             self.assertTrue(config_path.exists())
             payload = json.loads(config_path.read_text())
-            self.assertIn("sheriff", payload.get("mcpServers", {}))
+            self.assertIn("enclave", payload.get("mcpServers", {}))
 
     def test_auto_configure_chatgpt_reports_unsupported(self):
         helper = MCPSetupHelper(vault_path="~/.vault")

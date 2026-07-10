@@ -123,7 +123,7 @@ To have the app start automatically on login:
 1. Save this as a script:
 ```bash
 #!/bin/bash
-cd /path/to/slm-vault/.conductor/tianjin
+cd /path/to/slm-vault
 python advanced_vault/macos_app/vault_app.py
 ```
 

@@ -18,17 +18,21 @@ from unittest.mock import patch
 # Add parent to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
-# Skip if PyPDF2 not available
+# Skip if no pypdf backend available
 try:
-    import PyPDF2
+    import pypdf  # noqa: F401
     PYPDF2_AVAILABLE = True
 except ImportError:
-    PYPDF2_AVAILABLE = False
+    try:
+        import PyPDF2  # noqa: F401
+        PYPDF2_AVAILABLE = True
+    except ImportError:
+        PYPDF2_AVAILABLE = False
 
 from advanced_vault.gui.pdf_processor import PDFProcessor
 
 
-@unittest.skipUnless(PYPDF2_AVAILABLE, "PyPDF2 not installed")
+@unittest.skipUnless(PYPDF2_AVAILABLE, "pypdf/PyPDF2 not installed")
 class TestPDFProcessor(unittest.TestCase):
     """Test PDF processor."""
     

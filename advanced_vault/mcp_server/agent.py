@@ -133,7 +133,10 @@ class LocalAgent:
                     cache_dir=str(self.vault_path / "models")
                 )
                 logger.info("Inference engine initialized")
-            except ImportError as e:
+            except (ImportError, RuntimeError) as e:
+                # RuntimeError: LocalInferenceEngine raises when no ML backend
+                # (mlx or torch) is installed — degrade to the safe fallback
+                # instead of crashing every agent_* tool.
                 logger.warning(f"Inference engine not available: {e}")
                 return None
         return self._inference_engine

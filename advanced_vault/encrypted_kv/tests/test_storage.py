@@ -377,18 +377,16 @@ class TestSecurity:
 
     def test_master_key_zeroed_on_close(self, temp_db):
         """Test that master key is cleared after close."""
-        # Use bytearray for mutable key (bytes are immutable)
         master_key = bytearray(os.urandom(32))
         key_copy = bytes(master_key)
 
         store = EncryptedKVStore(bytes(master_key), db_path=temp_db)
-
-        # Convert store's key to bytearray for testing
-        store.master_key = bytearray(store.master_key)
+        internal_key = store._master_key
         store.close()
 
-        # Master key should be zeroed (all zeros)
-        assert all(b == 0 for b in store.master_key) or store.master_key is None
+        # The store's key buffer must be zeroed in place and dropped
+        assert all(b == 0 for b in internal_key)
+        assert store._master_key is None
         # But our copy should still have the original value
         assert not all(b == 0 for b in key_copy)
 

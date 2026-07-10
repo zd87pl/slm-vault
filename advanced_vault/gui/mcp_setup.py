@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 class MCPSetupHelper:
     """Helper for setting up local MCP server integration."""
 
-    SERVER_NAME = "sheriff"
-    LEGACY_SERVER_NAMES = ("enclave", "personal-vault")
+    SERVER_NAME = "enclave"
+    LEGACY_SERVER_NAMES = ("sheriff", "personal-vault")
 
     def __init__(self, vault_path: str = "~/.vault"):
         self.vault_path = Path(vault_path).expanduser()
@@ -116,6 +116,15 @@ class MCPSetupHelper:
     # ---------- Config Generation ----------
 
     def get_python_path(self) -> str:
+        import sys
+
+        # Prefer the interpreter we are running in — it is the one that has
+        # advanced_vault and its dependencies installed (typically the venv
+        # created by setup.sh). A frozen app bundle can't be used this way,
+        # so fall back to system pythons in that case.
+        if not getattr(sys, "frozen", False) and sys.executable:
+            return sys.executable
+
         homebrew_python = "/opt/homebrew/bin/python3"
         if Path(homebrew_python).exists():
             return homebrew_python

@@ -69,10 +69,6 @@ class EncryptedKVStore:
     def _init_db(self):
         """Create database schema if not exists."""
         with sqlite3.connect(self.db_path) as conn:
-            # Check if folder column exists
-            cursor = conn.execute("PRAGMA table_info(encrypted_entries)")
-            columns = [column[1] for column in cursor.fetchall()]
-            
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS encrypted_entries (
                     id TEXT PRIMARY KEY,
@@ -89,8 +85,12 @@ class EncryptedKVStore:
                     version INTEGER DEFAULT 1
                 )
             """)
-            
-            # Add folder column if it doesn't exist (migration)
+
+            # Add folder column to databases created before it existed
+            # (checked after CREATE TABLE so fresh databases are seen with
+            # their final schema and no spurious migration runs)
+            cursor = conn.execute("PRAGMA table_info(encrypted_entries)")
+            columns = [column[1] for column in cursor.fetchall()]
             if "folder" not in columns:
                 try:
                     conn.execute("ALTER TABLE encrypted_entries ADD COLUMN folder TEXT")

@@ -21,6 +21,19 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Module-level handle to sentence_transformers.SentenceTransformer. Bound
+# lazily on first use so the heavy import stays optional at module import
+# time; unit tests patch this attribute directly.
+SentenceTransformer = None
+
+
+def _bind_sentence_transformer():
+    global SentenceTransformer
+    if SentenceTransformer is None:
+        from sentence_transformers import SentenceTransformer as _SentenceTransformer
+        SentenceTransformer = _SentenceTransformer
+    return SentenceTransformer
+
 # Default model - E5-small has 100% top-5 accuracy vs MiniLM's 56%
 # Research: https://supermemory.ai/blog/best-open-source-embedding-models-benchmarked
 DEFAULT_MODEL = "intfloat/e5-small-v2"
@@ -270,7 +283,7 @@ class EmbeddingEngine:
             return
 
         try:
-            from sentence_transformers import SentenceTransformer
+            sentence_transformer_cls = _bind_sentence_transformer()
 
             device = self._get_device()
 
@@ -278,7 +291,7 @@ class EmbeddingEngine:
             if self.cache_dir:
                 model_kwargs["cache_folder"] = str(self.cache_dir)
 
-            self._model = SentenceTransformer(
+            self._model = sentence_transformer_cls(
                 self.model_name,
                 device=device,
                 **model_kwargs

@@ -53,7 +53,10 @@ class TestRAGToAgentPipeline(unittest.TestCase):
                     self.assertTrue(query_result["rag_used"])
                     self.assertEqual(len(query_result["sources"]), 1)
                     self.assertEqual(query_result["sources"][0]["document"], "python_guide.pdf")
-                    self.assertIn("Python", query_result["answer"])
+                    # Without a local model the agent must fall back safely —
+                    # never leaking raw chunk text into the answer.
+                    self.assertEqual(query_result["model_used"], "no-model-safe-fallback")
+                    self.assertNotIn("versatile programming language", query_result["answer"])
 
     def test_summarize_with_matching_document(self):
         """Summarize finds and uses matching document."""
@@ -73,9 +76,12 @@ class TestRAGToAgentPipeline(unittest.TestCase):
                     agent = LocalAgent(vault_path=tmpdir)
                     result = agent.summarize("report")
 
-                    self.assertIsNone(result.get("error"))
+                    # Without a local model, the summary is withheld rather
+                    # than echoing raw document text back to the caller.
+                    self.assertIn("Summary withheld", result.get("error", ""))
                     self.assertEqual(len(result["sources"]), 1)
                     self.assertIn("report.pdf", result["sources"][0]["document"])
+                    self.assertNotIn("4.2M", str(result.get("summary", "")))
 
     def test_agent_status_reflects_rag(self):
         """Agent status includes RAG index statistics."""

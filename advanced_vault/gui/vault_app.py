@@ -946,9 +946,10 @@ class VaultApp:
                 self._run_on_ui_thread(on_success)
             except Exception as exc:
                 self._private_model_note = f"Ingest failed for {profile.name}: {exc}"
+                error_text = f"Could not index files into {profile.name}: {exc}"
                 self._run_on_ui_thread(
                     lambda: self._show_user_message(
-                        f"Could not index files into {profile.name}: {exc}",
+                        error_text,
                         level="error",
                     )
                 )
@@ -4681,6 +4682,92 @@ class VaultApp:
         return
 
         # === LEGACY CODE (unreachable, kept for reference during transition) ===
+        # Get trained adapters with their info
+        trained_adapters = []
+        try:
+            for entry in all_entries:
+                if entry.tags:
+                    adapter_id = None
+                    encryption_key = None
+                    status = None
+                    for tag in entry.tags:
+                        if tag.startswith("training_status:"):
+                            status = tag.split(":", 1)[1]
+                        elif tag.startswith("training_job:"):
+                            adapter_id = tag.split(":", 1)[1]
+                        elif tag.startswith("training_key:"):
+                            encryption_key = tag.split(":", 1)[1]
+
+                    if status == "completed" and adapter_id:
+                        trained_adapters.append({
+                            "name": entry.service,
+                            "adapter_id": adapter_id,
+                            "encryption_key": encryption_key
+                        })
+
+            adapter_count = len(trained_adapters)
+        except Exception as e:
+            logger.warning(f"Error getting trained adapters: {e}")
+            adapter_count = 0
+            trained_adapters = []
+
+        # User info
+        user_email = "User"
+        if self.session_data:
+            user_info = self.session_data.get("user", {})
+            user_email = user_info.get("email") or self.session_data.get("user_email") or self.session_data.get("email") or "User"
+
+        user_first_name = user_email.split("@")[0].split(".")[0].capitalize() if "@" in user_email else user_email
+
+        # Backend connected
+        backend_connected = self.backend_status == "connected"
+
+        # MCP configured (Claude Desktop integration)
+        mcp_configured = False
+        try:
+            if hasattr(self, 'mcp_setup') and self.mcp_setup:
+                mcp_status = self.mcp_setup.get_setup_status()
+                mcp_configured = mcp_status.get("mcp_configured", False)
+        except Exception as e:
+            logger.debug(f"Could not check MCP status: {e}")
+
+        # Get time-based greeting
+        hour = datetime.now().hour
+        if hour < 12:
+            greeting = "Good morning"
+        elif hour < 17:
+            greeting = "Good afternoon"
+        else:
+            greeting = "Good evening"
+
+        # Recent chats from history
+        recent_questions = self._get_recent_questions(8)
+        chat_history_items = []
+
+        for q in recent_questions:
+            chat_history_items.append(
+                ft.Container(
+                    content=ft.Row(
+                        [
+                            ft.Icon(ft.Icons.CHAT_BUBBLE_OUTLINE_ROUNDED, size=14, color=LightTheme.TEXT_MUTED),
+                            ft.Text(
+                                q.get("question", "")[:30] + ("..." if len(q.get("question", "")) > 30 else ""),
+                                size=12,
+                                color=LightTheme.TEXT_PRIMARY,
+                                overflow=ft.TextOverflow.ELLIPSIS,
+                                expand=True,
+                            ),
+                        ],
+                        spacing=8,
+                    ),
+                    padding=ft.padding.symmetric(horizontal=12, vertical=8),
+                    border_radius=8,
+                    on_hover=lambda e: setattr(e.control, 'bgcolor', LightTheme.BG_HOVER if e.data == "true" else "transparent"),
+                    on_click=lambda e, question=q.get("question", ""): self._quick_ask(question, trained_adapters),
+                    ink=True,
+                )
+            )
+
         doc_items = []
         for filename, status_info in self.processing_documents.items():
             if status_info.get("status") == "processing":
@@ -9350,24 +9437,24 @@ class VaultApp:
                     ),
                     ft.Container(
                         content=ft.Column(content_items, scroll=ft.ScrollMode.AUTO, expand=True),
-                    padding=ft.padding.symmetric(horizontal=32, vertical=16),
-                    expand=True,
-                ),
-            ],
+                        padding=ft.padding.symmetric(horizontal=32, vertical=16),
+                        expand=True,
+                    ),
+                ],
+                expand=True,
+            ),
             expand=True,
-        ),
-        expand=True,
-        bgcolor=LightTheme.BG_PRIMARY,
-    )
+            bgcolor=LightTheme.BG_PRIMARY,
+        )
 
-    if not hasattr(self, 'sidebar') or self.sidebar is None:
-        self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=3)
-    else:
-        self.sidebar.selected_index = 3
-    sidebar_container = self.sidebar.build()
+        if not hasattr(self, 'sidebar') or self.sidebar is None:
+            self.sidebar = ModernSidebar(on_nav_change=self.on_nav_change, selected_index=3)
+        else:
+            self.sidebar.selected_index = 3
+        sidebar_container = self.sidebar.build()
 
-    self.page.add(ft.Row([sidebar_container, main_content], spacing=0, expand=True))
-    self.page.update()
+        self.page.add(ft.Row([sidebar_container, main_content], spacing=0, expand=True))
+        self.page.update()
 
     def _build_setup_content(self) -> list:
         """Build setup/configuration content."""
@@ -13551,12 +13638,13 @@ class VaultApp:
                     
                 except Exception as ex:
                     logger.error(f"Demo query error: {ex}")
+                    error_msg = f"Error: {str(ex)}"
                     def show_error():
                         loading_indicator.visible = False
                         query_field.disabled = False
                         submit_button.disabled = False
                         mode_dropdown.disabled = False
-                        response_text.value = f"Error: {str(ex)}"
+                        response_text.value = error_msg
                         response_container.visible = True
                         self.page.update()
                     
@@ -13702,12 +13790,13 @@ class VaultApp:
             
         except Exception as ex:
             logger.error(f"Cloud inference error: {ex}")
+            error_msg = f"Error: {str(ex)}"
             def show_error():
                 loading_indicator.visible = False
                 query_field.disabled = False
                 submit_button.disabled = False
                 mode_dropdown.disabled = False
-                response_text.value = f"Error: {str(ex)}"
+                response_text.value = error_msg
                 response_container.visible = True
                 self.page.update()
             
@@ -13770,12 +13859,13 @@ class VaultApp:
             
         except Exception as ex:
             logger.error(f"Local inference error: {ex}")
+            error_msg = f"Local inference error: {str(ex)}"
             def show_error():
                 loading_indicator.visible = False
                 query_field.disabled = False
                 submit_button.disabled = False
                 mode_dropdown.disabled = False
-                response_text.value = f"Local inference error: {str(ex)}"
+                response_text.value = error_msg
                 response_container.visible = True
                 self.page.update()
             
@@ -16038,13 +16128,18 @@ class VaultApp:
 
 
 def main(page: ft.Page):
-    """Main entry point."""
+    """Flet page target."""
     VaultApp(page)
 
 
-if __name__ == "__main__":
+def run():
+    """Console entry point for `enclave-gui` — launches the desktop app."""
     # flet 0.28.x uses ft.app(), 0.80+ uses ft.run()
     if hasattr(ft, 'run') and not hasattr(ft, 'FilePickerResultEvent'):
         ft.run(main)
     else:
         ft.app(target=main)
+
+
+if __name__ == "__main__":
+    run()

@@ -31,7 +31,6 @@ class TestAdapterRegistryHelpers(unittest.TestCase):
     
     def test_hash_encryption_key(self):
         """Test key hashing function."""
-        from advanced_vault.backend.api.adapters import hash_encryption_key
         
         # Test key (hex string)
         key_hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
