@@ -8,10 +8,6 @@ Key Features:
 - Encrypted KV store for exact data (API keys, passwords)
 - Smart query routing (exact vs fuzzy)
 - MCP integration for AI agents
-- Threshold cryptography for team vaults
-- Speculative decryption for performance
-- Homomorphic search (research)
-- Federated learning (research)
 
 Usage:
     from advanced_vault import HybridVault

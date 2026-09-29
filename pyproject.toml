@@ -102,7 +102,6 @@ liteparse = [
 # macOS local performance profile (RAG + embeddings)
 mac-performance = [
     "hnswlib>=0.8.0",
-    "fastembed>=0.3.6",
     "hf_transfer>=0.1.8",
 ]
 
