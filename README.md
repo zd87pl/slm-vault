@@ -430,34 +430,30 @@ your OS's full-disk encryption).
 
 ```
 slm-vault/
-├── advanced_vault/          # Core application
+├── advanced_vault/          # Core application (see advanced_vault/README.md)
 │   ├── gui/                 # Desktop GUI (Flet)
 │   ├── cli/                 # `enclave` CLI (incl. doctor + MCP setup)
 │   ├── training/            # RAG index, embeddings, caching (+ experimental adapter training)
 │   ├── prosumer/            # Personal data vaults (Health, Finance, Legal, Personal)
-│   ├── mcp_server/          # MCP server implementation
-│   └── backend/             # LEGACY: cloud sync backend (FastAPI, Supabase, RunPod)
+│   └── mcp_server/          # MCP server implementation
 ├── setup.sh                 # One-command setup (macOS/Linux)
-├── browser-extension/       # EXPERIMENTAL: talks to a remote development backend
-├── langchain-enclave/       # EXPERIMENTAL: LangChain integration (cloud client by default)
-├── docs/                    # Documentation (much of it describes older designs)
-├── examples/                # Example scripts (mostly legacy WDVA demos)
-├── src/                     # LEGACY: cloud GPU training (RunPod) — not needed locally
-└── tests/                   # Test suite (legacy cloud tests auto-skip)
+├── docs/                    # Documentation (index: docs/README.md)
+├── examples/                # Secrets-store demo scripts
+├── scripts/                 # Build, packaging and verification scripts
+└── tests/                   # Test suite
 ```
 
-> `src/`, the RunPod scripts, `requirements.txt`, and the Dockerfiles support
-> the optional **cloud GPU training** path. Local Mac users never need them.
+> **Legacy code lives on the
+> [`legacy-archive-2026-09-29`](https://github.com/zd87pl/slm-vault/tree/legacy-archive-2026-09-29)
+> branch**, not on `main`: the RunPod cloud-training stack (`src/`, the
+> Dockerfiles and RunPod scripts), the sync backend (`advanced_vault/backend/`),
+> the browser extension, the LangChain package and the OpenClaw plugin, with
+> their docs. That code is unmaintained.
 
-**Not part of the local-only story**: the browser extension (an API-key
-manager whose content script runs on every page and which talks to a
-hard-coded remote development backend), the LangChain package (its default
-client targets the same backend), `advanced_vault/backend/`, and the desktop
-app's cloud sync, RunPod and backend-status features (its default backend
-URL is that same server; see [Network access](#network-access)) are
-experimental or legacy. Except for the backend status check, they are off by
-default or installed separately. They are not covered by the privacy model
-above and may be archived.
+**Not part of the local-only story**: the desktop app's cloud sync, RunPod and
+backend-status features and the MCP server's `langchain_*` tools are
+experimental or legacy. They are not covered by the privacy model above and
+may be removed (see also [Network access](#network-access)).
 
 ## Requirements
 
@@ -559,9 +555,8 @@ mypy advanced_vault/
 - [MCP server](advanced_vault/mcp_server/README.md) — manual client setup and the `vault_*` secrets tools (its roadmap section is out of date)
 - [Private Language Models](docs/PRIVATE_LANGUAGE_MODELS.md) — CLI profiles: ingest, chat, adapters
 
-Most other files under `docs/` and `advanced_vault/docs/` describe earlier,
-cloud-based designs (RunPod, WDVA) and are due to be pruned; the most
-misleading ones carry a banner saying so.
+The [documentation index](docs/README.md) lists the rest; the older notes
+there may not match the code.
 
 ## Status
 
@@ -572,7 +567,6 @@ misleading ones carry a banner saying so.
 - [x] Activity logging and per-app consent (coarse; see [Consent](#consent))
 - [x] Desktop GUI (Flet) — local chat on Apple Silicon only
 - [x] Local LLM inference (MLX, Apple Silicon)
-- [x] Browser extension prototype (experimental; uses a remote development backend)
 - [x] Advanced local training (DPO, ORPO, GRPO, QAT via mlx-lm-lora) — experimental
 - [x] Encrypted adapter packaging & distribution — experimental
 - [x] One-command setup (`setup.sh`, macOS/Linux), `enclave doctor`, `enclave mcp install`

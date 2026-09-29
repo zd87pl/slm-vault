@@ -368,9 +368,7 @@ def run_checks(vault_path: str = "~/.vault") -> DoctorReport:
         )
 
     # --- Embeddings backend ---
-    if _has_module("fastembed"):
-        report.add("Embeddings", PASS, "fastembed (ONNX) available — fast, lightweight")
-    elif _has_module("sentence_transformers"):
+    if _has_module("sentence_transformers"):
         report.add("Embeddings", PASS, "sentence-transformers available")
     else:
         report.add(

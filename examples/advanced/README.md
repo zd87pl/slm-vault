@@ -13,9 +13,9 @@ The advanced vault system combines two layers:
   - ProtonMail-style E2EE
 
 - **Layer 2 (DoRA Knowledge)**: Contextual knowledge storage
-  - Encrypted DoRA adapters
-  - LLM inference for fuzzy queries
-  - Private inference (local or RunPod)
+  - Enclave no longer ships a Layer 2 inference engine (the legacy engines
+    are on the `legacy-archive-2026-09-29` branch), so fuzzy queries fall
+    back to Layer 1 entry names
 
 - **Smart Router**: Automatic query classification
   - EXACT → Layer 1 (KV)
@@ -57,36 +57,6 @@ python examples/advanced/hybrid_vault_demo.py
 - Query confidence scores
 
 **No requirements** - Layer 2 disabled for this demo.
-
----
-
-### 3. Unified Vault Demo ⭐
-**File**: `unified_vault_demo.py`
-
-**Complete system demo** - Layer 1 + Layer 2 hybrid:
-```bash
-# Run without RunPod (simulated Layer 2)
-python examples/advanced/unified_vault_demo.py
-
-# Or with real RunPod inference
-export RUNPOD_API_KEY=your_key
-export RUNPOD_ENDPOINT_ID=your_endpoint_id
-python examples/advanced/unified_vault_demo.py
-```
-
-**What it shows**:
-1. **Layer 1**: Store and retrieve API keys (Stripe, GitHub, AWS)
-2. **EXACT queries**: "What's my Stripe API key?" → Layer 1 (sub-10ms)
-3. **FUZZY queries**: "Why did I choose Stripe?" → Layer 2 (DoRA)
-4. **HYBRID queries**: "Show me everything about Stripe" → Both layers
-5. **Vault statistics**: Entries, services, layer status
-
-**Requirements** (optional):
-- `RUNPOD_API_KEY` - For real Layer 2 inference
-- `RUNPOD_ENDPOINT_ID` - Your deployed endpoint
-- Encrypted DoRA adapter from `privacy_demo.py`
-
-Without RunPod, the demo shows simulated Layer 2 responses to illustrate the concept.
 
 ---
 
@@ -151,16 +121,6 @@ Without RunPod, the demo shows simulated Layer 2 responses to illustrate the con
   - Layer 1: Exact API key
   - Layer 2: Setup context/knowledge
 
-## Development Roadmap
-
-See `advanced_vault/docs/ROADMAP.md` for the full 8-week plan:
-
-- ✅ **Week 1**: Encrypted KV Store (Layer 1)
-- ✅ **Week 2**: Smart Router + Hybrid Vault
-- 📝 **Week 3-4**: MCP Integration + TEE
-- 📝 **Week 5-6**: Performance optimization
-- 📝 **Week 7-8**: Team features (threshold crypto)
-
 ## Test Coverage
 
 Run tests for advanced vault:
@@ -175,16 +135,7 @@ python -m pytest advanced_vault/ -v
 python -m pytest advanced_vault/core/tests/test_smart_router.py -v
 ```
 
-**Current Status**: 113/113 tests passing
-- 67 baseline tests (DoRA, encryption, inference)
-- 26 encrypted KV tests
-- 20 smart router tests
-
 ## Next Steps
 
-1. **Try the demos** in order (KV → Hybrid → Unified)
-2. **Read the architecture docs** in `advanced_vault/docs/`
-3. **Enable Layer 2** by running `privacy_demo_runpod.py`
-4. **Experiment with queries** and routing patterns
-
-See parent `examples/README.md` for the complete privacy demo workflow.
+1. **Try the demos** in order (KV → Hybrid)
+2. **Experiment with queries** and routing patterns

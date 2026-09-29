@@ -102,19 +102,12 @@ liteparse = [
 # macOS local performance profile (RAG + embeddings)
 mac-performance = [
     "hnswlib>=0.8.0",
-    "fastembed>=0.3.6",
     "hf_transfer>=0.1.8",
 ]
 
 # Everything a MacBook (Apple Silicon) beta user needs — used by setup.sh
 mac = [
     "enclave-vault[mlx,gui,mac-performance]",
-]
-
-# Self-hosted sync backend (optional; not needed for local use)
-backend = [
-    "fastapi>=0.104.0",
-    "uvicorn>=0.24.0",
 ]
 
 # Build/packaging
@@ -136,7 +129,7 @@ dev = [
 
 # All optional dependencies
 all = [
-    "enclave-vault[mlx,gui,dev,mac-performance,liteparse,advanced-training,backend]",
+    "enclave-vault[mlx,gui,dev,mac-performance,liteparse,advanced-training]",
 ]
 
 [project.urls]

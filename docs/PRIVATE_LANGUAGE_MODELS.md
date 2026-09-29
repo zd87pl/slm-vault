@@ -5,7 +5,6 @@ Enclave's Private Language Model concept turns local AI from a single model into
 - encrypted local context from your files
 - WDVA adapters for learned behavior, style, and domain focus
 - Sheriff controls for consent, leases, audits, and path protection
-- optional OpenClaw and LangChain integrations that use the same local profile
 
 ### Core Idea
 
@@ -90,36 +89,6 @@ python -m advanced_vault.cli --vault-path ~/.vault model train-adapter \
 ```
 
 This trains locally with MLX, packages the resulting adapter into an encrypted WDVA artifact, and attaches it to the profile.
-
-### OpenClaw Integration
-
-The OpenClaw plugin lives in [`integrations/openclaw-enclave/`](../integrations/openclaw-enclave/).
-
-It uses a named Private Language Model profile as the local trust boundary. The plugin:
-
-- ingests local files into an encrypted profile
-- chats against that profile locally
-- reports WDVA adapter readiness for the active profile
-- uses Sheriff for risk scanning, protection rules, and lease-based reads
-
-The plugin config supports `profileName` so OpenClaw can target a dedicated local profile such as `openclaw`.
-
-### LangChain Integration
-
-The LangChain package lives in [`langchain-enclave/`](../langchain-enclave/).
-
-The local client can now use the same Private Language Model runtime:
-
-```python
-from langchain_enclave import LocalEnclaveClient
-
-client = LocalEnclaveClient(vault_path="~/.vault", profile_name="research")
-client.ingest_directory("/path/to/files")
-result = client.chat("What are the important themes here?")
-print(result["answer"])
-```
-
-That means the CLI, OpenClaw, and LangChain can all converge on the same local profile instead of fragmenting context across separate stores.
 
 ### Recommended Mac Workflow
 
