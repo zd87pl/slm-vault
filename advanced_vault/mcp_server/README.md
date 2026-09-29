@@ -9,6 +9,10 @@ Model Context Protocol (MCP) server that exposes the Enclave vault to AI agents 
 
 ## Features
 
+> The `vault_*` secrets tools below are denied to AI apps by default. To let
+> one app use them, see "Letting one app use the secrets tools" in the main
+> [README](../../README.md#letting-one-app-use-the-secrets-tools).
+
 - **vault_store**: Store secrets and knowledge in the vault
 - **vault_recall**: Query using natural language (automatic Smart Router)
 - **vault_list_entries**: List all vault entries with filtering

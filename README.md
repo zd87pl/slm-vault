@@ -47,9 +47,9 @@ receives that answer, not your files.
 > dialog appears: "Allow Once" is the cautious choice (you are asked again
 > next time), while "Always Allow" lets that app call every tool its policy
 > allows, with no expiry. On a default install Enclave cannot tell AI apps
-> apart, so "Always Allow" applies to all of them, and the policy lets all of
-> them use the `vault_*` secrets tools (see [Consent](#consent)). Calls are
-> logged locally either way.
+> apart, so "Always Allow" applies to all of them (see [Consent](#consent)),
+> but no app can use the `vault_*` secrets tools until you opt it in. Calls
+> are logged locally either way.
 
 ### Having trouble?
 
@@ -196,18 +196,22 @@ The main tools Enclave exposes to AI agents:
 | `agent_draft` | Draft content informed by your documents |
 | `agent_status` | Check indexed documents and agent status |
 | `vault_store` | Store secrets (API keys, passwords) |
-| `vault_recall` | Retrieve secrets with natural language |
+| `vault_recall` | Retrieve a stored secret by its exact entry name |
 
 The server also advertises experimental tools: `sheriff_*` file-access
 leases (which can return file contents; the default policy blocks them), a
 mock wallet, and cloud `langchain_*` tools that do nothing unless configured.
 
-Which tools each app may call is set in `~/.enclave/policies.toml`. Its
-entries for Claude Desktop and Cursor allow the `agent_*` tools but not the
-`vault_*` secrets tools — but on a default install Enclave cannot recognize
-those apps (see [Consent](#consent)), so they appear as `unknown` and get
-the `default` policy, which allows both. To keep AI apps away from your
-secrets, remove `vault_*` from the `default` entry.
+Which tools each app may call is set in `~/.enclave/policies.toml`. On a
+default install Enclave cannot tell AI apps apart (see [Consent](#consent)),
+so every app gets the file's `default` entry, which allows the `agent_*`
+tools and `query_knowledge` but not the `vault_*` secrets tools. To give
+them to one app, see
+[Letting one app use the secrets tools](#letting-one-app-use-the-secrets-tools).
+Earlier versions put `vault_*` in `default`. If you never edited the file,
+Enclave replaces it with the new default the next time it starts, keeping
+the old one as `policies.toml.bak-<date>`; if you did, `enclave doctor`
+tells you which line to change.
 
 **What agents receive**: the `agent_*` tools return text generated locally
 from retrieved passages, plus the names of the source documents — not the
@@ -365,7 +369,7 @@ your OS's full-disk encryption).
   optional `psutil` package is installed, the parent process name. `psutil` is
   not an Enclave dependency, so on a default install Claude Desktop, Cursor
   and every other client are all the same app, `unknown`: they get the
-  `default` policy, which also allows the `vault_*` secrets tools, and they
+  `default` policy (document tools only, no `vault_*` secrets tools) and they
   share one consent decision — "Always Allow" for one of them approves them
   all.
 - To change a decision, **fully quit the AI app first** — the MCP server
@@ -382,6 +386,35 @@ your OS's full-disk encryption).
   restarts.
 - **On Windows, consent prompts are not implemented, so every call that needs
   consent is denied.**
+
+#### Letting one app use the secrets tools
+
+No AI app can call the `vault_*` tools until you opt it in:
+
+1. Name the app: in its MCP config (`claude_desktop_config.json` for Claude
+   Desktop, `~/.cursor/mcp.json` for Cursor), add
+   `"MCP_CLIENT": "claude-desktop"` (or `"cursor"`) to the `"env"` of the
+   `enclave` server entry.
+2. In `~/.enclave/policies.toml`, add the tools to that app's `[[agents]]`
+   entry (`agent_id = "claude-desktop"` or `"cursor"`): for example
+   `"vault_recall", "vault_list_entries"` in its `allowed_tools`, or
+   `"vault_*"` to also allow storing and deleting.
+3. Fully quit and reopen the app.
+
+Naming the app applies everything in its `[[agents]]` entry, not just the tools
+you add: the shipped `claude-desktop` and `cursor` entries also allow the
+(mock) wallet tools, including `request_purchase` with auto-approval under
+$25. Remove `"wallet"` from that entry's `allowed_modules` if you don't want
+that.
+
+`MCP_CLIENT` is a label, not proof: any program that starts Enclave's server
+with the same label gets that entry (as does, with `psutil` installed, any
+app whose process name contains "claude" or "cursor"). Only software already
+running as you can do that, and it could read the vault files directly
+anyway. Re-running `enclave mcp install` rewrites the server entry without
+the label, which takes the secrets tools away again. Never add `vault_*` to
+`default` — that gives them to every app Enclave cannot identify, and
+`enclave doctor` warns about it.
 
 ### Network access
 
@@ -413,8 +446,9 @@ your OS's full-disk encryption).
 - **Partial encryption, key stored next to the data** — see
   [What is and isn't encrypted](#what-is-and-isnt-encrypted).
 - **Coarse consent**: no expiry; on a default install every AI app is
-  `unknown` and its policy allows the secrets tools; revoking access (or using
-  the kill switch) takes effect only after the AI app restarts. See
+  `unknown` and they all share one consent decision; opting one app in to the
+  secrets tools relies on a label its config declares; revoking access (or
+  using the kill switch) takes effect only after the AI app restarts. See
   [Consent](#consent).
 - **Documents can steer answers**: retrieved text goes into the local model's
   prompt as-is, so a malicious document can plant instructions in the answer

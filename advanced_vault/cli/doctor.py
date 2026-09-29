@@ -13,14 +13,25 @@ import json
 import os
 import platform
 import queue
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+import tomllib
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 from pathlib import Path
+
+from advanced_vault.enclave_control.config import (
+    SECRETS_TOOLS,
+    parse_policy_document,
+    upgrade_legacy_default,
+)
+from advanced_vault.enclave_control.models import AgentPolicy
+from advanced_vault.enclave_control.runtime import resolve_agent_policy
 
 
 PASS = "ok"
@@ -287,6 +298,129 @@ def check_mcp_server(
     return CheckResult(name, PASS, f"starts over stdio and lists {tool_count} tools")
 
 
+# --- Secrets tools policy check ---
+
+POLICY_PATH = "~/.enclave/policies.toml"
+_SECRETS_CHECK = "Secrets tools"
+_DOCUMENT_TOOLS = '"agent_*", "query_knowledge", "agent_status"'
+_OPT_IN_HINT = (
+    " To let one app use the secrets tools, add them to that app's own entry instead"
+    ' (README: "Letting one app use the secrets tools"). Then fully quit and reopen your AI app.'
+)
+_TABLE_HEADER = re.compile(r"\s*\[\[?\s*[\w.\"' -]+?\s*\]\]?\s*(?:#.*)?")
+_AGENTS_HEADER = re.compile(r"\s*\[\[\s*agents\s*\]\]\s*(?:#.*)?")
+_AGENT_ID_KEY = re.compile(r"\s*agent_id\s*=")
+_ALLOWED_TOOLS_KEY = re.compile(r"\s*allowed_tools\s*=")
+
+
+def _agent_entry_lines(text: str, agent_id: str) -> tuple[int, int | None, bool] | None:
+    """Locate the [[agents]] entry the policy loader uses for ``agent_id``.
+
+    Returns (line naming the entry, allowed_tools line or None, whether the
+    entry has allowed_tools), 1-based, for the last entry with that agent_id
+    (the loader keeps the last one), or None if no [[agents]] table has it.
+    """
+    lines = text.split("\n")
+    headers = [i for i, line in enumerate(lines) if _TABLE_HEADER.fullmatch(line)]
+    found = None
+    for n, start in enumerate(headers):
+        if not _AGENTS_HEADER.fullmatch(lines[start]):
+            continue
+        end = headers[n + 1] if n + 1 < len(headers) else len(lines)
+        body = lines[start + 1:end]
+        try:
+            entry = tomllib.loads("\n".join(body))
+        except tomllib.TOMLDecodeError:
+            continue
+        if str(entry.get("agent_id", "default")) != agent_id:
+            continue
+        # body[i] is line start + 2 + i, counting from 1.
+        id_line = next((start + 2 + i for i, line in enumerate(body) if _AGENT_ID_KEY.match(line)), start + 1)
+        tools_line = next((start + 2 + i for i, line in enumerate(body) if _ALLOWED_TOOLS_KEY.match(line)), None)
+        found = (id_line, tools_line, "allowed_tools" in entry)
+    return found
+
+
+def _secrets_policy_fix(text: str, path: Path, policy: AgentPolicy) -> str:
+    """Exact edit that takes the secrets tools away from unidentified apps."""
+    entry = f'the [[agents]] entry with agent_id = "{policy.agent_id}"'
+    culprits = [p for p in policy.allowed_tools if p == "*" or any(fnmatch(t, p) for t in SECRETS_TOOLS)]
+    remove = ", ".join(json.dumps(p) for p in culprits)
+    add_back = ""
+    if any(p == "*" or fnmatch(t, p) for p in culprits for t in ("agent_query", "query_knowledge")):
+        add_back = f", then add back the document tools, e.g. {_DOCUMENT_TOOLS}"
+
+    located = _agent_entry_lines(text, policy.agent_id)
+    raw_agents = tomllib.loads(text).get("agents", [])
+    has_entry = any(str(raw.get("agent_id", "default")) == policy.agent_id for raw in raw_agents)
+    if not has_entry:
+        fix = (
+            f'{path} has no [[agents]] entry with agent_id = "default", so apps Enclave cannot '
+            f'identify may call every tool: add one with allowed_modules = ["vault"] and '
+            f"allowed_tools = [{_DOCUMENT_TOOLS}]."
+        )
+    elif located is None:
+        fix = f"In {path}, remove {remove} from allowed_tools of {entry}{add_back}."
+    elif located[1] is not None:
+        fix = f"In {path}, line {located[1]} (allowed_tools of {entry}), remove {remove}{add_back}."
+    elif not located[2]:
+        fix = (
+            f"In {path}, {entry} (line {located[0]}) has no allowed_tools, so it allows every "
+            f"tool: add allowed_tools = [{_DOCUMENT_TOOLS}] to it."
+        )
+    else:
+        fix = f"In {path}, {entry} (line {located[0]}): remove {remove} from its allowed_tools{add_back}."
+    return fix + _OPT_IN_HINT
+
+
+def check_secrets_policy(policy_path: str | os.PathLike | None = None) -> CheckResult:
+    """Warn when apps Enclave cannot identify may call the vault_* secrets tools.
+
+    On a default install every MCP client is identified as `unknown`, which
+    gets the `default` entry of policies.toml (or an `unknown` entry, if there
+    is one). Only reads the file: the MCP server itself replaces an unmodified
+    old default.
+    """
+    path = Path(policy_path or POLICY_PATH).expanduser()
+    if not path.exists():
+        return CheckResult(
+            _SECRETS_CHECK, PASS,
+            f"{path} does not exist yet; the default Enclave writes there gives apps it cannot "
+            "identify no vault_* tools",
+        )
+    try:
+        text = path.read_text(encoding="utf-8")
+        if upgrade_legacy_default(text) is not None:
+            return CheckResult(
+                _SECRETS_CHECK, WARN,
+                f"{path} is an unmodified default from an older Enclave, which lets apps Enclave "
+                "cannot identify (on a default install, every MCP client) use the vault_* secrets "
+                "tools; Enclave replaces it automatically, keeping a backup, the next time the "
+                "Enclave app or its MCP server starts (including the MCP server check below)",
+                "Fully quit and reopen your AI app so its Enclave server restarts, then run "
+                "`enclave doctor` again. If this warning stays, Enclave cannot write the file "
+                "(it enforces the new default anyway): check the file's permissions",
+            )
+        policy = resolve_agent_policy(parse_policy_document(text).agents, "unknown")
+    except Exception as exc:  # unreadable, invalid TOML, or a shape the loader rejects
+        return CheckResult(
+            _SECRETS_CHECK, FAIL, f"cannot read {path}: {exc}",
+            f"Fix {path} (the MCP server cannot start with it), or move it aside so Enclave "
+            "writes a fresh default",
+        )
+
+    exposed = [t for t in SECRETS_TOOLS if policy.allows_module("vault") and policy.allows_tool(t)]
+    if not exposed:
+        return CheckResult(_SECRETS_CHECK, PASS, f"apps Enclave cannot identify get no vault_* tools ({path})")
+    return CheckResult(
+        _SECRETS_CHECK, WARN,
+        f"apps Enclave cannot identify (on a default install, every MCP client) may call "
+        f"{', '.join(exposed)}, which expose your stored secrets, through the "
+        f"`{policy.agent_id}` entry of {path}",
+        _secrets_policy_fix(text, path, policy),
+    )
+
+
 def run_checks(vault_path: str = "~/.vault") -> DoctorReport:
     report = DoctorReport()
     vault_dir = Path(vault_path).expanduser()
@@ -447,6 +581,10 @@ def run_checks(vault_path: str = "~/.vault") -> DoctorReport:
             report.add("Vault", PASS, f"initialized at {vault_dir}, master key protected")
     else:
         report.add("Vault", PASS, f"directory exists at {vault_dir} (no master key yet)")
+
+    # --- Which tools apps Enclave cannot identify get. Runs before the MCP
+    # server check, whose server upgrades an unmodified old default. ---
+    report.checks.append(check_secrets_policy())
 
     # --- MCP server (launched the way Claude Desktop / Cursor launch it) ---
     report.checks.append(check_mcp_server())
