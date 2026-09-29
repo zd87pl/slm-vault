@@ -57,6 +57,36 @@ replace `/Users/YOUR_USERNAME/.vault` with your actual home directory path.
 
 After saving the configuration, completely quit and restart Claude Desktop.
 
+## Which documents the agent tools read
+
+`agent_query`, `query_knowledge`, `agent_summarize`, `agent_draft` and
+`agent_status` answer from the documents you add in the Enclave app or with
+`enclave model ingest`. They read the same encrypted index, not a separate one:
+
+```
+$VAULT_PATH/private_models/<profile>/vault/rag.db      # encrypted document index
+$VAULT_PATH/private_models/<profile>/vault/master.key  # that index's key
+```
+
+`$VAULT_PATH` defaults to `~/.vault`. The profile is the one last active in the
+app (saved in `$VAULT_PATH/.active_private_profile`). If that profile no longer
+exists, the first profile by name is used. If there are no profiles yet, it is
+`workspace`, the profile the app creates on first run. To pin a profile, set
+`ENCLAVE_PROFILE` in the server's `env`:
+
+```json
+"env": {
+  "VAULT_PATH": "/Users/YOUR_USERNAME/.vault",
+  "ENCLAVE_PROFILE": "workspace"
+}
+```
+
+The server re-checks the profile and the index on every call, so switching
+profiles or adding documents in the app works without restarting Claude
+Desktop. `agent_status` shows which profile and index it read. If no indexed
+document matches a question, `agent_query` says so instead of asking the local
+model to answer without sources.
+
 ## Usage Examples
 
 ### Storing Secrets

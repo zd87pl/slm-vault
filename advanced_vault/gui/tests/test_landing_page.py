@@ -160,8 +160,11 @@ class TestLocalAgentChat(unittest.TestCase):
                     agent = LocalAgent(vault_path=tmpdir)
                     result = agent.query("What is quantum computing?")
 
+                    # No sources: an explicit answer, never an LLM guess.
                     self.assertFalse(result["rag_used"])
-                    self.assertIsNotNone(result.get("error"))
+                    self.assertIsNone(result.get("error"))
+                    self.assertEqual(result["sources"], [])
+                    self.assertIn("No indexed documents matched", result["answer"])
 
 
 if __name__ == "__main__":

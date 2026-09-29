@@ -38,7 +38,11 @@ from advanced_vault.enclave_control import EnclaveRuntime
 from advanced_vault.encrypted_kv import QueryFilter, EntryType
 from advanced_vault.mcp_server.activity_logger import ActivityLogger
 from advanced_vault.private_models import PrivateModelManager, PrivateModelProfile
-from advanced_vault.private_models.manager import SUPPORTED_EXTENSIONS
+from advanced_vault.private_models.manager import (
+    ACTIVE_PROFILE_STATE_FILE,
+    SUPPORTED_EXTENSIONS,
+    read_active_profile_name,
+)
 from advanced_vault.sheriff.core import SheriffCore
 from advanced_vault.wallet import WalletService
 
@@ -240,7 +244,7 @@ class VaultApp:
         self.question_history_path = self.vault_path / "question_history.json"
         self.local_first_mode = os.getenv("ENCLAVE_LOCAL_FIRST", "1").strip().lower() not in {"0", "false", "no"}
         self.require_authentication = os.getenv("ENCLAVE_REQUIRE_AUTH", "0").strip().lower() in {"1", "true", "yes"}
-        self.private_profile_state_path = self.vault_path / ".active_private_profile"
+        self.private_profile_state_path = self.vault_path / ACTIVE_PROFILE_STATE_FILE
         self.private_model_manager = PrivateModelManager(root_path=str(self.vault_path / "private_models"))
         self.enclave_runtime = EnclaveRuntime(vault_path=str(self.vault_path))
         self.activity_logger = ActivityLogger(vault_path=str(self.vault_path), runtime=self.enclave_runtime)
@@ -401,15 +405,8 @@ class VaultApp:
             logger.debug(f"Failed to refresh sidebar language: {e}")
 
     def _load_active_private_profile_name(self) -> str:
-        """Load the last active local profile name."""
-        try:
-            if self.private_profile_state_path.exists():
-                value = self.private_profile_state_path.read_text().strip()
-                if value:
-                    return value
-        except Exception as e:
-            logger.debug(f"Failed to load active private profile: {e}")
-        return "workspace"
+        """Load the last active local profile name (shared with the MCP agent)."""
+        return read_active_profile_name(str(self.vault_path))
 
     def _save_active_private_profile_name(self) -> None:
         """Persist the currently active local profile name."""

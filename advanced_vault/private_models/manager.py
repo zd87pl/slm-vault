@@ -1,4 +1,16 @@
-"""Local-first Private Language Model manager built on Enclave primitives."""
+"""Local-first Private Language Model manager built on Enclave primitives.
+
+Profiles live under ``<vault>/private_models/<profile>/`` and each one keeps
+its own encrypted document index (``vault/rag.db``) and key
+(``vault/master.key``).  The GUI and ``enclave model ingest`` write there.
+
+``resolve_active_profile()`` is the single place that decides which profile's
+index other consumers (the MCP agent) read.  It mirrors the GUI's choice: the
+profile persisted in ``<vault>/.active_private_profile``, falling back to the
+first profile by name when that one is gone, and to ``workspace`` (the
+profile the GUI creates on first run) when none exist yet.  Setting
+``ENCLAVE_PROFILE=<name>`` overrides that choice explicitly.
+"""
 
 from __future__ import annotations
 
@@ -75,6 +87,12 @@ DEFAULT_CONTEXT_CHARS = 12000
 DEFAULT_HISTORY_TURNS = 6
 THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
+# Profile selection shared by the GUI, the CLI's data layout and the MCP agent.
+DEFAULT_PROFILE_NAME = "workspace"
+ACTIVE_PROFILE_STATE_FILE = ".active_private_profile"
+PROFILE_OVERRIDE_ENV = "ENCLAVE_PROFILE"
+PRIVATE_MODELS_DIRNAME = "private_models"
+
 
 def _sanitize_model_output(text: str) -> str:
     """Strip hidden reasoning tags from model responses before showing users."""
@@ -90,6 +108,84 @@ class IngestResult:
     added: int
     skipped: int
     documents: List[Dict[str, Any]]
+
+
+def _profile_index_dir(root_path: Path, name: str) -> Path:
+    """Directory holding a profile's encrypted index (``rag.db``) and key."""
+    return root_path / name / "vault"
+
+
+@dataclass(frozen=True)
+class ProfileIndexLocation:
+    """Which profile's encrypted document index to use, and where it lives."""
+
+    profile: str
+    source: str  # "override", "active", "fallback" or "default"
+    profile_exists: bool
+    db_path: Path
+    key_path: Path
+
+
+def read_active_profile_name(vault_path: str = "~/.vault") -> str:
+    """Return the profile the GUI last marked active (``workspace`` if unset)."""
+    state_path = Path(vault_path).expanduser() / ACTIVE_PROFILE_STATE_FILE
+    try:
+        if state_path.exists():
+            value = state_path.read_text().strip()
+            if value:
+                return value
+    except (OSError, ValueError) as e:
+        logger.debug(f"Failed to load active private profile: {e}")
+    return DEFAULT_PROFILE_NAME
+
+
+def resolve_active_profile(
+    vault_path: str = "~/.vault",
+    profile: Optional[str] = None,
+) -> ProfileIndexLocation:
+    """Resolve the profile whose document index the GUI and CLI write to.
+
+    Read-only: nothing is created.  ``profile`` (or ``$ENCLAVE_PROFILE`` when
+    ``profile`` is None) selects a profile explicitly and never falls back to
+    another one.  Otherwise the GUI's choice is mirrored: the persisted active
+    profile if it exists, else the first profile by name, else ``workspace``.
+
+    Raises:
+        ValueError: If an explicit profile name is not a plain directory name.
+    """
+    vault_root = Path(vault_path).expanduser()
+    root_path = vault_root / PRIVATE_MODELS_DIRNAME
+    requested = profile if profile is not None else os.environ.get(PROFILE_OVERRIDE_ENV, "")
+    requested = requested.strip()
+
+    existing: List[str] = []
+    if root_path.is_dir():
+        existing = sorted(
+            path.name for path in root_path.iterdir()
+            if path.is_dir() and (path / "profile.json").exists()
+        )
+
+    if requested:
+        if requested in {".", ".."} or Path(requested).name != requested:
+            raise ValueError(f"Invalid profile name {requested!r}: expected a plain profile name")
+        name, source = requested, "override"
+    else:
+        active = read_active_profile_name(str(vault_root))
+        if active in existing:
+            name, source = active, "active"
+        elif existing:
+            name, source = existing[0], "fallback"
+        else:
+            name, source = DEFAULT_PROFILE_NAME, "default"
+
+    index_dir = _profile_index_dir(root_path, name)
+    return ProfileIndexLocation(
+        profile=name,
+        source=source,
+        profile_exists=name in existing,
+        db_path=index_dir / "rag.db",
+        key_path=index_dir / "master.key",
+    )
 
 
 class PrivateModelManager:
@@ -299,7 +395,7 @@ class PrivateModelManager:
         return self.root_path / name
 
     def _profile_vault_path(self, name: str) -> Path:
-        return self._profile_dir(name) / "vault"
+        return _profile_index_dir(self.root_path, name)
 
     def _load_or_create_master_key(self, name: str) -> bytes:
         vault_path = self._profile_vault_path(name)

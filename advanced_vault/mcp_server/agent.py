@@ -13,10 +13,23 @@ Core capabilities:
 - Local LLM inference (MLX on Apple Silicon, PyTorch elsewhere)
 - Synthesised responses -- external AIs never see raw document text
 - Document lifecycle management (add / delete / list)
+
+Which documents the agent reads:
+the same encrypted index the Enclave app and ``enclave model ingest`` write
+to -- ``<vault>/private_models/<profile>/vault/rag.db`` with that profile's
+``master.key``, where ``<vault>`` is ``$VAULT_PATH`` (default ``~/.vault``).
+The profile comes from ``private_models.manager.resolve_active_profile()``:
+the profile last active in the app, else the first profile by name, else
+``workspace``.  Set ``ENCLAVE_PROFILE=<name>`` to pin a profile explicitly.
+The profile is re-resolved on every call and the index is reopened when
+another process changes it, so documents added in the app show up without
+restarting the MCP server.  Reading never creates an index or a key; a
+profile with no index yet is reported as having zero documents.
 """
 
 import logging
 import re
+import sqlite3
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 
@@ -42,12 +55,37 @@ FALLBACK_CONTEXT_LONG: int = 2000
 STATUS_MAX_DOCUMENTS: int = 20
 THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
+# Returned by ``query`` instead of letting the LLM answer without any sources.
+NO_MATCH_ANSWER: str = (
+    "No indexed documents matched this question, so no answer was generated. "
+    "Enclave answers agent queries only from the user's indexed documents."
+)
+
 
 def _sanitize_model_output(text: str) -> str:
     """Remove hidden reasoning tags from model output before returning it."""
     cleaned = THINK_BLOCK_RE.sub("", text or "")
     cleaned = cleaned.replace("<think>", "").replace("</think>", "")
     return cleaned.strip()
+
+
+def _loaded_model_name(engine: Any) -> str:
+    """Name of the model the engine runs: its MLX model, or the PyTorch one."""
+    if getattr(engine, "backend", None) == "torch":
+        return getattr(engine, "MODEL_NAME", None) or "unknown"
+    return getattr(engine, "MLX_MODEL_NAME", None) or "unknown"
+
+
+def _index_signature(db_path: Path) -> tuple:
+    """Fingerprint an index's files (``rag.db`` and its vector-index sidecars)."""
+    entries = []
+    for path in sorted(db_path.parent.glob(f"{db_path.stem}.*")):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        entries.append((path.name, stat.st_mtime_ns, stat.st_size))
+    return str(db_path), tuple(entries)
 
 
 class LocalAgent:
@@ -61,68 +99,134 @@ class LocalAgent:
 
     def __init__(
         self,
-        vault_path: str = "~/.enclave",
+        vault_path: str = "~/.vault",
         model_name: Optional[str] = None,
-        master_key: Optional[bytes] = None
+        profile: Optional[str] = None
     ):
         """
         Initialize local agent.
 
         Args:
-            vault_path: Base path for agent data
+            vault_path: Enclave data directory (``$VAULT_PATH``); profile
+                indexes live under ``<vault_path>/private_models``
             model_name: Optional specific model to use
-            master_key: 32-byte encryption key for RAG index (loaded from vault if not provided)
+            profile: Profile whose index to read (default: ``$ENCLAVE_PROFILE``,
+                else the profile active in the Enclave app)
         """
         self.vault_path = Path(vault_path).expanduser()
         self.vault_path.mkdir(parents=True, exist_ok=True)
 
+        self._profile = profile
         self._rag_index = None
+        self._rag_signature = None
+        # Set by _get_rag_index(): the resolved profile index, and why it could
+        # not be opened (None when it simply does not exist yet).
+        self._index_location = None
+        self._index_error: Optional[str] = None
         self._inference_engine = None
         self._model_name = model_name
         self._model_loaded = False
 
-        # Handle master key - load from vault if not provided
-        if master_key is not None:
-            self._master_key = master_key
-        else:
-            self._master_key = self._load_or_create_master_key()
-
         logger.info(f"Initialized LocalAgent at {self.vault_path}")
 
-    def _load_or_create_master_key(self) -> bytes:
-        """Load existing master key from vault or create a new one."""
-        import os
-        key_path = self.vault_path / "master.key"
+    def _get_rag_index(self, create: bool = False) -> Optional["RAGIndex"]:  # noqa: F821
+        """
+        Open the active profile's encrypted index -- the one the app and CLI write to.
 
-        if key_path.exists():
-            with open(key_path, "rb") as f:
-                key = f.read()
-            logger.info("Loaded existing master key for RAG")
-            return key
-        else:
-            # Generate new master key
-            key = os.urandom(32)
-            with open(key_path, "wb") as f:
-                f.write(key)
-            # Set secure permissions
-            os.chmod(key_path, 0o600)
-            logger.info("Generated new master key for RAG")
-            return key
+        Returns None when there is no index to read: ``_index_error`` then says
+        why, or stays None when the profile has no index yet.  Nothing is
+        created unless ``create`` is set, and then only for an existing
+        profile, in that profile's own directory (as the app's first ingest).
+        """
+        self._index_error = None
+        self._index_location = None
+        try:
+            from advanced_vault.private_models.manager import (
+                PRIVATE_MODELS_DIRNAME,
+                PrivateModelManager,
+                resolve_active_profile,
+            )
+            from advanced_vault.training import RAGIndex
+        except ImportError as e:
+            logger.warning(f"RAG index not available: {e}")
+            self._index_error = f"RAG index not available: {e}"
+            return None
 
-    def _get_rag_index(self) -> Optional["RAGIndex"]:  # noqa: F821
-        """Get or create RAG index with encryption."""
-        if self._rag_index is None:
-            try:
-                from advanced_vault.training import RAGIndex
-                self._rag_index = RAGIndex(
-                    master_key=self._master_key,
-                    db_path=str(self.vault_path / "rag.db")
-                )
-                logger.info("Encrypted RAG index initialized")
-            except ImportError as e:
-                logger.warning(f"RAG index not available: {e}")
+        try:
+            location = resolve_active_profile(str(self.vault_path), profile=self._profile)
+        except ValueError as e:
+            self._index_error = f"RAG index not available: {e}"
+            return None
+        self._index_location = location
+
+        if not location.db_path.exists():
+            # Drop any handle on a previous profile's index.  Never close() it:
+            # that re-saves its vector index over files another process owns.
+            self._rag_index = None
+            if not create:
                 return None
+            if not location.profile_exists:
+                self._index_error = (
+                    f"RAG index not available: profile '{location.profile}' does not exist; "
+                    f"create it in the Enclave app or with `enclave model create {location.profile}`"
+                )
+                return None
+            manager = PrivateModelManager(root_path=str(self.vault_path / PRIVATE_MODELS_DIRNAME))
+            manager._load_or_create_master_key(location.profile)
+
+        # The app and CLI write to this index from other processes; reopen it
+        # when its files change so new documents are searchable here too.
+        # Taken before opening, so a write that lands mid-open is not missed.
+        signature = _index_signature(location.db_path)
+        if self._rag_index is not None and signature == self._rag_signature:
+            return self._rag_index
+
+        if not location.key_path.exists():
+            # Fail closed: a new key could never decrypt the existing index.
+            self._rag_index = None
+            self._index_error = (
+                f"RAG index not available: encryption key for profile "
+                f"'{location.profile}' is missing ({location.key_path})"
+            )
+            return None
+
+        try:
+            previous = self._rag_index
+            self._rag_index = RAGIndex(
+                master_key=location.key_path.read_bytes(),
+                db_path=str(location.db_path),
+                embedding_engine=getattr(previous, "embedding_engine", None),
+            )
+            self._rag_signature = signature
+            logger.info(f"Encrypted RAG index opened for profile '{location.profile}'")
+        except (OSError, ValueError, RuntimeError, sqlite3.Error) as e:
+            logger.error(f"Failed to open RAG index for profile '{location.profile}': {e}")
+            self._rag_index = None
+            self._index_error = f"RAG index not available: {e}"
+            return None
         return self._rag_index
+
+    def _index_unavailable_reason(self) -> str:
+        """Explain why ``_get_rag_index()`` returned None."""
+        if self._index_error:
+            return self._index_error
+        if self._index_location is not None:
+            return (
+                "RAG index not available: no documents are indexed yet for profile "
+                f"'{self._index_location.profile}'"
+            )
+        return "RAG index not available"
+
+    def _no_match_answer(self) -> str:
+        """Answer returned when retrieval finds nothing to answer from."""
+        location = self._index_location
+        if location is not None and not location.db_path.exists():
+            return (
+                f"{NO_MATCH_ANSWER} Profile '{location.profile}' has no indexed documents "
+                "yet: add files in the Enclave app or run "
+                f"`enclave model ingest {location.profile} <paths>`."
+            )
+        return NO_MATCH_ANSWER
 
     def _get_inference_engine(self) -> Optional["LocalInferenceEngine"]:  # noqa: F821
         """Get or create inference engine."""
@@ -191,7 +295,8 @@ class LocalAgent:
             "error": None
         }
 
-        # Get RAG context if available and requested
+        # Get RAG context if requested.  Without any retrieved source there is
+        # nothing to ground an answer in, so the LLM is not asked at all.
         context = ""
         if use_rag:
             rag_index = self._get_rag_index()
@@ -222,6 +327,16 @@ class LocalAgent:
                         logger.info(f"Found {len(rag_results)} relevant chunks")
                 except (ValueError, RuntimeError, OSError) as e:
                     logger.error(f"RAG search failed: {e}")
+                    result["error"] = f"Document search failed: {e}"
+                    return result
+            elif self._index_error is not None or self._index_location is None:
+                # The index could not be read (as opposed to not existing yet).
+                result["error"] = self._index_unavailable_reason()
+                return result
+
+            if not result["rag_used"]:  # no index yet, or nothing matched
+                result["answer"] = self._no_match_answer()
+                return result
 
         # Ensure model is loaded
         if not self._ensure_model_loaded():
@@ -238,7 +353,7 @@ class LocalAgent:
 
         # Build prompt with context
         engine = self._get_inference_engine()
-        result["model_used"] = getattr(engine, 'MLX_MODEL_NAME', 'unknown')
+        result["model_used"] = _loaded_model_name(engine)
 
         if context:
             system_prompt = """You are Enclave, a helpful AI assistant with access to the user's private documents.
@@ -261,25 +376,12 @@ Return only the final answer. Do not narrate your reasoning or planning."""
 
             prompt = question
 
-        # Generate response
+        # Generate response.  engine.generate() applies the model's chat
+        # template itself, so pass plain text: templating here as well would
+        # nest one chat transcript inside another.
         try:
-            messages = [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": prompt}
-            ]
-
-            # Format with chat template
-            if hasattr(engine.tokenizer, 'apply_chat_template'):
-                formatted_prompt = engine.tokenizer.apply_chat_template(
-                    messages,
-                    tokenize=False,
-                    add_generation_prompt=True
-                )
-            else:
-                formatted_prompt = f"{system_prompt}\n\nUser: {prompt}\n\nAssistant:"
-
             response = engine.generate(
-                formatted_prompt,
+                f"{system_prompt}\n\n{prompt}",
                 max_tokens=max_response_tokens,
                 temperature=temperature
             )
@@ -321,7 +423,7 @@ Return only the final answer. Do not narrate your reasoning or planning."""
         # Search for relevant content
         rag_index = self._get_rag_index()
         if rag_index is None:
-            result["error"] = "RAG index not available"
+            result["error"] = self._index_unavailable_reason()
             return result
 
         try:
@@ -497,7 +599,10 @@ Draft:"""
             "documents": [],
             "document_count": 0,
             "chunk_count": 0,
-            "backend": None
+            "backend": None,
+            "profile": None,
+            "index_path": None,
+            "index_error": None
         }
 
         # Check inference engine
@@ -506,10 +611,14 @@ Draft:"""
             status["backend"] = getattr(engine, 'backend', 'unknown')
             if engine.model is not None:
                 status["model_loaded"] = True
-                status["model_name"] = getattr(engine, 'MLX_MODEL_NAME', 'unknown')
+                status["model_name"] = _loaded_model_name(engine)
 
-        # Check RAG index
+        # Check RAG index (the active profile's; reported even before it exists)
         rag_index = self._get_rag_index()
+        if self._index_location is not None:
+            status["profile"] = self._index_location.profile
+            status["index_path"] = str(self._index_location.db_path)
+        status["index_error"] = self._index_error
         if rag_index:
             status["rag_available"] = True
             try:
@@ -547,9 +656,9 @@ Draft:"""
         Returns:
             Dict with document info
         """
-        rag_index = self._get_rag_index()
+        rag_index = self._get_rag_index(create=True)
         if rag_index is None:
-            return {"error": "RAG index not available"}
+            return {"error": self._index_unavailable_reason()}
 
         try:
             doc = rag_index.add_document(
@@ -580,7 +689,7 @@ Draft:"""
         """
         rag_index = self._get_rag_index()
         if rag_index is None:
-            return {"error": "RAG index not available"}
+            return {"error": self._index_unavailable_reason()}
 
         success = rag_index.delete_document(document_id)
         return {"success": success}
@@ -592,16 +701,13 @@ _agent: Optional[LocalAgent] = None
 _agent_lock = threading.Lock()
 
 
-def get_agent(
-    vault_path: str = "~/.enclave",
-    master_key: Optional[bytes] = None
-) -> LocalAgent:
+def get_agent(vault_path: str = "~/.vault") -> LocalAgent:
     """
     Get or create the local agent singleton (thread-safe).
 
     Args:
-        vault_path: Base path for agent data
-        master_key: Optional 32-byte encryption key (loaded from vault if not provided)
+        vault_path: Enclave data directory (``$VAULT_PATH``); the agent reads
+            the active profile's index and key under it
 
     Returns:
         LocalAgent singleton instance
@@ -611,5 +717,5 @@ def get_agent(
     if _agent is None:
         with _agent_lock:
             if _agent is None:
-                _agent = LocalAgent(vault_path=vault_path, master_key=master_key)
+                _agent = LocalAgent(vault_path=vault_path)
     return _agent
