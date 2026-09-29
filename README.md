@@ -392,13 +392,14 @@ your OS's full-disk encryption).
   runs that package. Set `ENCLAVE_LITEPARSE_ALLOW_NPX=false` to prevent this.
 - **PyPI**: some desktop-app features (SmolDocling PDF extraction, Q&A
   generation) pip-install missing packages the first time you use them.
-- **Remote development backend**: some older desktop-app screens (for
-  example Settings → Advanced → System Setup, Training Queue or Activity Log)
-  check whether a remote backend is reachable by requesting its `/health`
-  endpoint. The URL (`ENCLAVE_BACKEND_URL`) defaults to a hard-coded Railway
-  development server. No vault content is sent. To prevent it, add an empty
-  `ENCLAVE_BACKEND_URL=` line to `~/.enclave/config.env` (an empty environment
-  variable does not work).
+- **Cloud backend**: none by default. Unless you set `ENCLAVE_BACKEND_URL`
+  (in the environment or in `~/.enclave/config.env`), the desktop app sends
+  no backend requests, and on older screens (for example Settings → Advanced
+  → System Setup, Training Queue or Activity Log) the app bar's status icon
+  has the tooltip "Cloud backend: not configured (local-only)". An empty
+  value counts as unset. If you set it, those screens request its `/health`
+  endpoint to show whether it is reachable (no vault content is sent), and
+  the desktop cloud features use it once you sign in.
 - **Cloud features** (desktop cloud sync and sign-in, the MCP `langchain_*`
   tools) are **off by default**; the MCP tools stay inert unless both
   `ENCLAVE_API_KEY` and `ENCLAVE_API_BASE_URL` are set.

@@ -139,9 +139,10 @@ except ImportError:
     simple_metric_card = None
 
 try:
-    from config_loader import apply_config, validate_config, show_config_status
+    from config_loader import apply_config, get_backend_url, validate_config, show_config_status
 except ImportError:
     def apply_config(): pass
+    def get_backend_url(): return (os.getenv("ENCLAVE_BACKEND_URL") or "").strip().rstrip("/") or None
     def validate_config(): return True
     def show_config_status(): pass
 
@@ -155,6 +156,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 DEFAULT_PRIVATE_MODEL_NAME = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+BACKEND_NOT_CONFIGURED_LABEL = "Cloud backend: not configured (local-only)"
 PRIVATE_MODEL_IMPORT_EXTENSIONS = sorted(ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS)
 
 # Load configuration early (before app initialization)
@@ -213,7 +215,9 @@ class VaultApp:
             logger.info(f"Config status: {show_config_status()}")
             # Continue anyway - some features may not work
         
-        self.backend_url = os.getenv("ENCLAVE_BACKEND_URL", "")
+        # Optional cloud backend. Empty unless the user sets ENCLAVE_BACKEND_URL;
+        # when empty, nothing may send a request to it.
+        self.backend_url = get_backend_url() or ""
 
         # Authentication state
         self.session_data = None
@@ -6945,8 +6949,8 @@ class VaultApp:
         except Exception as e:
             logger.warning(f"Failed to create Supabase client for token refresh: {e}")
         
-        # Initialize cloud sync service
-        if self.session_data:
+        # Initialize cloud sync service (only when a cloud backend is configured)
+        if self.session_data and self.backend_url:
             try:
                 self.cloud_sync = CloudSyncService(
                     backend_url=self.backend_url,
@@ -6958,7 +6962,8 @@ class VaultApp:
             except Exception as e:
                 logger.error(f"Failed to initialize cloud sync: {e}")
                 self.cloud_sync = None
-            
+
+        if self.session_data:
             # Initialize Q&A generator and training manager
             # Note: QAGenerator uses Ollama locally (TinyLlama) for Q&A generation
             # TrainingManager uses backend API (backend manages RunPod credentials)
@@ -6986,12 +6991,15 @@ class VaultApp:
                     self._component_status["qa"]["status"] = "checking"
                     self._component_status["qa"]["message"] = "Q&A model not downloaded"
                 
-                self.training_manager = TrainingManager(
-                    backend_url=self.backend_url,
-                    session_data=self.session_data,
-                    supabase_client=supabase_client  # Pass client for token refresh
-                )
-                logger.info("Q&A generator and training manager initialized")
+                # TrainingManager is a cloud-backend client: only create it when
+                # a backend is configured.
+                if self.backend_url:
+                    self.training_manager = TrainingManager(
+                        backend_url=self.backend_url,
+                        session_data=self.session_data,
+                        supabase_client=supabase_client  # Pass client for token refresh
+                    )
+                    logger.info("Q&A generator and training manager initialized")
 
                 # Initialize local training manager (for DPO/ORPO/GRPO/QAT on Apple Silicon)
                 try:
@@ -7138,6 +7146,12 @@ class VaultApp:
 
     def check_backend_connectivity(self):
         """Check Compute Pipeline (backend API) connectivity."""
+        if not self.backend_url:
+            # Local-only: no backend configured, so make no request at all.
+            self.backend_status = "not_configured"
+            self.update_compute_pipeline_icon()
+            return
+
         # Run in background thread
         def _check():
             try:
@@ -7175,6 +7189,10 @@ class VaultApp:
             self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
             self.compute_pipeline_icon.icon_color = LightTheme.ACCENT_ERROR
             self.compute_pipeline_icon.tooltip = "Compute Pipeline: Disconnected"
+        elif self.backend_status == "not_configured":
+            self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
+            self.compute_pipeline_icon.icon_color = LightTheme.TEXT_MUTED
+            self.compute_pipeline_icon.tooltip = BACKEND_NOT_CONFIGURED_LABEL
         else:
             self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
             self.compute_pipeline_icon.icon_color = LightTheme.ACCENT_WARNING
@@ -10803,20 +10821,23 @@ class VaultApp:
         self.current_view = "langchain_policies"
         self.secrets_list.controls.clear()
         
-        # Check authentication
-        if not self.session_data:
+        # Check authentication and that a cloud backend is configured
+        if not self.session_data or not self.backend_url:
             self.secrets_list.controls.append(
                 ft.Container(
                     content=ft.Column(
                         [
                             ft.Text(
-                                "🔒 Authentication Required",
+                                "🔒 Authentication Required" if not self.session_data
+                                else BACKEND_NOT_CONFIGURED_LABEL,
                                 size=24,
                                 weight=ft.FontWeight.BOLD,
                                 color=LightTheme.TEXT_PRIMARY,
                             ),
                             ft.Text(
-                                "Please log in to manage LangChain policies",
+                                "Please log in to manage LangChain policies" if not self.session_data
+                                else "LangChain policies are stored on a cloud backend. "
+                                "Set ENCLAVE_BACKEND_URL to manage them.",
                                 size=14,
                                 color=LightTheme.TEXT_SECONDARY,
                             ),
@@ -13950,7 +13971,11 @@ class VaultApp:
             if local_cache.exists():
                 logger.info(f"Using cached adapter: {local_cache}")
                 return str(local_cache)
-            
+
+            if not self.backend_url:
+                logger.info("Cloud backend not configured; not downloading adapter %s", adapter_id)
+                return None
+
             # Get download URL from backend
             response = requests.get(
                 f"{self.backend_url}/api/adapters/{adapter_id}/download",
