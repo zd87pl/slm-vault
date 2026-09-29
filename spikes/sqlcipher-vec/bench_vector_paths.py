@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Vector query path under concurrent writes (ADR 0001 §4.3, review finding B1).
+"""Vector query path under concurrent writes (ADR 0001 §4.4, review finding B1).
 
 Part A, invalidation. In WAL mode, a commit by *another* connection makes every
 reader connection drop its page cache before its next read. With SQLCipher that

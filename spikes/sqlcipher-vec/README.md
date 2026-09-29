@@ -69,6 +69,7 @@ cd spikes/sqlcipher-vec
 /tmp/spike-venv/bin/python spike_sqlcipher_vec.py all --out /tmp/results.json   # caps, crypto, fts, knn (~3 min here)
 /tmp/spike-venv/bin/python spike_sqlcipher_vec.py knn --knn-sizes 10000 --knn-dims 384   # quick subset
 /tmp/spike-venv/bin/python bench_vector_paths.py --out /tmp/vector_paths.json    # §9, ~1 min
+/tmp/spike-venv/bin/python check_rekey_crash.py --out /tmp/rekey_crash.json      # §10, ~15 s
 /tmp/spike-venv/bin/python bench_argon2.py --out /tmp/argon2.json                # ~1 min
 /tmp/spike-venv/bin/python check_keyring.py
 /tmp/spike-venv/bin/python check_apsw_sqlite3mc.py
@@ -279,7 +280,7 @@ set_password: NoKeyringError: No recommended backend was available. …
 On Python 3.11, keyring also needs `importlib_metadata` and `backports.tarfile`. Pip resolves them, but a frozen
 build must include them. The engine treats `fail.Keyring`, the chainer with no backends, and the `keyrings.alt`
 plaintext/"encrypted file" backends as **"no OS keystore"**: convenience unlock is off and only passphrase and
-recovery-key unlock work (ADR 0001 §5).
+recovery-key unlock work (ADR 0001 §5.4).
 
 ### 9. Vector search under concurrent writes, and the in-engine matrix (`bench_vector_paths.py`)
 
@@ -317,6 +318,13 @@ background after unlock; until it finishes, search is keyword-only. The 1024-d r
 |---|---|---|
 | two terms (AND) | 0.6–4.0 ms | 1.2–3.5 / 1.7–3.6 ms |
 | common term | 10.6–20.0 ms | 11.3–19.4 / 12.0–43.8 ms |
+
+### 10. Crash during `PRAGMA rekey` (`check_rekey_crash.py`)
+
+Added for review finding B3, because the ADR's two-phase data-key rotation assumes that rekey is all-or-nothing. Setup: a 235 MiB
+encrypted WAL database; a full rekey takes 2.2 s. A child process ran the rekey and was SIGKILLed at 15%, 40% and 70% of
+that time, when the WAL held 39, 95 and 169 MiB. **Every time the file reopened with the old key, all rows present and
+`quick_check` ok; the new key failed.** After a completed rekey, only the new key opens it (`results/rekey_crash.json`).
 
 ## Blockers, workarounds and what this spike did not show
 

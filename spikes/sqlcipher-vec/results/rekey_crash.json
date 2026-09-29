@@ -1,0 +1,63 @@
+{
+  "rows": 60000,
+  "trials": [
+    {
+      "killed_at_fraction": 0.15,
+      "wal_mib_at_kill": 38.5,
+      "result": {
+        "old": {
+          "opens": true,
+          "rows_ok": true,
+          "quick_check": "ok"
+        },
+        "new": {
+          "opens": false,
+          "error": "file is not a database"
+        }
+      }
+    },
+    {
+      "killed_at_fraction": 0.4,
+      "wal_mib_at_kill": 95.0,
+      "result": {
+        "old": {
+          "opens": true,
+          "rows_ok": true,
+          "quick_check": "ok"
+        },
+        "new": {
+          "opens": false,
+          "error": "file is not a database"
+        }
+      }
+    },
+    {
+      "killed_at_fraction": 0.7,
+      "wal_mib_at_kill": 169.4,
+      "result": {
+        "old": {
+          "opens": true,
+          "rows_ok": true,
+          "quick_check": "ok"
+        },
+        "new": {
+          "opens": false,
+          "error": "file is not a database"
+        }
+      }
+    }
+  ],
+  "file_mib": 235.0,
+  "full_rekey_s": 2.2,
+  "after_completed_rekey": {
+    "old": {
+      "opens": false,
+      "error": "file is not a database"
+    },
+    "new": {
+      "opens": true,
+      "rows_ok": true,
+      "quick_check": "ok"
+    }
+  }
+}
