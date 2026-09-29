@@ -12,7 +12,6 @@ import json
 import logging
 import os
 import platform
-import shutil
 import stat
 import subprocess
 import tempfile
@@ -25,6 +24,10 @@ logger = logging.getLogger(__name__)
 
 class MCPConfigError(Exception):
     """An existing MCP client config cannot be safely updated."""
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise ValueError(f"non-standard constant {name}")
 
 
 class MCPSetupHelper:
@@ -231,8 +234,10 @@ class MCPSetupHelper:
         except OSError as e:
             raise self._config_error(config_path, f"it could not be read ({e})") from e
         try:
-            config = json.loads(raw.decode("utf-8-sig"))
-        except ValueError as e:
+            # parse_constant rejects NaN/Infinity, which Python accepts but
+            # JSON (and the clients' JSON.parse) does not.
+            config = json.loads(raw.decode("utf-8-sig"), parse_constant=_reject_json_constant)
+        except (ValueError, RecursionError) as e:
             raise self._config_error(config_path, f"it is not valid JSON ({e})") from e
         if not isinstance(config, dict):
             raise self._config_error(config_path, "its top level is not a JSON object")
@@ -243,14 +248,34 @@ class MCPSetupHelper:
 
     @staticmethod
     def _backup_config_file(config_path: Path) -> Path:
-        """Copy config_path to a timestamped sibling and return its path."""
+        """Copy config_path to a timestamped sibling and return its path.
+
+        The backup is created exclusively (O_EXCL never follows a symlink planted
+        at the predictable name) and with the config's own mode from the start,
+        so a config holding other servers' tokens is never briefly readable by
+        other users through its backup.
+        """
+        st = config_path.stat()
+        data = config_path.read_bytes()
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
         stamp = time.strftime("%Y%m%d-%H%M%S")
         backup = config_path.with_name(f"{config_path.name}.bak-{stamp}")
         counter = 1
-        while backup.exists():
-            backup = config_path.with_name(f"{config_path.name}.bak-{stamp}-{counter}")
-            counter += 1
-        shutil.copy2(config_path, backup)
+        while True:
+            try:
+                fd = os.open(backup, flags, stat.S_IMODE(st.st_mode))
+                break
+            except FileExistsError:
+                backup = config_path.with_name(f"{config_path.name}.bak-{stamp}-{counter}")
+                counter += 1
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(backup)
+            raise
+        os.utime(backup, ns=(st.st_atime_ns, st.st_mtime_ns))
         return backup
 
     def _replace_config_file(self, config_path: Path, config: Dict[str, Any]) -> Optional[Path]:

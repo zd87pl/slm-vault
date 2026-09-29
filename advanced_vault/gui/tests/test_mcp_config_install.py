@@ -393,3 +393,83 @@ def test_cli_install_reports_backup_location(tmp_path):
     backups = _backups(config_path)
     assert len(backups) == 1
     assert str(backups[0]) in result.output
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_non_standard_json_constants_are_refused(helper, tmp_path, constant):
+    # Python's json accepts these, but Claude Desktop's JSON.parse does not.
+    config_path = tmp_path / "Claude" / "claude_desktop_config.json"
+    config_path.parent.mkdir()
+    config_path.write_text(f'{{"x": {constant}, "mcpServers": {{}}}}', encoding="utf-8")
+    original = config_path.read_bytes()
+    mtime_ns = config_path.stat().st_mtime_ns
+
+    result = _install(helper, config_path)
+
+    assert result["success"] is False
+    assert "not valid JSON" in result["error"]
+    _assert_untouched(config_path, original, mtime_ns)
+
+
+def test_deeply_nested_config_is_refused_with_config_error(helper, tmp_path):
+    config_path = tmp_path / "Claude" / "claude_desktop_config.json"
+    config_path.parent.mkdir()
+    config_path.write_text('{"x": ' + "[" * 100_000 + "]" * 100_000 + "}", encoding="utf-8")
+    original = config_path.read_bytes()
+    mtime_ns = config_path.stat().st_mtime_ns
+
+    result = _install(helper, config_path)
+
+    assert result["success"] is False
+    assert "Refusing to modify" in result["error"]
+    _assert_untouched(config_path, original, mtime_ns)
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX permission bits")
+def test_backup_is_created_with_the_config_mode_from_the_start(helper, tmp_path):
+    # A 0600 config may hold other servers' tokens: its backup must never be
+    # created with broader permissions, not even briefly before a chmod.
+    config_path = tmp_path / "Claude" / "claude_desktop_config.json"
+    config_path.parent.mkdir()
+    config_path.write_text(json.dumps(EXISTING_CONFIG), encoding="utf-8")
+    os.chmod(config_path, 0o600)
+    original = config_path.read_bytes()
+
+    real_open = os.open
+    created_modes = []
+
+    def spy_open(path, flags, mode=0o777, *args, **kwargs):
+        if BACKUP_RE.match(Path(path).name):
+            created_modes.append((flags, mode))
+        return real_open(path, flags, mode, *args, **kwargs)
+
+    with patch("os.open", side_effect=spy_open):
+        result = _install(helper, config_path)
+
+    assert result["success"] is True
+    backup = Path(result["backup_path"])
+    assert backup.read_bytes() == original
+    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert len(created_modes) == 1
+    flags, mode = created_modes[0]
+    assert flags & os.O_EXCL and flags & os.O_CREAT
+    assert mode == 0o600
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX symlinks")
+def test_symlink_planted_at_backup_name_is_not_followed(helper, tmp_path):
+    config_path = tmp_path / "Claude" / "claude_desktop_config.json"
+    config_path.parent.mkdir()
+    config_path.write_text(json.dumps(EXISTING_CONFIG), encoding="utf-8")
+    victim = tmp_path / "victim.txt"
+    stamp = "20260101-000000"
+    planted = config_path.with_name(f"{config_path.name}.bak-{stamp}")
+    planted.symlink_to(victim)  # dangling: exists() is False, open() would follow it
+
+    with patch("advanced_vault.gui.mcp_setup.time.strftime", return_value=stamp):
+        result = _install(helper, config_path)
+
+    assert result["success"] is True
+    assert not victim.exists()
+    assert planted.is_symlink()
+    assert Path(result["backup_path"]).name == f"{config_path.name}.bak-{stamp}-1"
