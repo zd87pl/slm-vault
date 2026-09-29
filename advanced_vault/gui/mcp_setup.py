@@ -7,16 +7,27 @@ exposes readiness/status metadata for GUI wizard flows.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
 import platform
+import stat
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+
+class MCPConfigError(Exception):
+    """An existing MCP client config cannot be safely updated."""
+
+
+def _reject_json_constant(name: str) -> Any:
+    raise ValueError(f"non-standard constant {name}")
 
 
 class MCPSetupHelper:
@@ -202,12 +213,132 @@ class MCPSetupHelper:
             logger.error(f"Failed to load config at {config_path}: {e}")
             return None
 
+    @staticmethod
+    def _config_error(config_path: Path, problem: str) -> MCPConfigError:
+        return MCPConfigError(
+            f"Refusing to modify {config_path}: {problem}. Nothing was written. "
+            "Fix or move that file, then try again."
+        )
+
+    def _read_config_for_update(self, config_path: Path) -> Optional[Dict[str, Any]]:
+        """Strictly load a config that is about to be modified.
+
+        Returns None if the file does not exist. Raises MCPConfigError if it
+        exists but is unreadable or not a JSON object, so a config we cannot
+        fully understand is never replaced.
+        """
+        try:
+            raw = config_path.read_bytes()
+        except FileNotFoundError:
+            return None
+        except OSError as e:
+            raise self._config_error(config_path, f"it could not be read ({e})") from e
+        try:
+            # parse_constant rejects NaN/Infinity, which Python accepts but
+            # JSON (and the clients' JSON.parse) does not.
+            config = json.loads(raw.decode("utf-8-sig"), parse_constant=_reject_json_constant)
+        except (ValueError, RecursionError) as e:
+            raise self._config_error(config_path, f"it is not valid JSON ({e})") from e
+        if not isinstance(config, dict):
+            raise self._config_error(config_path, "its top level is not a JSON object")
+        servers = config.get("mcpServers")
+        if servers is not None and not isinstance(servers, dict):
+            raise self._config_error(config_path, '"mcpServers" is not a JSON object')
+        return config
+
+    @staticmethod
+    def _backup_config_file(config_path: Path) -> Path:
+        """Copy config_path to a timestamped sibling and return its path.
+
+        The backup is created exclusively (O_EXCL never follows a symlink planted
+        at the predictable name) and with the config's own mode from the start,
+        so a config holding other servers' tokens is never briefly readable by
+        other users through its backup.
+        """
+        st = config_path.stat()
+        data = config_path.read_bytes()
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        backup = config_path.with_name(f"{config_path.name}.bak-{stamp}")
+        counter = 1
+        while True:
+            try:
+                fd = os.open(backup, flags, stat.S_IMODE(st.st_mode))
+                break
+            except FileExistsError:
+                backup = config_path.with_name(f"{config_path.name}.bak-{stamp}-{counter}")
+                counter += 1
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(backup)
+            raise
+        os.utime(backup, ns=(st.st_atime_ns, st.st_mtime_ns))
+        return backup
+
+    def _replace_config_file(self, config_path: Path, config: Dict[str, Any]) -> Optional[Path]:
+        """Back up config_path (if present), then atomically replace it.
+
+        The new file is written to a temp file in the same directory and moved
+        into place with os.replace, keeping the original file mode. Returns the
+        backup path, or None if there was no previous file.
+        """
+        payload = (json.dumps(config, indent=2, ensure_ascii=False) + "\n").encode("utf-8")
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        if config_path.is_symlink():
+            # Update the file a (dotfiles-style) symlink points at, not the link.
+            config_path = Path(os.path.realpath(config_path))
+
+        backup = None
+        mode = None
+        if config_path.exists():
+            # os.replace would bypass a read-only file's permissions; honour them.
+            if not os.access(config_path, os.W_OK):
+                raise self._config_error(config_path, "it is not writable")
+            mode = stat.S_IMODE(config_path.stat().st_mode)
+            backup = self._backup_config_file(config_path)
+
+        fd, tmp_name = tempfile.mkstemp(
+            prefix=f".{config_path.name}.", suffix=".tmp", dir=str(config_path.parent)
+        )
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(payload)
+                f.flush()
+                os.fsync(f.fileno())
+            if mode is not None:
+                os.chmod(tmp_name, mode)
+            os.replace(tmp_name, config_path)
+        except BaseException:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp_name)
+            raise
+        return backup
+
+    def _install_into_config(self, config_path: Path) -> Dict[str, Any]:
+        """Add or update Enclave's server entry in the client config at config_path.
+
+        All other top-level keys and servers are preserved. Nothing is written
+        when the entry is already up to date. Raises MCPConfigError, without
+        touching the file, if the existing config cannot be parsed or is not
+        writable.
+        """
+        existing = self._read_config_for_update(config_path)
+        merged = self._merge_mcp_servers(existing or {}, self.generate_mcp_config())
+        if merged == existing:
+            return {"changed": False, "backup_path": None}
+        backup = self._replace_config_file(config_path, merged)
+        logger.info(f"Wrote MCP config to {config_path}")
+        return {"changed": True, "backup_path": str(backup) if backup else None}
+
     def _merge_mcp_servers(self, existing: Dict[str, Any], new_config: Dict[str, Any]) -> Dict[str, Any]:
         merged = dict(existing) if isinstance(existing, dict) else {}
         servers = merged.get("mcpServers")
-        if not isinstance(servers, dict):
-            servers = {}
-            merged["mcpServers"] = servers
+        # Copy so the caller's config is not mutated (and can be compared).
+        servers = dict(servers) if isinstance(servers, dict) else {}
+        merged["mcpServers"] = servers
 
         for legacy_name in self.LEGACY_SERVER_NAMES:
             if legacy_name in servers:
@@ -236,9 +367,9 @@ class MCPSetupHelper:
         if not path:
             return False
         try:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            with open(path, "w", encoding="utf-8") as f:
-                json.dump(config, f, indent=2)
+            backup = self._replace_config_file(path, config)
+            if backup:
+                logger.info(f"Backed up previous MCP config to {backup}")
             logger.info(f"Wrote MCP config to {path}")
             return True
         except Exception as e:
@@ -262,30 +393,42 @@ class MCPSetupHelper:
             return {"success": False, "target": "cursor", "error": "Cursor not detected."}
 
         try:
-            config = self.generate_mcp_config()
-            merged = self.merge_config(config, target=target)
             path = self._resolve_config_path(target)
-            if self.write_config(merged, config_path=path, target=target):
-                return {
-                    "success": True,
-                    "target": target,
-                    "config_path": str(path) if path else None,
-                    "message": f"{target.capitalize()} configured successfully.",
-                }
-            return {"success": False, "target": target, "error": "Failed to write MCP config file."}
+            if not path:
+                return {"success": False, "target": target, "error": "Failed to write MCP config file."}
+            outcome = self._install_into_config(path)
+            return {
+                "success": True,
+                "target": target,
+                "config_path": str(path),
+                "backup_path": outcome["backup_path"],
+                "changed": outcome["changed"],
+                "message": (
+                    f"{target.capitalize()} configured successfully."
+                    if outcome["changed"]
+                    else f"{target.capitalize()} was already configured; nothing changed."
+                ),
+            }
+        except MCPConfigError as e:
+            # The caller shows this message to the user; don't print it twice.
+            logger.info(str(e))
+            return {"success": False, "target": target, "error": str(e)}
         except Exception as e:
             logger.error(f"Auto-configure failed for {target}: {e}")
-            return {"success": False, "target": target, "error": str(e)}
+            return {"success": False, "target": target, "error": f"Failed to write MCP config file: {e}"}
 
     def auto_configure_all_clients(self) -> Dict[str, Any]:
         results: Dict[str, Dict[str, Any]] = {}
         configured = 0
+        failed = 0
 
         if self.detect_claude_desktop():
             res = self.auto_configure(target="claude")
             results["claude"] = res
             if res.get("success"):
                 configured += 1
+            else:
+                failed += 1
         else:
             results["claude"] = {"success": False, "target": "claude", "error": "not_detected"}
 
@@ -294,6 +437,8 @@ class MCPSetupHelper:
             results["cursor"] = res
             if res.get("success"):
                 configured += 1
+            else:
+                failed += 1
         else:
             results["cursor"] = {"success": False, "target": "cursor", "error": "not_detected"}
 
@@ -305,7 +450,9 @@ class MCPSetupHelper:
         }
 
         return {
-            "success": configured > 0,
+            # A detected client we could not configure (e.g. its config was
+            # refused as unparseable) is a failure the user must act on.
+            "success": configured > 0 and failed == 0,
             "configured_count": configured,
             "results": results,
         }
