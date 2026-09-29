@@ -16,7 +16,3 @@ enclave-gui             # desktop app
 enclave mcp install     # connect Claude Desktop
 enclave doctor          # diagnose any problem
 ```
-
-> Looking for the optional self-hosted sync backend (Supabase)? That is an
-> advanced deployment, not part of the local quick start — see
-> `advanced_vault/backend/` and install with `pip install -e ".[backend]"`.

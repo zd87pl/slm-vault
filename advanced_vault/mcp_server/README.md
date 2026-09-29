@@ -85,8 +85,7 @@ first profile by name is used. If there are no profiles yet, it is
 }
 ```
 
-`ENCLAVE_PROFILE` only selects the profile these MCP tools read. The OpenClaw
-bridge's `ENCLAVE_PROFILE_NAME` is a separate setting for that integration.
+`ENCLAVE_PROFILE` only selects the profile these MCP tools read.
 
 The server re-checks the profile and the index on every call, so switching
 profiles or adding documents in the app works without restarting Claude
