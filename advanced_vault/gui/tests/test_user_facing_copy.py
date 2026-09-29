@@ -58,8 +58,22 @@ class TestLocalizedCopy(unittest.TestCase):
             "Sample workspace ready with 4 files. Ask: What blocks autonomous spending above $75?",
         )
 
+    def test_settings_name_the_cipher_the_vault_uses(self) -> None:
+        # The local vault uses ChaCha20-Poly1305 with a 96-bit nonce
+        # (encrypted_kv/storage.py, training/rag_index.py), not XChaCha20.
+        for language in SUPPORTED_LANGUAGES:
+            with self.subTest(language=language):
+                text = get_text(language, "settings.encryption.algorithm")
+                self.assertIn("ChaCha20-Poly1305", text)
+                self.assertNotIn("XChaCha20", text)
+
     def test_changed_keys_exist_in_every_language(self) -> None:
-        keys = ("onboarding.trust.local", "local_model.download.required", "onboarding.add_sample")
+        keys = (
+            "onboarding.trust.local",
+            "local_model.download.required",
+            "onboarding.add_sample",
+            "settings.encryption.algorithm",
+        )
         for language in SUPPORTED_LANGUAGES:
             for key in keys:
                 with self.subTest(language=language, key=key):
