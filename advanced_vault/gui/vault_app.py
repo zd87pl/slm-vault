@@ -508,7 +508,7 @@ class VaultApp:
             self._component_status["qa"]["status"] = "checking"
             self._component_status["qa"]["message"] = self.tr("local_model.download.title")
             self._private_model_note = (
-                f"Download {model_status.get('display_name', 'the local model')} once on this Mac "
+                f"Download {model_status.get('display_name', 'the local model')} once on this computer "
                 "to enable private Q&A."
             )
             return
@@ -837,7 +837,7 @@ class VaultApp:
     def _set_global_kill_switch(self, enabled: bool) -> None:
         """Toggle the shared kill switch and keep wallet state aligned."""
         try:
-            reason = "Investor demo manual override"
+            reason = "Manual override from the desktop app"
             self.enclave_runtime.set_kill_switch(enabled, reason=reason, actor="local-ui")
             if enabled:
                 self.wallet_service.freeze_all(reason=reason)
@@ -1189,13 +1189,13 @@ class VaultApp:
             self.show_landing_page()
 
     def _enter_local_first_mode(self) -> None:
-        """Boot the app directly into a local-only investor demo mode."""
+        """Boot the app directly into local-only mode."""
         logger.info("Starting Enclave in local-first mode")
         self.initialize_vault()
         self._show_initial_authenticated_view()
         self._prewarm_private_model_session()
         self._show_user_message(
-            "Running in local-first mode. Your files and model context stay on this Mac.",
+            "Running in local-first mode. Your files and model context stay on this computer.",
             level="info",
         )
 
@@ -1241,7 +1241,7 @@ class VaultApp:
                                 text_align=ft.TextAlign.CENTER,
                             ),
                             ft.Text(
-                                "Install the cloud auth dependencies or run Enclave in local-first mode for the investor demo.",
+                                "Install the cloud auth dependencies or run Enclave in local-first mode.",
                                 size=14,
                                 color=LightTheme.TEXT_SECONDARY,
                                 text_align=ft.TextAlign.CENTER,
@@ -2333,7 +2333,7 @@ class VaultApp:
                     {
                         "name": "welcome_note.md",
                         "content": (
-                            "Enclave is a local-first AI workspace. Your files stay on this Mac by default, "
+                            "Enclave is a local-first AI workspace. Your files stay on this computer by default, "
                             "answers are synthesized locally, and external agents interact through controlled tools."
                         ),
                     },
@@ -5622,7 +5622,7 @@ class VaultApp:
         icon: Optional[str] = None,
         tint: Optional[str] = None,
     ) -> ft.Container:
-        """Small pill badge used across the investor demo shell."""
+        """Small pill badge used across the main shell."""
         if build_status_badge is None:
             raise RuntimeError("shell_components module is unavailable")
         return build_status_badge(label=label, color=color, icon=icon, tint=tint)
@@ -5633,7 +5633,7 @@ class VaultApp:
         padding: int = 20,
         bgcolor: Optional[str] = None,
     ) -> ft.Container:
-        """Standard elevated card surface for investor-demo views."""
+        """Standard elevated card surface for main-shell views."""
         if build_surface_card is None:
             raise RuntimeError("shell_components module is unavailable")
         return build_surface_card(content=content, padding=padding, bgcolor=bgcolor)
@@ -5734,13 +5734,13 @@ class VaultApp:
             configured = bool(mcp_status.get("claude_mcp_configured", mcp_status.get("mcp_configured", False)))
             installed = bool(mcp_status.get("claude_installed", configured))
             clients["claude"]["status"] = "active" if configured else ("ready" if installed else "offline")
-            clients["claude"]["last_seen"] = "Connected locally" if configured else ("Detected on this Mac" if installed else "Not detected")
+            clients["claude"]["last_seen"] = "Connected locally" if configured else ("Detected on this computer" if installed else "Not detected")
 
         if "cursor" in clients:
             configured = bool(mcp_status.get("cursor_mcp_configured", False))
             installed = bool(mcp_status.get("cursor_installed", configured))
             clients["cursor"]["status"] = "active" if configured else ("ready" if installed else "offline")
-            clients["cursor"]["last_seen"] = "Connected locally" if configured else ("Detected on this Mac" if installed else "Not detected")
+            clients["cursor"]["last_seen"] = "Connected locally" if configured else ("Detected on this computer" if installed else "Not detected")
 
         if "openclaw" in clients:
             repo_root = Path(__file__).resolve().parents[2]
@@ -5793,7 +5793,7 @@ class VaultApp:
             self._show_connections_view()
 
     def _render_primary_shell(self, active_index: int, content: ft.Control) -> None:
-        """Render the main investor-demo shell with the modern sidebar."""
+        """Render the main shell with the modern sidebar."""
         profile_status = self._get_private_model_status()
         document_count = int(profile_status.get("document_count", 0) or 0)
         if getattr(self, "vault_service", None) is not None:
