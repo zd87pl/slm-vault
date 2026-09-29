@@ -6420,7 +6420,9 @@ class VaultApp:
                         logger.warning(f"Private model chat error: {private_err}")
                         response_text = None
 
-                # PRIORITY 2: Legacy LocalAgent fallback for older indexes
+                # PRIORITY 2: LocalAgent over the same profile index (the one
+                # MCP serves).  It only answers from retrieved sources; with
+                # none, fall through to the base model below.
                 if response_text is None and inference_mode == "local":
                     try:
                         from advanced_vault.mcp_server.agent import get_agent
@@ -6428,16 +6430,11 @@ class VaultApp:
                         agent = get_agent(vault_path=str(self.vault_path))
                         result = agent.query(question=query, temperature=0.4)
 
-                        if result.get("error") is None or result.get("answer"):
+                        sources = result.get("sources") or []
+                        if sources:
                             response_text = result.get("answer", "")
-                            sources = result.get("sources", [])
-                            if sources:
-                                source_items = sources
-                                doc_name = ", ".join((s.get("document") or "Indexed Documents") for s in sources[:3])
-                            elif result.get("rag_used"):
-                                doc_name = "Legacy Indexed Documents"
-                            else:
-                                doc_name = result.get("model_used") or profile_name
+                            source_items = sources
+                            doc_name = ", ".join((s.get("document") or "Indexed Documents") for s in sources[:3])
                     except Exception as agent_err:
                         logger.warning(f"Local agent error: {agent_err}")
                         response_text = None

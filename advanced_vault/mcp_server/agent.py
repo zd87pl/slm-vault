@@ -21,10 +21,11 @@ to -- ``<vault>/private_models/<profile>/vault/rag.db`` with that profile's
 The profile comes from ``private_models.manager.resolve_active_profile()``:
 the profile last active in the app, else the first profile by name, else
 ``workspace``.  Set ``ENCLAVE_PROFILE=<name>`` to pin a profile explicitly.
-The profile is re-resolved on every call and the index is reopened when
-another process changes it, so documents added in the app show up without
-restarting the MCP server.  Reading never creates an index or a key; a
-profile with no index yet is reported as having zero documents.
+The profile is re-resolved on every call and the index is reopened only when
+another process changes it (``rag.db`` or its saved HNSW index), so documents
+added in the app show up without restarting the MCP server.  Reading never
+creates an index or a key; a profile with no index yet is reported as having
+zero documents, with a hint on how to add some.
 """
 
 import logging
@@ -77,15 +78,31 @@ def _loaded_model_name(engine: Any) -> str:
 
 
 def _index_signature(db_path: Path) -> tuple:
-    """Fingerprint an index's files (``rag.db`` and its vector-index sidecars)."""
+    """Fingerprint the files another process changes when it edits an index.
+
+    ``rag.db`` changes on every add and delete; ``rag.hnsw`` and
+    ``rag.meta.json`` are the saved HNSW index that opening loads.
+    ``rag.brute.json`` is deliberately left out: without hnswlib, opening an
+    index rebuilds the brute-force vector index from ``rag.db`` and rewrites
+    that file, so fingerprinting it would make every call reopen the index.
+    """
     entries = []
-    for path in sorted(db_path.parent.glob(f"{db_path.stem}.*")):
+    for path in (db_path, db_path.with_suffix(".hnsw"), db_path.with_suffix(".meta.json")):
         try:
             stat = path.stat()
         except OSError:
             continue
         entries.append((path.name, stat.st_mtime_ns, stat.st_size))
     return str(db_path), tuple(entries)
+
+
+def _redact_home(text: str) -> str:
+    """Show paths under the home directory as ``~/...``, so the external
+    caller is not told the local username."""
+    home = str(Path.home()).rstrip("/\\")
+    if not home:
+        return text
+    return re.sub(re.escape(home) + r"(?=[/\\'\"\s),]|$)", "~", text)
 
 
 class LocalAgent:
@@ -119,6 +136,8 @@ class LocalAgent:
         self._profile = profile
         self._rag_index = None
         self._rag_signature = None
+        # Kept across reopens so switching profiles never reloads the model.
+        self._embedding_engine = None
         # Set by _get_rag_index(): the resolved profile index, and why it could
         # not be opened (None when it simply does not exist yet).
         self._index_location = None
@@ -157,6 +176,11 @@ class LocalAgent:
         except ValueError as e:
             self._index_error = f"RAG index not available: {e}"
             return None
+        except OSError as e:
+            # strerror only: str(e) would carry the absolute path.
+            reason = e.strerror or type(e).__name__
+            self._index_error = f"RAG index not available: cannot read profiles ({reason})"
+            return None
         self._index_location = location
 
         if not location.db_path.exists():
@@ -166,10 +190,7 @@ class LocalAgent:
             if not create:
                 return None
             if not location.profile_exists:
-                self._index_error = (
-                    f"RAG index not available: profile '{location.profile}' does not exist; "
-                    f"create it in the Enclave app or with `enclave model create {location.profile}`"
-                )
+                self._index_error = f"RAG index not available: {self._setup_hint(location)}"
                 return None
             manager = PrivateModelManager(root_path=str(self.vault_path / PRIVATE_MODELS_DIRNAME))
             manager._load_or_create_master_key(location.profile)
@@ -185,24 +206,29 @@ class LocalAgent:
             # Fail closed: a new key could never decrypt the existing index.
             self._rag_index = None
             self._index_error = (
-                f"RAG index not available: encryption key for profile "
-                f"'{location.profile}' is missing ({location.key_path})"
+                f"RAG index not available: the encryption key for profile "
+                f"'{location.profile}' is missing, so its documents cannot be read"
             )
             return None
 
         try:
-            previous = self._rag_index
+            # Drop the old handle without close(): that would re-save its
+            # vector index over files another process owns.
+            self._rag_index = None
             self._rag_index = RAGIndex(
                 master_key=location.key_path.read_bytes(),
                 db_path=str(location.db_path),
-                embedding_engine=getattr(previous, "embedding_engine", None),
+                embedding_engine=self._embedding_engine,
             )
+            self._embedding_engine = self._rag_index.embedding_engine
             self._rag_signature = signature
             logger.info(f"Encrypted RAG index opened for profile '{location.profile}'")
-        except (OSError, ValueError, RuntimeError, sqlite3.Error) as e:
+        except (ImportError, OSError, ValueError, RuntimeError, sqlite3.Error) as e:
+            # ImportError: the embedding backend (sentence-transformers) is
+            # only imported when the index loads its model.
             logger.error(f"Failed to open RAG index for profile '{location.profile}': {e}")
             self._rag_index = None
-            self._index_error = f"RAG index not available: {e}"
+            self._index_error = f"RAG index not available: {_redact_home(str(e))}"
             return None
         return self._rag_index
 
@@ -217,16 +243,65 @@ class LocalAgent:
             )
         return "RAG index not available"
 
+    def _uses_app_vault(self) -> bool:
+        """True when this is the vault the Enclave app uses (always ``~/.vault``)."""
+        return self.vault_path == Path("~/.vault").expanduser()
+
+    def _enclave_command(self, *args: str) -> str:
+        """An ``enclave`` CLI command acting on this agent's vault directory."""
+        command = ["enclave"]
+        if not self._uses_app_vault():
+            vault = _redact_home(str(self.vault_path))
+            if any(ch.isspace() for ch in vault):
+                # "~" does not expand inside quotes; $HOME does.
+                vault = '"' + re.sub(r"^~(?=[/\\]|$)", "$HOME", vault) + '"'
+            command += ["--vault-path", vault]
+        return " ".join(command + list(args))
+
+    def _setup_hint(self, location: Any) -> str:
+        """How to get documents into ``location``'s index (it has none yet).
+
+        ``enclave model ingest`` fails for a profile that does not exist, so
+        then the hint says to create it first.  The app is only suggested for
+        the vault it uses.
+        """
+        profile = location.profile
+        ingest = f"`{self._enclave_command('model', 'ingest', profile, '<paths>')}`"
+        create = f"`{self._enclave_command('model', 'create', profile)}`"
+        app = self._uses_app_vault()
+        if location.profile_exists:
+            how = f"add files in the Enclave app, or run {ingest}" if app else f"run {ingest}"
+            return f"Profile '{profile}' has no indexed documents yet: {how}."
+        if app:
+            how = f"open the Enclave app (or run {create}), then add files in the app or run {ingest}"
+        else:
+            how = f"run {create}, then {ingest}"
+        return f"Profile '{profile}' does not exist yet: {how}."
+
     def _no_match_answer(self) -> str:
         """Answer returned when retrieval finds nothing to answer from."""
         location = self._index_location
         if location is not None and not location.db_path.exists():
-            return (
-                f"{NO_MATCH_ANSWER} Profile '{location.profile}' has no indexed documents "
-                "yet: add files in the Enclave app or run "
-                f"`enclave model ingest {location.profile} <paths>`."
-            )
+            return f"{NO_MATCH_ANSWER} {self._setup_hint(location)}"
         return NO_MATCH_ANSWER
+
+    def _legacy_index_document_count(self) -> int:
+        """Documents in ``$VAULT_PATH/rag.db``, the index older builds wrote.
+
+        The agent no longer reads it; the count only lets ``get_status`` tell
+        the user to add those files again.  Opened read-only.
+        """
+        legacy_db = self.vault_path / "rag.db"
+        if not legacy_db.is_file():
+            return 0
+        try:
+            conn = sqlite3.connect(f"{legacy_db.resolve().as_uri()}?mode=ro", uri=True)
+            try:
+                return int(conn.execute("SELECT COUNT(*) FROM documents").fetchone()[0])
+            finally:
+                conn.close()
+        except (sqlite3.Error, OSError, RuntimeError, ValueError, TypeError):
+            return 0
 
     def _get_inference_engine(self) -> Optional["LocalInferenceEngine"]:  # noqa: F821
         """Get or create inference engine."""
@@ -302,11 +377,21 @@ class LocalAgent:
             rag_index = self._get_rag_index()
             if rag_index:
                 try:
+                    rag_index.clear_errors()
                     rag_results = rag_index.search(
                         query=question,
                         top_k=5,
                         threshold=RAG_QUERY_THRESHOLD
                     )
+                    decrypt_errors = rag_index.get_last_errors()
+                    if not rag_results and isinstance(decrypt_errors, list) and decrypt_errors:
+                        # Search skips chunks it cannot decrypt; with nothing
+                        # left, "no match" would hide a wrong or rotated key.
+                        result["error"] = (
+                            f"Document search failed: {len(decrypt_errors)} indexed chunk(s) "
+                            "could not be decrypted with the profile's key"
+                        )
+                        return result
 
                     if rag_results:
                         context_parts = []
@@ -325,9 +410,9 @@ class LocalAgent:
                         context = "\n\n".join(context_parts)
                         result["rag_used"] = True
                         logger.info(f"Found {len(rag_results)} relevant chunks")
-                except (ValueError, RuntimeError, OSError) as e:
+                except (ValueError, RuntimeError, OSError, sqlite3.Error) as e:
                     logger.error(f"RAG search failed: {e}")
-                    result["error"] = f"Document search failed: {e}"
+                    result["error"] = f"Document search failed: {_redact_home(str(e))}"
                     return result
             elif self._index_error is not None or self._index_location is None:
                 # The index could not be read (as opposed to not existing yet).
@@ -601,8 +686,13 @@ Draft:"""
             "chunk_count": 0,
             "backend": None,
             "profile": None,
+            "profile_exists": False,
             "index_path": None,
-            "index_error": None
+            "index_error": None,
+            # What to do when the profile has no documents yet (None otherwise).
+            "index_hint": None,
+            # Documents in an index older builds wrote, which is no longer read.
+            "legacy_index_documents": 0
         }
 
         # Check inference engine
@@ -615,9 +705,11 @@ Draft:"""
 
         # Check RAG index (the active profile's; reported even before it exists)
         rag_index = self._get_rag_index()
-        if self._index_location is not None:
-            status["profile"] = self._index_location.profile
-            status["index_path"] = str(self._index_location.db_path)
+        location = self._index_location
+        if location is not None:
+            status["profile"] = location.profile
+            status["profile_exists"] = location.profile_exists
+            status["index_path"] = str(location.db_path)
         status["index_error"] = self._index_error
         if rag_index:
             status["rag_available"] = True
@@ -631,8 +723,11 @@ Draft:"""
                     {"name": d["name"], "chunks": d["chunk_count"]}
                     for d in docs[:STATUS_MAX_DOCUMENTS]
                 ]
-            except (ValueError, RuntimeError, OSError) as e:
+            except (ValueError, RuntimeError, OSError, sqlite3.Error) as e:
                 logger.warning(f"Failed to get RAG stats: {e}")
+        if location is not None and status["index_error"] is None and not status["document_count"]:
+            status["index_hint"] = self._setup_hint(location)
+        status["legacy_index_documents"] = self._legacy_index_document_count()
 
         status["ready"] = status["rag_available"] or status["model_loaded"]
         return status

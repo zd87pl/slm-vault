@@ -1263,10 +1263,13 @@ class VaultMCPServer:
                 lines.append(f"Index: {index_path}")
             if status.get("index_error"):
                 lines.append(f"Index error: {status['index_error']}")
-            elif status.get("profile") and not status["rag_available"]:
+            elif status.get("index_hint"):
+                lines.append(status["index_hint"])
+            if status.get("legacy_index_documents"):
                 lines.append(
-                    "No documents indexed yet for this profile. Add files in the Enclave app "
-                    f"or run: enclave model ingest {status['profile']} <paths>"
+                    f"Note: {status['legacy_index_documents']} document(s) indexed by an older "
+                    "Enclave version (in $VAULT_PATH/rag.db) are no longer read. Add those files "
+                    "again in the Enclave app to make them available here."
                 )
             lines.append(f"Documents indexed: {status['document_count']}")
             lines.append(f"Total chunks: {status['chunk_count']}")

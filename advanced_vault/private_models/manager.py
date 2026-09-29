@@ -160,10 +160,12 @@ def resolve_active_profile(
 
     existing: List[str] = []
     if root_path.is_dir():
-        existing = sorted(
-            path.name for path in root_path.iterdir()
+        # Same order as PrivateModelManager.list_profiles(), whose first entry
+        # the GUI falls back to.
+        existing = [
+            path.name for path in sorted(root_path.iterdir())
             if path.is_dir() and (path / "profile.json").exists()
-        )
+        ]
 
     if requested:
         if requested in {".", ".."} or Path(requested).name != requested:

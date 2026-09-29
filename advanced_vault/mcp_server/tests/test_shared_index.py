@@ -18,8 +18,9 @@ import pytest
 from click.testing import CliRunner
 
 import advanced_vault.mcp_server.agent as agent_module
+import advanced_vault.training as training
 from advanced_vault.cli.main import cli
-from advanced_vault.mcp_server.agent import LocalAgent
+from advanced_vault.mcp_server.agent import LocalAgent, _index_signature
 from advanced_vault.mcp_server.server import create_vault_server
 from advanced_vault.private_models.manager import (
     ACTIVE_PROFILE_STATE_FILE,
@@ -120,6 +121,21 @@ def engine():
         yield fake
 
 
+@pytest.fixture
+def index_opens(monkeypatch):
+    """Record every RAGIndex the agent constructs (each one is a full reopen)."""
+    opened = []
+    real_rag_index = training.RAGIndex
+
+    class CountingRAGIndex(real_rag_index):
+        def __init__(self, *args, **kwargs):
+            opened.append(kwargs.get("db_path"))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(training, "RAGIndex", CountingRAGIndex)
+    return opened
+
+
 def _write(directory: Path, name: str, text: str) -> Path:
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / name
@@ -208,9 +224,16 @@ def test_no_index_yet_reports_profile_and_skips_llm(home, engine):
     assert Path(status["index_path"]) == (
         home / ".vault" / "private_models" / "workspace" / "vault" / "rag.db"
     )
+    assert status["profile_exists"] is False
+    # `enclave model ingest` fails for a profile that does not exist, so the
+    # hint has to say to create it first.
+    create, ingest = "enclave model create workspace", "enclave model ingest workspace <paths>"
+    assert create in status["index_hint"] and ingest in status["index_hint"]
+    assert status["index_hint"].index(create) < status["index_hint"].index(ingest)
     status_text = _text(asyncio.run(server._handle_agent_status({})))
     assert "Profile: workspace" in status_text
     assert "Documents indexed: 0" in status_text
+    assert create in status_text and ingest in status_text
 
     result = agent.query("How much is the security deposit?")
     assert result["error"] is None
@@ -218,11 +241,39 @@ def test_no_index_yet_reports_profile_and_skips_llm(home, engine):
     assert result["rag_used"] is False
     assert result["model_used"] is None
     assert "No indexed documents matched" in result["answer"]
+    assert create in result["answer"] and ingest in result["answer"]
     assert engine.rendered_prompts == []
 
     # Looking must not create keys or databases anywhere.
     assert list((home / ".vault").rglob("master.key")) == []
     assert list((home / ".vault").rglob("rag.db")) == []
+
+    # Following the hint works, and the running server picks the result up.
+    lease = _write(home / "docs", "lease.md", LEASE_TEXT)
+    _enclave(*create.split()[1:])
+    status = agent.get_status()
+    assert status["profile_exists"] is True
+    assert create not in status["index_hint"] and ingest in status["index_hint"]
+    _enclave("model", "ingest", "workspace", str(lease))
+    status = agent.get_status()
+    assert status["document_count"] == 1
+    assert status["index_hint"] is None
+
+
+def test_setup_hint_names_a_custom_vault_path(home, engine):
+    vault = home / "My Vault"
+    agent = create_vault_server(str(vault))._get_agent()
+
+    hint = agent.get_status()["index_hint"]
+    assert 'enclave --vault-path "$HOME/My Vault" model create workspace' in hint
+    assert 'enclave --vault-path "$HOME/My Vault" model ingest workspace <paths>' in hint
+    assert str(home) not in hint  # no username for the external AI
+    assert "Enclave app" not in hint  # the app only uses ~/.vault
+
+    lease = _write(home / "docs", "lease.md", LEASE_TEXT)
+    _enclave("--vault-path", str(vault), "model", "create", "workspace")
+    _enclave("--vault-path", str(vault), "model", "ingest", "workspace", str(lease))
+    assert agent.get_status()["document_count"] == 1
 
 
 def test_no_matching_documents_returns_explicit_answer_without_llm(home, engine):
@@ -267,7 +318,7 @@ def test_agent_follows_the_profile_the_app_marked_active(home, engine):
     assert [s["document"] for s in agent.query("How long does the cake bake?")["sources"]] == ["cake.md"]
 
 
-def test_agent_sees_documents_added_after_it_opened_the_index(home, engine):
+def test_agent_sees_documents_added_after_it_opened_the_index(home, engine, index_opens):
     lease = _write(home / "docs", "lease.md", LEASE_TEXT)
     recipe = _write(home / "docs", "cake.md", RECIPE_TEXT)
     _enclave("model", "create", "workspace")
@@ -275,7 +326,11 @@ def test_agent_sees_documents_added_after_it_opened_the_index(home, engine):
 
     agent = create_vault_server()._get_agent()
     assert agent.get_status()["document_count"] == 1
-    agent.query("How much is the security deposit?")  # index now open in this process
+    agent.query("How much is the security deposit?")
+    agent.get_status()
+    # Nothing changed on disk: the index was opened once, not once per call
+    # (opening rewrites the brute-force vector cache, which must not count).
+    assert len(index_opens) == 1
 
     # Another process (the app or the CLI) adds a document.
     _enclave("model", "ingest", "workspace", str(recipe))
@@ -283,6 +338,23 @@ def test_agent_sees_documents_added_after_it_opened_the_index(home, engine):
     assert agent.get_status()["document_count"] == 2
     sources = agent.query("How long does the cake bake at 170 degrees?")["sources"]
     assert "cake.md" in [source["document"] for source in sources]
+    agent.get_status()
+    assert len(index_opens) == 2
+
+
+def test_index_signature_tracks_only_files_other_processes_change(tmp_path):
+    db_path = tmp_path / "rag.db"
+    db_path.write_bytes(b"db")
+    before = _index_signature(db_path)
+
+    # Rewritten by every open without hnswlib: not a change by someone else.
+    (tmp_path / "rag.brute.json").write_text("{}")
+    assert _index_signature(db_path) == before
+
+    for name, data in (("rag.hnsw", b"graph"), ("rag.meta.json", b"{}"), ("rag.db", b"db2")):
+        previous = _index_signature(db_path)
+        (tmp_path / name).write_bytes(data)
+        assert _index_signature(db_path) != previous, name
 
 
 def test_profile_override_env_var(home, engine, monkeypatch):
@@ -348,3 +420,58 @@ def test_invalid_profile_override_is_reported_not_raised(home, engine, monkeypat
     assert result["sources"] == []
     assert "Invalid profile name" in result["error"]
     assert engine.rendered_prompts == []
+
+
+def test_missing_key_fails_closed_without_revealing_the_path(home, engine):
+    lease = _write(home / "docs", "lease.md", LEASE_TEXT)
+    _enclave("model", "create", "workspace")
+    _enclave("model", "ingest", "workspace", str(lease))
+    key_path = home / ".vault" / "private_models" / "workspace" / "vault" / "master.key"
+    key_path.rename(key_path.with_name("master.key.moved"))
+
+    server = create_vault_server()
+    agent = server._get_agent()
+    status = agent.get_status()
+    assert status["rag_available"] is False
+    assert status["document_count"] == 0
+    assert "encryption key for profile 'workspace' is missing" in status["index_error"]
+    assert str(home) not in status["index_error"]
+    assert status["index_hint"] is None  # not "add files": the documents exist
+
+    result = agent.query("How much is the security deposit?")
+    assert "encryption key" in result["error"]
+    assert str(home) not in _text(asyncio.run(server._handle_agent_status({})))
+    assert result["sources"] == [] and engine.rendered_prompts == []
+    assert not key_path.exists()  # never replaced by a new key
+
+
+def test_wrong_key_is_reported_not_answered_as_no_match(home, engine):
+    lease = _write(home / "docs", "lease.md", LEASE_TEXT)
+    _enclave("model", "create", "workspace")
+    _enclave("model", "ingest", "workspace", str(lease))
+    key_path = home / ".vault" / "private_models" / "workspace" / "vault" / "master.key"
+    key_path.write_bytes(bytes(32))  # a different, valid-length key
+
+    result = create_vault_server()._get_agent().query("How much is the security deposit?")
+    assert "could not be decrypted" in result["error"]
+    assert "No indexed documents matched" not in result["answer"]
+    assert result["sources"] == [] and engine.rendered_prompts == []
+
+
+def test_status_points_out_documents_left_in_the_legacy_index(home, engine):
+    from advanced_vault.training import RAGIndex
+
+    server = create_vault_server()
+    legacy_db = home / ".vault" / "rag.db"
+    # An empty legacy index (the old agent created one on every start) is not worth a note.
+    RAGIndex(master_key=os.urandom(32), db_path=str(legacy_db))
+    assert server._get_agent().get_status()["legacy_index_documents"] == 0
+    assert "older" not in _text(asyncio.run(server._handle_agent_status({})))
+
+    RAGIndex(master_key=os.urandom(32), db_path=str(legacy_db)).add_document(
+        name="old.md", content=LEASE_TEXT
+    )
+    assert server._get_agent().get_status()["legacy_index_documents"] == 1
+    status_text = _text(asyncio.run(server._handle_agent_status({})))
+    assert "1 document(s) indexed by an older Enclave version" in status_text
+    assert "Documents indexed: 0" in status_text  # still not served
