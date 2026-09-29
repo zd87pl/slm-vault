@@ -2,7 +2,7 @@
 
 The canonical quick start lives in the repository README:
 
-**→ [README — Quick Start (macOS, ~5 minutes)](../../README.md#quick-start-macos-5-minutes)**
+**→ [README — Quick Start (Apple Silicon Mac)](../../README.md#quick-start-apple-silicon-mac)**
 
 TL;DR:
 
