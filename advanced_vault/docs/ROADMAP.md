@@ -1,5 +1,9 @@
 # Development Roadmap: Advanced Vault Features
 
+> **Historical (October 2025).** This roadmap is for an earlier secrets-vault
+> design; most of its later phases were never built and it does not reflect
+> current plans. See the main [README](../../README.md) for the current state.
+
 **Start Date:** 2025-10-26
 **Branch:** advanced-vault-features
 **Status:** 🚧 Planning Phase

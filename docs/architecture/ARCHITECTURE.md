@@ -1,5 +1,9 @@
 # Personal SLM Finetuning System Architecture
 
+> **Historical design document.** This describes an earlier RunPod-based
+> fine-tuning platform for personal health and genetic data, not the current
+> local app. See the main [README](../../README.md) for the current design.
+
 ## System Overview
 A secure, scalable platform for continuously finetuning private Small Language Models using multimodal personal health data on RunPod infrastructure.
 

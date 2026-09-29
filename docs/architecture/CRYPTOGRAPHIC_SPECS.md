@@ -1,5 +1,11 @@
 # Cryptographic Technical Specifications
 
+> **Historical design document — not implemented.** The design described here
+> (XChaCha20, a key hierarchy, HSM/SGX, zero-knowledge proofs, homomorphic
+> encryption) was never built and does not describe the current code. For what
+> Enclave actually encrypts today, see [SECURITY.md](../../SECURITY.md) and the
+> README's [What is and isn't encrypted](../../README.md#what-is-and-isnt-encrypted).
+
 ## Overview
 
 This document provides detailed technical specifications for the cryptographic components of the Weight-Delta Vault Adapters (WDVA) system, ensuring privacy-preserving personalization for genetic fitness applications.

@@ -1,5 +1,9 @@
 # Baseline Functionality (Proven & Working)
 
+> **Historical (October 2025).** This documents the legacy RunPod
+> cloud-training baseline in `src/`, not the current local app. See the main
+> [README](../../README.md) for the current state.
+
 **Last Verified:** 2025-10-26
 **Branch:** main (commit: 65606d3)
 **Status:** ✅ All tests passing, RunPod deployment working

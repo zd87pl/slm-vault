@@ -1,5 +1,9 @@
 # Implementation Status - Consolidated
 
+> **Out of date (January 2025).** This page describes an earlier cloud-based
+> (RunPod/Supabase) design and does not reflect the project today. See the main
+> [README](../../README.md) for current status and known limitations.
+
 **Last Updated:** 2025-01-30  
 **Status:** Alpha Release Ready ✅
 
