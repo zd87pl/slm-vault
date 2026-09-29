@@ -12,6 +12,25 @@ from .config import EnclavePolicyConfig
 from .models import AgentPolicy, AuditEventRecord, KillSwitchState, ModuleStatus, utcnow_iso
 
 
+def resolve_agent_policy(agents: Dict[str, AgentPolicy], agent_id: str) -> AgentPolicy:
+    """Resolve a concrete agent policy from ``agents``, falling back to `default`."""
+    if agent_id in agents:
+        return agents[agent_id]
+
+    # Match common normalized aliases before defaulting.
+    normalized = (agent_id or "default").strip().lower()
+    if normalized in agents:
+        return agents[normalized]
+
+    if "claude" in normalized and "claude-desktop" in agents:
+        return agents["claude-desktop"]
+    if "cursor" in normalized and "cursor" in agents:
+        return agents["cursor"]
+    if "openclaw" in normalized and "openclaw" in agents:
+        return agents["openclaw"]
+    return agents["default"]
+
+
 class EnclaveRuntime:
     """Shared control-plane facade used by GUI, CLI, Sheriff, MCP, and Wallet."""
 
@@ -64,21 +83,7 @@ class EnclaveRuntime:
 
     def get_agent_policy(self, agent_id: str) -> AgentPolicy:
         """Resolve a concrete agent policy, falling back to `default`."""
-        if agent_id in self._document.agents:
-            return self._document.agents[agent_id]
-
-        # Match common normalized aliases before defaulting.
-        normalized = (agent_id or "default").strip().lower()
-        if normalized in self._document.agents:
-            return self._document.agents[normalized]
-
-        if "claude" in normalized and "claude-desktop" in self._document.agents:
-            return self._document.agents["claude-desktop"]
-        if "cursor" in normalized and "cursor" in self._document.agents:
-            return self._document.agents["cursor"]
-        if "openclaw" in normalized and "openclaw" in self._document.agents:
-            return self._document.agents["openclaw"]
-        return self._document.agents["default"]
+        return resolve_agent_policy(self._document.agents, agent_id)
 
     def evaluate_action(
         self,

@@ -10,9 +10,15 @@ from advanced_vault.sheriff.core import SheriffCore
 from advanced_vault.sheriff.models import AccessDecision, FileRiskLabel
 
 
+# Sheriff re-checks the shared policy (~/.enclave/policies.toml); the shipped
+# one lets the operator identities (vault-cli, local-ui) use it, not unknown apps.
+SUBJECT = "vault-cli"
+
+
 @pytest.fixture
-def sheriff(tmp_path: Path) -> SheriffCore:
-    """Create sheriff core with temporary vault path."""
+def sheriff(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SheriffCore:
+    """Create sheriff core with temporary vault path and shared policy."""
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     return SheriffCore(vault_path=str(tmp_path))
 
 
@@ -22,7 +28,7 @@ def test_request_access_allows_normal_with_lease(sheriff: SheriffCore, tmp_path:
     resource.write_text("meeting notes")
 
     result = sheriff.request_access(
-        subject_app="test-app",
+        subject_app=SUBJECT,
         resource=str(resource),
         purpose="answer question",
     )
@@ -38,7 +44,7 @@ def test_request_access_prompt_then_consent_for_critical(sheriff: SheriffCore, t
     resource.write_text("dummy-key")
 
     prompt_result = sheriff.request_access(
-        subject_app="test-app",
+        subject_app=SUBJECT,
         resource=str(resource),
         purpose="summarize",
     )
@@ -47,7 +53,7 @@ def test_request_access_prompt_then_consent_for_critical(sheriff: SheriffCore, t
     assert prompt_result.lease is None
 
     granted_result = sheriff.consent_decide(
-        subject_app="test-app",
+        subject_app=SUBJECT,
         resource=str(resource),
         purpose="summarize",
         allow=True,
@@ -63,13 +69,13 @@ def test_read_with_lease_redacts_then_blocks_after_revoke(sheriff: SheriffCore, 
     resource.write_text("password=mysecret\ntoken=abc")
 
     lease = sheriff.issue_lease(
-        subject_app="test-app",
+        subject_app=SUBJECT,
         resource_scope=str(resource),
         purpose="inspect",
         ttl_seconds=60,
     )
     content = sheriff.read_with_lease(
-        subject_app="test-app",
+        subject_app=SUBJECT,
         resource=str(resource),
         lease_id=lease.lease_id,
         redact=True,
@@ -79,11 +85,27 @@ def test_read_with_lease_redacts_then_blocks_after_revoke(sheriff: SheriffCore, 
     assert sheriff.revoke_lease(lease.lease_id) is True
     with pytest.raises(PermissionError):
         sheriff.read_with_lease(
-            subject_app="test-app",
+            subject_app=SUBJECT,
             resource=str(resource),
             lease_id=lease.lease_id,
             redact=True,
         )
+
+
+def test_unidentified_subject_gets_no_lease_or_file_content(sheriff: SheriffCore, tmp_path: Path) -> None:
+    """The shared policy's default entry no longer allows sheriff.* for unknown apps."""
+    resource = tmp_path / "notes.txt"
+    resource.write_text("meeting notes")
+
+    result = sheriff.request_access(subject_app="unknown", resource=str(resource), purpose="read")
+
+    assert result.decision == AccessDecision.DENY
+    assert result.lease is None
+    lease = sheriff.issue_lease(
+        subject_app="unknown", resource_scope=str(resource), purpose="read", ttl_seconds=60,
+    )
+    with pytest.raises(PermissionError, match="sheriff.read"):
+        sheriff.read_with_lease(subject_app="unknown", resource=str(resource), lease_id=lease.lease_id)
 
 
 def test_scan_risk_detects_secret_recommendation(sheriff: SheriffCore, tmp_path: Path) -> None:
