@@ -28,7 +28,6 @@ jobs:
       # Blocking gate: rules that indicate real bugs (undefined names,
       # syntax errors, comparison mistakes). Style rules are a local
       # concern (`ruff check advanced_vault/`) until the backlog is paid.
-      # `src/` is the legacy cloud-training stack and is not gated.
       - name: Ruff correctness rules
         run: ruff check advanced_vault/ --select F821,F811,F823,E9,F63,F7 --output-format=github
 
@@ -51,8 +50,8 @@ jobs:
         run: |
           pip install -e ".[dev]"
 
-      # Full testpaths: optional-dependency suites (backend, GUI, MLX,
-      # legacy cloud training) skip automatically via conftest guards.
+      # Full testpaths: optional-dependency suites (backend, GUI, MLX) skip
+      # automatically via conftest guards.
       - name: Run tests
         run: |
           pytest tests/ advanced_vault/ \
@@ -216,12 +215,12 @@ jobs:
       # a guarded fallback to `cryptography` — a well-known false positive.
       - name: Bandit security scan (full codebase)
         run: |
-          bandit -r advanced_vault/ src/ \
+          bandit -r advanced_vault/ \
             -x '**/tests/**' \
             --severity-level medium \
             --confidence-level medium \
             -f json -o bandit-report.json || true
-          bandit -r advanced_vault/ src/ \
+          bandit -r advanced_vault/ \
             -x '**/tests/**' \
             --skip B413 \
             --severity-level high \

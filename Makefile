@@ -190,16 +190,6 @@ install-mcp:
 	$(PYTHON) -m advanced_vault.cli mcp install
 
 # ============================================================================
-# Docker (for self-hosted deployment)
-# ============================================================================
-
-docker-build:
-	docker build -t enclave-vault:$(VERSION) .
-
-docker-run:
-	docker run -p 8080:8080 -v ~/.enclave:/data enclave-vault:$(VERSION)
-
-# ============================================================================
 # Release
 # ============================================================================
 
