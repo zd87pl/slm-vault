@@ -67,7 +67,7 @@ Non-goals for Phase 1:
 
 ### 1.3 Amendments to the roadmap
 
-This ADR changes four things the [roadmap](../launch-plan/ROADMAP.md) states:
+This ADR changes three things the [roadmap](../launch-plan/ROADMAP.md) states:
 
 - **Components kept.** The roadmap's disposition table keeps and refactors `RAGIndex`, `VectorIndex` and a slimmed `enclave_control`.
   This ADR instead *replaces* their storage and runtime with the engine store, an in-engine vector matrix and the consent/audit
@@ -115,7 +115,7 @@ The engine is a headless asyncio process with these parts:
 | CLI while the app runs | Nobody: the CLI connects | n/a |
 | CLI or dev without the app | `<app> engine start [--foreground]` | Until `<app> engine stop`. Without a UI, consent comes from `<app> consent watch` (§6.2) or existing grants |
 | The app starts while a CLI-started engine runs | The shell sees exit code 3, verifies the running engine binary (§3.2), asks the user, SIGTERMs it and spawns its own. It never loops | n/a |
-| Flet GUI (PR 11 until Phase 2) | Flet spawns `<app>-engine serve` without an owner token and authenticates with the passphrase from its unlock dialog | Until Flet quits |
+| Flet GUI (PR 11 until Phase 2) | Flet spawns `<app>-engine serve` without an owner token and sends the passphrase from its unlock dialog only to that child (§3.2). If the child exits with code 3, Flet does not connect to the running engine; it asks the user to stop it | Until Flet quits |
 | MCP client launches the shim | The shim never starts an engine (§7.4) | n/a |
 
 **Single instance.** An exclusive, non-blocking lock on `<data_root>/engine.lock` (`fcntl.flock`, or `LockFileEx` on Windows) is
@@ -186,19 +186,26 @@ Every connection starts with `hello`, then authenticates.
 **Clients authenticate the engine before sending anything.** Same-user code could otherwise kill the engine, take the lock, bind
 the socket and capture a passphrase.
 
-- **The shell** sends the owner token or a passphrase only after checking that the socket's peer pid (`LOCAL_PEERPID`,
-  `SO_PEERCRED`, `GetNamedPipeServerProcessId`) is the child it spawned.
-- **The CLI, Flet and the shim** resolve the peer pid to an executable (`proc_pidpath`, `/proc/<pid>/exe`,
-  `QueryFullProcessImageNameW`). They require the installed engine binary and, on macOS and Windows, a valid signature with
-  our Team ID or certificate.
-- **Weaker cases.** Dev builds check only the path and print a warning. Linux has no code signing, so there the check is path-only.
+- **Spawning clients: the shell and Flet.** They send the owner token or a passphrase only after checking that the socket's
+  peer pid (`LOCAL_PEERPID`, `SO_PEERCRED`, `GetNamedPipeServerProcessId`) is the child they spawned. This works for
+  interpreter-run engines too.
+- **Connecting clients: the CLI and the shim.** They resolve the peer pid to an executable (`proc_pidpath`, `/proc/<pid>/exe`,
+  `QueryFullProcessImageNameW`), and require the installed engine binary with a valid signature for our Team ID or certificate.
+- **Scope of that check.** It is meaningful only for **signed frozen builds on macOS and Windows**. An interpreter-run engine
+  resolves to `python3.x`, which any same-user script also is. That covers all of Phase 1: pip/venv installs, the CLI, and Flet's
+  child. On Linux the check is path-only. In those cases same-user code can impersonate the engine and capture a passphrase typed
+  into the CLI. Flet and the shell are protected by the child-pid check, and the CLI warns when it cannot verify.
 
 **Rules**
 
 - `vault.unlock` is owner-only.
-- `auth.passphrase` and `auth.recovery` back off exponentially after 5 failures, and each attempt costs an Argon2id derive.
-- `vault.create` is accepted only on an uninitialized vault, only from the verified shell or a CLI whose engine check passed,
-  and never over the agent token.
+- `auth.passphrase` and `auth.recovery` back off exponentially after 5 failures. While unlocked, they verify against
+  `meta.header_json` (§5.3), never the file on disk.
+- **Serialized derives.** Argon2id derives (up to 1 GiB each) run one at a time from a short queue; excess attempts get `RATE_LIMITED`.
+- **`vault.create`** is accepted only while the vault is uninitialized, and never over the agent token. The engine cannot tell
+  which client verified it, so any same-user process can call it first. That first-run pre-emption causes denial or confusion,
+  not exposure: the vault is empty, and the user cannot unlock a passphrase they never set. Setup shows the creation time, and
+  `<app> vault reset` deletes, after confirmation, a vault that has no blobs. Any same-user process could delete those files anyway.
 - Tokens are compared with `hmac.compare_digest`.
 
 **Limits.**
@@ -265,9 +272,10 @@ Document-derived content (PDF.js, Markdown answers) and agent-supplied text are 
 
 - **Two window types with separate Tauri 2 capabilities**, enforced by window label in the Rust command layer:
   - The **library** window renders documents and answers. It may call only `search`, `ask`, `docs.list/get/read_original`,
-    `citation.open`, `conversations.*`, `ingest.*`, `watch.*` and `collections.list`.
+    `citation.open`, `conversations.list/get`, `ingest.*`, `watch.*` and `collections.list`.
   - The **trust** window renders no document content. It is the only window allowed `vault.*`, `consent.*`, `grants.*`,
-    `audit.export`, `vault.export_backup`, `settings.*` and deletes.
+    `audit.export`, `vault.export_backup`, `settings.*`, `collections.create/update/delete` (turning a `private` collection
+    `normal` exposes it to agents), and every delete (`docs.delete`, `conversations.delete`).
   - Agent-supplied text on consent cards is set with `textContent`, never as HTML or Markdown.
   - The webview never sees the owner token.
 - **Markdown.** Rendered with raw HTML disabled and the output sanitized. Links are shown as text and images never load.
@@ -327,7 +335,7 @@ Schema v1, abridged. Migrations are numbered SQL files, applied at unlock after 
 after the next successful unlock.
 
 ```sql
-meta(key PRIMARY KEY, value)   -- schema_version, vault_id, meta_secret, header_generation, header_json, embedder id + dim
+meta(key PRIMARY KEY, value)   -- schema_version, vault_id, meta_secret, header_json, next_header_hash, embedder id + dim
 collections(id, uuid, name, sensitivity CHECK IN ('normal','sensitive','private'), settings_json, created_at)
 documents(id, uuid, collection_id, title, source_path, mime, size_bytes, content_mac, blob_id, file_key, key_epoch,
           page_count, status, pipeline_version, created_at, updated_at)
@@ -348,10 +356,15 @@ jobs(…) ; watch_folders(…) ; settings(key PRIMARY KEY, value_json) ; migrati
 **Settings the spike forced:**
 
 - **FTS5 `secure-delete = 1`.** Without it, a deleted document's tokens survive in the FTS5 index even after `VACUUM`. With it,
-  and with `secure_delete = ON`, a delete leaves no text, tokens or vector bytes in the decrypted pages (spike §4). `chunk_vectors` are
-  ordinary rows, so `secure_delete` covers them.
-- **A modest page cache.** Any other connection's commit resets a reader's cache anyway (§4.4). FTS5 tolerates that: a
-  common-term query takes 21–23 ms after an invalidation, against 10–11 ms warm (spike §9).
+  and with `secure_delete = ON`, a delete leaves no row text or tokens in the decrypted pages (spike §4). For `chunk_vectors` BLOB
+  rows at 384, 512 and 1024 dims, including rows that overflow a page, the round-2 review found no marker bytes after delete.
+  I reproduced that (`check_blob_residue.py`, spike §4).
+- **A modest page cache.** Any other connection's commit resets a reader's cache anyway (§4.4). FTS5 tolerates that: at 10k chunks
+  a common-term query takes 21–23 ms after an invalidation, against 10–11 ms warm (spike §9).
+- **FTS5 at scale.** Common-term and prefix queries grow about linearly with the corpus. The round-2 review measured, at 50k
+  chunks, a common term at 53 ms warm and 73 ms after invalidation, and a prefix at 45 and 50 ms. That extrapolates to 100–150 ms
+  at 100k, which is over the 100 ms search-as-you-type budget. Search-as-you-type therefore debounces, needs at least 3 characters
+  for a prefix, and returns an unranked first page before the ranked one (PR 7).
 
 ### 4.4 Vector search: an in-engine matrix, SQLCipher for persistence
 
@@ -366,7 +379,7 @@ writer, so the live embeddings stay in its memory.
 | Persistence | `chunk_vectors` BLOB rows, written by the writer in the chunk's transaction. The matrix is updated after commit: append in place into spare capacity; delete zeroes the row and clears its liveness bit; compaction at lock | One 20-chunk document persists in 0.6–1.1 ms; the in-memory append takes < 0.05 ms; one delete 0.2–0.5 ms |
 | Unlock | Loaded in the background after unlock. Until ready, `search` is keyword-only, and says so | 1.2–1.6 s at 100k × 384; 2.9–3.9 s at 100k × 1024 (decryption-bound; 1024-d rows overflow a 4 KiB page) |
 | Hybrid | FTS5 top-50 in SQLCipher, matrix top-50, RRF in Python | 1.2–11 ms p50 with a commit before *every* query (10k chunks) |
-| Concurrency | Queries read an immutable snapshot reference. The writer appends under a lock and swaps arrays on growth. BLAS threads are capped so a query cannot starve generation | 1 thread: 6.6–7.5 ms at 100k × 384 |
+| Concurrency | Queries hold a shared lock for the product and read rows up to the published count. The writer appends beyond it into spare capacity, and deletes zero rows in place and clear liveness. Growth and compaction take the lock exclusively, copy into a new array, then **zero the old one** before releasing it. Queries drop deleted or `-inf` results when fewer than k rows are valid. BLAS threads are capped so a query cannot starve generation | 1 thread: 6.6–7.5 ms at 100k × 384 |
 | Memory | n × dim × 4 bytes of plaintext embeddings while unlocked, e.g. about 200 MiB at 100k × 512. Embeddings can be inverted to approximate text, so they count as content (§5.7). Above 1 GiB (about 500k chunks at 512-d): int8 matrix plus float rescore (unmeasured) | 146 MiB at 100k × 384; 391 MiB at 100k × 1024 |
 
 A changed embedder writes `chunk_vectors` rows with a new `model_id` in the background, then swaps the matrix. Alternatives are in §12.
@@ -490,7 +503,7 @@ at least 10 characters, with a strength meter.
   dek_id, kdf}`, so editing `vault.json` cannot downgrade parameters or move a slot.
 - **CI** tests the calibration logic with a fake clock.
 
-### 5.3 `vault.json`: generations, pending slots, rollback check
+### 5.3 `vault.json`: pending slots and header integrity
 
 ```json
 {
@@ -506,14 +519,24 @@ at least 10 characters, with a strength meter.
 }
 ```
 
-- **Writes.** Every rewrite increments `generation`: temp file, `fsync`, `rename`, `fsync` of the directory. Then the DB stores
-  `header_generation` and a copy of the header in `meta`.
-- **Rollback check at unlock.**
-  - If the file's `generation` is **lower** than `meta.header_generation`, an older header was restored, e.g. from a backup, to use an
-    old passphrase. The engine warns the owner, rewrites `vault.json` from the DB copy and audits the event.
-  - If it is **higher**, a crash happened between the two writes, and `meta` is simply updated.
-  - This detects the rollback; it cannot un-leak data read with the old credential.
-- **Superseded headers.** They are never kept in the live directory. Copies in backups are covered in §4.8.
+**Writes.** `generation` is informational and unauthenticated; integrity comes from hashes kept inside the encrypted DB.
+
+1. Commit `meta.next_header_hash = SHA-256(new header bytes)`.
+2. Write a temp file, `fsync`, `rename`, `fsync` the directory.
+3. Commit `meta.header_json` = the exact new header bytes, and clear `next_header_hash`.
+
+**Integrity check at unlock.** Once the DB opens, the file is accepted only if its hash equals SHA-256(`meta.header_json`) or
+`meta.next_header_hash`. A match on the latter is a crash between steps 2 and 3, so step 3 is finished.
+
+- **Anything else is tampering**, for example a slot copied from a backup or a replayed old header. The engine warns the owner,
+  audits the event and rewrites `vault.json` from `meta.header_json`.
+- **Planted slot.** If the slot that unlocked is not in `meta.header_json`, the engine locks again and refuses the session.
+- **While unlocked,** `auth.passphrase` and `auth.recovery` verify against `meta.header_json` (§3.2), so a slot planted in the file
+  grants nothing over IPC.
+
+**Scope.** Offline use of an old header copy together with the live `vault.db` is undetectable, because both use the same DEK.
+After a suspected passphrase or kit compromise, the UI therefore offers DEK rotation (§5.6), not just a passphrase change.
+Superseded headers are never kept in the live directory; backups are covered in §4.8.
 
 ### 5.4 OS keystore (convenience unlock)
 
@@ -552,8 +575,9 @@ passphrase stops working for the live header only (§4.8).
    rewrapped. Show the new kit and require type-back.
 2. **Pending header.** Write header g+1 with `pending` = DEK′ wrapped under `KEK_pass`, `KEK_keystore` (if the slot exists, with
    user presence on Phase 2 macOS) and the new `KEK_recovery`. Current slots are unchanged.
-3. **Rekey.** Run `PRAGMA rekey` to `K_db(DEK′)`. It is one transaction: killed at 15%, 40% and 70%, the file reopened intact under
-   the old key every time (spike §10).
+3. **Rekey.** Quiesce first: close the reader connections, pause the matrix loader and jobs. Then run `PRAGMA rekey` to `K_db(DEK′)`
+   on the writer connection. It is one transaction: killed at 15%, 40% and 70%, the file reopened intact under the old key every
+   time (spike §10, which had no concurrent readers). After commit, readers reopen under the new key.
 4. **Promote.** Write header g+2 with `slots` = the pending slots and `pending` removed, and update `meta`.
 5. **Blobs, in the background.** Re-encrypt every blob under a new file key, because the old DEK may have exposed the old keys.
    A per-document `key_epoch` makes this resumable.
@@ -583,7 +607,8 @@ with them (§4.8).
 Python cannot reliably zeroise `bytes` or `str` ([pyca/cryptography](https://cryptography.io/en/latest/limitations/)). The README
 must not claim "key zeroing".
 
-**Hardening:** `RLIMIT_CORE = 0`; `prctl(PR_SET_DUMPABLE, 0)` on Linux; on macOS, the hardened runtime without `get-task-allow`.
+**Hardening:** `RLIMIT_CORE = 0`; `prctl(PR_SET_DUMPABLE, 0)` on Linux, also in the Tauri shell, which holds the owner token; on
+macOS, the hardened runtime without `get-task-allow`.
 FileVault, BitLocker or LUKS is recommended because swap can hold pages.
 
 ### 5.8 Lock triggers
@@ -777,6 +802,7 @@ Items marked *(secret)* hold credentials or keys; **plaintext** means readable w
 | `…/vault/rag.hnsw` + `rag.meta.json`, or `rag.brute.json` | `vector_index.py:234-262, 362-376` | **Plaintext** vectors and id maps |
 | `private_models/<p>/{models, trained_adapters, wdva_packages, keys}` (`keys/` is *secret*) | GUI, `train-adapter` | Model cache; adapters; adapter keys (**plaintext**) |
 | `.active_private_profile`, `.language_pref`, `.onboarding_v1_complete` | GUI | UI state |
+| `activity_export.{csv,json}` | GUI activity export (`gui/vault_app.py:10529`) | **Plaintext** agent query previews. A user file: listed in the report, never deleted automatically |
 | `master.key` (root) *(secret)* | `cli/main.py:26-56`, `server.py:96-125`, `vault_app.py:6898-6908` | Key for `vault.db` and older builds' root `rag.db` |
 | `vault.db` | `encrypted_kv/storage.py:72-120` | **Plaintext** `service`, `entry_type`, `tags`, `description`, `folder` and timestamps; `encrypted_data` = hex ChaCha20-Poly1305 (AAD = service). `FOLDER` entries are folder-password hashes, not secrets (`encrypted_kv/models.py:22`) |
 | `rag.db` + index files (root) | pre-#23 `LocalAgent` | Profile-index format under the root key; only counted today (`agent.py:288-306`) |
@@ -827,8 +853,9 @@ from `--from`, `~/.vault`, and the `VAULT_PATH` in existing client configs.
    `FOLDER` entries (password hashes for a removed feature) are dropped and listed.
 7. **Consent.**
    - "Always allow" entries are **not** carried over: all tools, no expiry, heuristic identity.
-   - `deny_always` for a legacy id (`claude-desktop`, `cursor`, `vscode`) becomes a deny rule for claimed names containing
-     "claude", "cursor" or "code". That mapping is heuristic, and the report says so.
+   - `deny_always` for a legacy id (`claude-desktop`, `cursor`, `vscode`) becomes a deny rule only for the exact `clientInfo`
+     names on a list maintained with the shim. Substrings are never used: "code" would also match Claude Code, Codex and OpenCode.
+     Unmapped ids are listed in the report and not carried over.
    - From `policies.toml`, only the kill switch carries over.
 8. **Activity.** Import `control_plane/events.db`, deduplicated by `event_key`. Read `activity.jsonl` only if `events.db` is
    missing, because every jsonl line is already in `events.db`. Rows get `actor = legacy`, after an `import` marker that starts the chain.
@@ -856,7 +883,7 @@ finished units.
   and `vault/master.key` (the index key only, never adapter keys); `profile.json`, unless it references adapters; the root `rag.db` and its index files; `vault.db`
   and the root `master.key`, once both of its users are verified; the chat JSON; `activity.jsonl`; `control_plane/`;
   `permissions.json`; `session.json`; and `~/.enclave/{embedding_cache.db, query_cache.db, kv_cache/, policies.toml}`.
-- **Never removed:** lab data (step 9), `config.env`, model caches and `~/.vault` itself.
+- **Never removed:** lab data (step 9), `config.env`, `activity_export.*`, model caches and `~/.vault` itself.
 - **"Keep a copy for 30 days"** moves only those files to `~/.vault/.migrated-<date>/`.
 - **Model cache.** If the product keeps the name "Enclave", the legacy macOS model cache *is* `<data_root>/models`; the importer detects
   this and leaves it alone.
@@ -876,7 +903,7 @@ engine client after migration (PR 11).
 | Backups, snapshots and exports | **Partly** | Encrypted, but they open with the credentials valid when taken, and hold deleted documents (§4.8). Only DEK rotation protects data written afterwards. Backup exclusion is opt-in |
 | Another local non-admin user | **Yes** | `0700`/`0600` modes, peer-uid checks, user-only pipe DACL |
 | Admin or root | **No** | Memory access, keyloggers |
-| Same-user malware, vault **locked** | **Partly** | It can keylog the passphrase. It **cannot** become owner through our binaries: a parent-signature check guards the owner token (§8.2), and clients verify the engine before sending secrets (§3.2). Phase 1 keystore slots (off by default) are readable by same-user code on every OS. On Phase 2 macOS the keystore needs Touch ID or the password on every use |
+| Same-user malware, vault **locked** | **Partly** | It can keylog the passphrase. **Signed frozen builds on macOS and Windows:** it cannot become owner through our binaries, because a parent-signature check guards the owner token (§8.2) and clients verify the engine before sending secrets (§3.2). **Interpreter-run engines (all of Phase 1) and Linux:** it can impersonate the engine and capture a passphrase typed into the CLI; the shell and Flet are protected by their child-pid check. Phase 1 keystore slots (off by default) are readable by same-user code on every OS; on Phase 2 macOS the keystore needs Touch ID or the password on every use. A slot planted in `vault.json` is rejected (§5.3) |
 | Same-user malware, vault **unlocked** | **No** | It reaches the agent role; consent still applies. It can read engine memory where the OS allows (Windows; Linux blocks it with `PR_SET_DUMPABLE=0`, macOS with the hardened runtime). It can drive the UI where accessibility access has been granted (TCC on macOS) |
 | Hijacked agent via MCP | **Partly** | Read-only tools, answers rather than files, default deny, scoped and expiring grants, global and per-client limits, verbatim cap, `sensitive` prompts, `private` invisibility, audit. **It cannot stop an authorised agent from learning what it asks about** |
 | Prompt injection from documents | **Partly** | The synthesis model has no tools or network. Documents are delimited as data, links and images are stripped, and tool text is static. Misleading answers remain possible; citations make them visible |
@@ -900,12 +927,12 @@ under a **sandboxed `$HOME`, `$TMPDIR` and data root**.
 | # | PR | Needs | Reuses / replaces | Tests beyond unit | Exit |
 |---|---|---|---|---|---|
 | 1 | **Paths, lock, logging**: platformdirs, runtime-dir checks, single-instance lock and pid, pattern log filter, overrides ignored in signed builds | none | New | Lock contention; hostile runtime dir; markers pushed through error paths never reach logs | `<app> engine paths` |
-| 2 | **Keys**: frozen constants, `vault.json` (generation, pending), Argon2id slot (calibration, never-lower), recovery slot and check group, keystore slot (off by default) + null store, passphrase change | 1 | Replaces the `master.key` writers (removed in PR 12) | Tampered AAD, downgrade, slot swap; fake-clock calibration; `fail.Keyring` → no slot; header fuzzing | 100% branch coverage of `keys/` |
-| 3 | **Store v1**: SQLCipher factory (`K_db`, pragma order, no extensions), schema v1 with `meta_secret` and `chunk_vectors`, migration runner, blob store (§4.5), crypto-erase delete, content MACs, header rollback check, two-phase DEK rotation | 2 | Replaces `RAGIndex` storage (`rag_index.py:314-366`), `vector_index.py` | Spike crypto and residue checks; blob tamper, truncation, reorder; rotation killed at every step; rollback detected | Marker scan clean |
+| 2 | **Keys**: frozen constants, `vault.json` (slots, pending), Argon2id slot (calibration, never-lower), recovery slot and check group, keystore slot (off by default) + null store, passphrase change | 1 | Replaces the `master.key` writers (removed in PR 12) | Tampered AAD, downgrade, slot swap; fake-clock calibration; `fail.Keyring` → no slot; header fuzzing | 100% branch coverage of `keys/` |
+| 3 | **Store v1**: SQLCipher factory (`K_db`, pragma order, no extensions), schema v1 with `meta_secret` and `chunk_vectors`, migration runner, blob store (§4.5), crypto-erase delete, content MACs, header integrity check, two-phase DEK rotation | 2 | Replaces `RAGIndex` storage (`rag_index.py:314-366`), `vector_index.py` | Spike crypto and residue checks; blob tamper, truncation, reorder; rotation killed at every step with concurrent readers (quiesce and reopen); header tampering and planted slots rejected | Marker scan clean |
 | 4 | **IPC**: UDS server, NDJSON JSON-RPC, roles, streaming and cancel, peer checks, **client-side engine verification**, `vault.create` rules, auth backoff; client library | 3 | New | Impersonating engine refused by the CLI and shim; wrong-uid peer; frame limits; cancel; 20 clients | `<app> status` over IPC |
 | 5 | **Lifecycle and vault API**: `serve` with parent-signature check and early ready line, `vault.*`, idle lock with the indexing extension, pre-unlock event buffer, `events.subscribe`, explicit-only keystore unlock | 4 | Replaces `VaultCLI` key handling | Owner token refused from an unsigned parent; restart comes back locked; agent calls do not reset idle | `<app> engine start/unlock/lock/status` |
 | 6 | **Ingestion**: staged jobs, watch folders with reconciliation, `docs.*`, collections, `parse-tmp`; embedder interface with `use_persistent_cache=False` forced and memory cache cleared on lock | 5 | Reuses `parsing/`, the chunker (`rag_index.py:368-519`), `EmbeddingEngine` (ONNX later) | Round trip; kill mid-ingest then resume; delete leaves no residue; nothing recorded while locked | Marker scan clean, including `~/.enclave` |
-| 7 | **Retrieval and `ask()`**: vector matrix (background load, writer-updated), hybrid FTS5 + matrix RRF, streamed `ask`, citation handles; inference moved to `engine/llm/` | 6 | Replaces `PrivateModelSession.ask` (`manager.py:555-627`), `LocalAgent.query` | Parity across UI, CLI and agent paths; matrix equals the DB after crash and restart; keyword-only until loaded | No `advanced_vault.gui` imports under `engine/` |
+| 7 | **Retrieval and `ask()`**: vector matrix (background load, writer-updated), hybrid FTS5 + matrix RRF, streamed `ask`, citation handles; inference moved to `engine/llm/` | 6 | Replaces `PrivateModelSession.ask` (`manager.py:555-627`), `LocalAgent.query` | Parity across UI, CLI and agent paths; matrix equals the DB after crash and restart; keyword-only until loaded; fewer than k valid rows; FTS5 at 50k–100k chunks with debounce, minimum prefix and unranked-first (§4.3) | No `advanced_vault.gui` imports under `engine/` |
 | 8 | **Consent, policy, audit**: grants, requests and coalescing, global and per-client limits, sensitivity, extraction hooks, audit chain with checkpoints, kill switch, **`<app> grants add/list/revoke` and `<app> consent watch`** | 5, 7 | Replaces `consent.py`, `activity_logger.py`, `enclave_control` for the new path | Default deny; expiry; quotas; `sensitive` until lock; `private` invisible; chain checks as scoped in §6.5 | Every agent call audited |
 | 9 | **MCP shim** on SDK 2.x as a **new `<app>-mcp` entry point**; `enclave-mcp` untouched; `.mcpb` manifest (unsigned) | 4, 6, 7, 8 | New | Contract tests on 2026-07-28 and 2025-11-25; locked and not-running; manifest byte match; token re-read after an engine restart | Claude Desktop cites a document, approved via `consent watch` |
 | 10 | **Importer** with raw read-only legacy readers (§9.2) | 3, 6 | New; legacy classes never instantiated | Fixture generated by today's code (2 profiles, KV with `FOLDER`, `events.db` + jsonl, adapters, `session.json`, missing sources); legacy tree hashes unchanged; kill → `--resume`; injected mismatch caught | Dry-run, import, verify and remove on the fixture |

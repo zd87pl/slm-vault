@@ -70,6 +70,7 @@ cd spikes/sqlcipher-vec
 /tmp/spike-venv/bin/python spike_sqlcipher_vec.py knn --knn-sizes 10000 --knn-dims 384   # quick subset
 /tmp/spike-venv/bin/python bench_vector_paths.py --out /tmp/vector_paths.json    # §9, ~1 min
 /tmp/spike-venv/bin/python check_rekey_crash.py --out /tmp/rekey_crash.json      # §10, ~15 s
+/tmp/spike-venv/bin/python check_blob_residue.py                                 # §4, BLOB rows, seconds
 /tmp/spike-venv/bin/python bench_argon2.py --out /tmp/argon2.json                # ~1 min
 /tmp/spike-venv/bin/python check_keyring.py
 /tmp/spike-venv/bin/python check_apsw_sqlite3mc.py
@@ -160,6 +161,10 @@ with 200 filler rows: insert the markers, delete them, checkpoint, then decrypt 
 | SQLCipher defaults (`secure_delete` = 1 on keyed DBs) | gone | **still present, also after VACUUM** | gone |
 | `PRAGMA secure_delete = OFF` | **present** (gone after VACUUM) | **present, also after VACUUM** | gone |
 | `secure_delete = ON` + FTS5 `INSERT INTO fts(fts, rank) VALUES('secure-delete', 1)` | gone | gone | gone |
+
+`check_blob_residue.py`, adapted from the round-2 review, covers the ADR's plain `chunk_vectors` BLOB rows. For
+384, 512 and 1024 dimensions (the last overflows a 4 KiB page), a deleted marker vector leaves neither its first nor its
+last 64 bytes in any decrypted page under `secure_delete = ON`.
 
 sqlite-vec zeroes a deleted vector's slot in its chunk blob. FTS5 by default appends a delete marker and
 leaves the old segment until a merge, and VACUUM does not merge FTS5 segments. The `secure-delete` option
