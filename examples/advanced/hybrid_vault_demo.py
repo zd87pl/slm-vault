@@ -196,11 +196,6 @@ def main():
     print("\n" + "="*70)
     print("✅ DEMO COMPLETE")
     print("="*70)
-    print("\nNext steps:")
-    print("  - Week 3: MCP integration for Claude Desktop")
-    print("  - Week 3: TEE-based private inference")
-    print("  - Week 4: Consent mechanism (OS notifications)")
-    print("\nSee advanced_vault/docs/ROADMAP.md for full plan")
 
 
 if __name__ == "__main__":

@@ -32,14 +32,16 @@ In scope:
   storage, and adapter package encryption.
 - The CLI, desktop app and setup scripts where they touch any of the above.
 
-Lower priority: the experimental and legacy components that are not part of
-the local app. The legacy cloud-training stack, sync backend, browser
-extension, LangChain package and OpenClaw plugin are no longer on `main` (they
-are kept, unmaintained, on the `legacy-archive-2026-09-29` branch). Reports
-are still welcome, but the fix may be to archive the component. The
-weaknesses listed below and in the
-README's [Known Limitations](README.md#known-limitations) are already known;
-please report them only if you find they are worse than described.
+Lower priority: the experimental parts of the desktop app that are not part of
+the local-only story (cloud sync, RunPod Q&A, the backend status check, and the
+MCP server's `langchain_*` tools); the fix may be to remove them. The legacy
+cloud-training stack, sync backend, browser extension, LangChain package and
+OpenClaw plugin are no longer on `main` (they are kept, unmaintained, on the
+`legacy-archive-2026-09-29` branch) and are out of scope.
+
+The weaknesses listed below and in the README's
+[Known Limitations](README.md#known-limitations) are already known; please
+report them only if you find they are worse than described.
 
 ## What to expect
 

@@ -333,7 +333,7 @@ class HybridVault:
                 "layer": 2,
                 "service": plan.service,
                 "result": None,
-                "error": "Layer 2 (DoRA) not initialized. Set dora_adapter_path in constructor.",
+                "error": "Layer 2 (knowledge answers) is not available in this build; use an exact entry name.",
                 "metadata": {"confidence": plan.confidence}
             }
 

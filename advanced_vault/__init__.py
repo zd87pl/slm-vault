@@ -2,7 +2,7 @@
 Advanced Vault Features
 
 This package contains advanced features for the WDVA (Weight-Delta Vault Adapter) system,
-building on top of the proven baseline implementation.
+for the local, encrypted document vault.
 
 Key Features:
 - Encrypted KV store for exact data (API keys, passwords)

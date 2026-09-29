@@ -51,7 +51,7 @@ jobs:
           pip install -e ".[dev]"
 
       # Full testpaths: optional-dependency suites (GUI, MLX) skip
-      # automatically via conftest guards.
+      # automatically (a conftest guard for the GUI, skipif for MLX).
       - name: Run tests
         run: |
           pytest tests/ advanced_vault/ \

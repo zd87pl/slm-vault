@@ -304,4 +304,3 @@ See `tests/test_server.py` for unit tests.
 - [ ] OS notifications for vault access
 - [ ] Per-app permissions
 
-See `advanced_vault/docs/ROADMAP.md` for complete development plan.

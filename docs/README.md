@@ -34,9 +34,6 @@ cover parts of the desktop app that still exist.
   ["encrypt immediately" pattern](security/ENCRYPT_IMMEDIATELY_IMPLEMENTATION.md),
   [practical secure workflow](security/PRACTICAL_SECURE_WORKFLOW.md),
   [Supabase Vault analysis](security/SUPABASE_VAULT_ANALYSIS.md)
-- Old test reports, partly about code that has since been removed:
-  [new-component test summary](testing/TEST_SUMMARY_NEW_COMPONENTS.md),
-  [validation report](testing/TEST_VALIDATION_REPORT.md)
 
 Documentation for the removed cloud-training stack, sync backend, browser
 extension and LangChain integration is preserved with that code on the
