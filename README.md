@@ -454,10 +454,9 @@ slm-vault/
 manager whose content script runs on every page and which talks to a
 hard-coded remote development backend), the LangChain package (its default
 client targets the same backend), `advanced_vault/backend/`, and the desktop
-app's cloud sync, RunPod and backend-status features (its default backend
-URL is that same server; see [Network access](#network-access)) are
-experimental or legacy. Except for the backend status check, they are off by
-default or installed separately. They are not covered by the privacy model
+app's cloud sync, RunPod and backend-status features (which stay off until
+you configure a backend URL; see [Network access](#network-access)) are
+experimental or legacy. They are off by default or installed separately. They are not covered by the privacy model
 above and may be archived.
 
 ## Requirements
