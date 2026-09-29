@@ -11,6 +11,7 @@ import json
 import logging
 import platform
 import fnmatch
+import subprocess
 from pathlib import Path
 from typing import Optional, Dict, List, Any, Set
 from datetime import datetime, timedelta
@@ -134,6 +135,125 @@ class AgentPermission:
         return cls(**data)
 
 
+# Consent dialogs.
+#
+# The dialog text includes the tool name and a preview of the tool arguments,
+# both written by the calling agent's LLM and so steerable by prompt injection.
+# That text must never reach a shell or AppleScript source: each dialog is
+# started from an argv list and the text travels only as argv data.
+
+_DIALOG_TIMEOUT_SECONDS = 30
+
+# zenity --question: an extra button prints its label on stdout and exits 1;
+# the OK button (labelled "Deny" here) exits 0; Cancel or closing the window
+# exits 1 with no output; the timeout exits 5.
+_ZENITY_EXTRA_BUTTONS = {
+    "Allow Once": ConsentDecision.ALLOW_ONCE,
+    "Always Allow": ConsentDecision.ALLOW_ALWAYS,
+    "Deny Always": ConsentDecision.DENY_ALWAYS,
+}
+_ZENITY_EXTRA_BUTTON_EXIT_CODE = 1
+
+# Constant AppleScript source; the message and title arrive as run-handler
+# arguments (item 1 and item 2 of argv).
+_OSASCRIPT_DIALOG_SCRIPT = (
+    "on run argv",
+    "set dialogResult to display dialog (item 1 of argv)"
+    ' buttons {"Allow Once", "Always Allow", "Deny"} default button 1'
+    " with title (item 2 of argv) with icon caution",
+    "return button returned of dialogResult",
+    "end run",
+)
+_OSASCRIPT_BUTTONS = {
+    "Allow Once": ConsentDecision.ALLOW_ONCE,
+    "Always Allow": ConsentDecision.ALLOW_ALWAYS,
+    "Deny": ConsentDecision.DENY,
+}
+
+
+def _zenity_argv(title: str, message: str) -> List[str]:
+    """Build the zenity command line; each text is one ``--opt=value`` element."""
+    argv = [
+        "zenity",
+        "--question",
+        "--no-markup",  # show the text literally instead of as Pango markup
+        f"--title={title}",
+        f"--text={message}\n\nChoose an option:",
+    ]
+    argv += [f"--extra-button={label}" for label in _ZENITY_EXTRA_BUTTONS]
+    argv += ["--ok-label=Deny", f"--timeout={_DIALOG_TIMEOUT_SECONDS}"]
+    return argv
+
+
+def _parse_zenity_result(returncode: int, stdout: Optional[str]) -> ConsentDecision:
+    """Map zenity's exit code and output to a decision; anything unexpected is DENY."""
+    if returncode == _ZENITY_EXTRA_BUTTON_EXIT_CODE:
+        return _ZENITY_EXTRA_BUTTONS.get((stdout or "").strip(), ConsentDecision.DENY)
+    return ConsentDecision.DENY
+
+
+def _run_zenity_dialog(title: str, message: str) -> ConsentDecision:
+    """Show the Linux consent dialog. Fails closed (DENY) on any error."""
+    # zenity lets ZENITY_* / DIALOG_* variables remap its exit codes; drop them
+    # so the codes the parser relies on hold.
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("ZENITY_", "DIALOG_"))}
+    try:
+        result = subprocess.run(
+            _zenity_argv(title, message),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            env=env,
+            # Backstop only: zenity's own --timeout normally closes the dialog first.
+            timeout=_DIALOG_TIMEOUT_SECONDS + 5,
+        )
+    except FileNotFoundError:
+        logger.warning("zenity is not installed - cannot show consent dialog, denying")
+        return ConsentDecision.DENY
+    except subprocess.TimeoutExpired:
+        logger.warning("Notification dialog timed out")
+        return ConsentDecision.DENY
+    except Exception as e:
+        logger.error(f"Failed to show Linux notification: {e}")
+        return ConsentDecision.DENY
+    return _parse_zenity_result(result.returncode, result.stdout)
+
+
+def _osascript_argv(title: str, message: str) -> List[str]:
+    """Build the osascript command line; the text is passed only after ``--``."""
+    argv = ["osascript"]
+    for line in _OSASCRIPT_DIALOG_SCRIPT:
+        argv += ["-e", line]
+    # "--" ends osascript's option parsing, so text starting with "-" stays data.
+    return argv + ["--", message, title]
+
+
+def _parse_osascript_result(returncode: int, stdout: Optional[str]) -> ConsentDecision:
+    """Map the button osascript returned to a decision; anything unexpected is DENY."""
+    if returncode == 0:
+        return _OSASCRIPT_BUTTONS.get((stdout or "").strip(), ConsentDecision.DENY)
+    return ConsentDecision.DENY
+
+
+def _run_osascript_dialog(title: str, message: str) -> ConsentDecision:
+    """Show the macOS consent dialog. Fails closed (DENY) on any error."""
+    try:
+        result = subprocess.run(
+            _osascript_argv(title, message),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=_DIALOG_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        logger.warning("Notification dialog timed out")
+        return ConsentDecision.DENY
+    except Exception as e:
+        logger.error(f"Failed to show macOS notification: {e}")
+        return ConsentDecision.DENY
+    return _parse_osascript_result(result.returncode, result.stdout)
+
+
 class ConsentManager:
     """
     Manages user consent for vault access requests.
@@ -251,7 +371,8 @@ class ConsentManager:
         """
         system = platform.system()
         
-        # Sanitize inputs to prevent injection in system dialogs
+        # Tidy and truncate the text for readability only. Security does not rely
+        # on this: the dialogs pass the text as argv data, never as code.
         safe_app_name = app_name.replace('"', '').replace("'", "").replace("\\", "")[:60]
         safe_tool = tool_name.replace('"', '').replace("'", "").replace("\\", "")[:40]
 
@@ -263,70 +384,11 @@ class ConsentManager:
 
         try:
             if system == "Darwin":  # macOS
-                import subprocess
+                return _run_osascript_dialog(title, message)
 
-                # Use AppleScript with osascript for interactive dialog
-                # Escape double quotes for AppleScript string context
-                safe_msg = message.replace("\\", "\\\\").replace('"', '\\"')
-                safe_title = title.replace("\\", "\\\\").replace('"', '\\"')
-                script = f'''
-                display dialog "{safe_msg}" buttons {{"Allow Once", "Always Allow", "Deny"}} default button 1 with title "{safe_title}" with icon caution
-                set button to button returned of result
-                '''
-                
-                try:
-                    result = subprocess.run(
-                        ["osascript", "-e", script],
-                        capture_output=True,
-                        text=True,
-                        timeout=30  # 30 second timeout
-                    )
-                    
-                    if result.returncode == 0:
-                        output = result.stdout.strip()
-                        if "Allow Once" in output:
-                            return ConsentDecision.ALLOW_ONCE
-                        elif "Always Allow" in output:
-                            return ConsentDecision.ALLOW_ALWAYS
-                        elif "Deny Always" in output:
-                            return ConsentDecision.DENY_ALWAYS
-                        elif "Deny" in output:
-                            return ConsentDecision.DENY
-                except subprocess.TimeoutExpired:
-                    logger.warning("Notification dialog timed out")
-                    return ConsentDecision.DENY
-                except Exception as e:
-                    logger.error(f"Failed to show macOS notification: {e}")
-                    
             elif system == "Linux":
-                # Try notify-send with zenity fallback
-                try:
-                    import subprocess
-                    # Use zenity for interactive dialog
-                    script = f'''
-                    zenity --question --title "{title}" --text "{message}\\n\\nChoose an option:" --extra-button "Allow Once" --extra-button "Always Allow" --extra-button "Deny Always" --ok-label "Deny" --timeout=30
-                    echo $?
-                    '''
-                    
-                    result = subprocess.run(
-                        ["bash", "-c", script],
-                        capture_output=True,
-                        text=True,
-                        timeout=30
-                    )
-                    
-                    # Parse zenity output
-                    if "Always Allow" in result.stdout:
-                        return ConsentDecision.ALLOW_ALWAYS
-                    elif "Allow Once" in result.stdout:
-                        return ConsentDecision.ALLOW_ONCE
-                    elif "Deny Always" in result.stdout:
-                        return ConsentDecision.DENY_ALWAYS
-                    else:
-                        return ConsentDecision.DENY
-                except Exception as e:
-                    logger.error(f"Failed to show Linux notification: {e}")
-                    
+                return _run_zenity_dialog(title, message)
+
             elif system == "Windows":
                 # Windows notifications
                 try:
