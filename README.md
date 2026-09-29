@@ -392,6 +392,13 @@ your OS's full-disk encryption).
   runs that package. Set `ENCLAVE_LITEPARSE_ALLOW_NPX=false` to prevent this.
 - **PyPI**: some desktop-app features (SmolDocling PDF extraction, Q&A
   generation) pip-install missing packages the first time you use them.
+- **Ollama** (optional OCR for scanned PDFs, and Q&A generation where MLX is
+  unavailable): the desktop app never installs Ollama or runs an installer
+  script. If Ollama is missing, it tells you to install it yourself from
+  https://ollama.com. It downloads an Ollama model (for example
+  `llama3.2-vision:11b`, about 8 GB) only after you confirm a prompt that
+  names the model and its size (Settings → Run Local Setup). Otherwise it
+  only checks whether Ollama is running on `localhost`.
 - **Cloud backend**: none by default. Unless you set `ENCLAVE_BACKEND_URL`
   (in the environment or in `~/.enclave/config.env`), the desktop app sends
   no backend requests, and on older screens (for example Settings → Advanced

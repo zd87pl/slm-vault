@@ -268,7 +268,9 @@ class PDFProcessor:
         Args:
             ollama_base_url: Optional Ollama base URL. Defaults to http://localhost:11434
             ollama_model: Optional Ollama vision model name. Defaults to 'llama3.2-vision'
-            auto_setup: Automatically install/setup OCR if not available. Defaults to True.
+            auto_setup: Automatically install missing Python packages for SmolDocling OCR.
+                Defaults to True. Never installs Ollama or downloads Ollama models;
+                those need the user's confirmation (see OllamaSetup.setup_ollama).
             progress_callback: Optional callback function(status_message) for setup progress updates
         """
         self.ollama_base_url = ollama_base_url or os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
@@ -372,20 +374,11 @@ class PDFProcessor:
                         logger.warning(f"SmolDocling initialization failed after installation: {e}")
                         self.smoldocling_available = False
         
-        # Only setup Ollama if SmolDocling is not available/not preferred
+        # Use Ollama OCR only if it is already running with a vision model.
+        # Never install Ollama or pull a model here: that needs the user's
+        # confirmation (Settings -> Run Local Setup).
         if not self.smoldocling_available:
-            # Test Ollama connection
             self.ollama_available = self._test_ollama_connection()
-            
-            # Auto-setup Ollama only if SmolDocling is not preferred or not available
-            if not self.ollama_available and auto_setup and not self.prefer_smoldocling:
-                logger.info("Ollama OCR not available, attempting automatic setup...")
-                success, message = self.ollama_setup.setup_ollama(progress_callback=progress_callback)
-                if success:
-                    self.ollama_available = self._test_ollama_connection()
-                    logger.info(f"Ollama OCR setup successful: {message}")
-                else:
-                    logger.warning(f"Ollama OCR setup failed: {message}")
         else:
             # Skip Ollama setup entirely if SmolDocling is available
             self.ollama_available = False
@@ -398,7 +391,10 @@ class PDFProcessor:
             if self.prefer_smoldocling:
                 logger.info("OCR not available. SmolDocling setup failed. Check logs for details.")
             else:
-                logger.info(f"OCR not available. Install manually: ollama pull {self.ollama_model}")
+                logger.info(
+                    "OCR not available. For scanned PDFs, install Ollama from "
+                    f"https://ollama.com and run: ollama pull {self.ollama_model}"
+                )
 
     def _initialize_liteparse_backend(
         self, progress_callback: Optional[Callable[[str], None]] = None
@@ -742,15 +738,11 @@ class PDFProcessor:
         Returns:
             Extracted text
         """
-        # Try to setup Ollama if not available (one more attempt)
+        # Never set Ollama up from here: installing it or pulling a model
+        # needs the user's confirmation.
         if not self.ollama_available:
-            logger.info("Ollama not available, attempting setup...")
-            success, message = self.ollama_setup.setup_ollama(progress_callback=progress_callback)
-            if success:
-                self.ollama_available = self._test_ollama_connection()
-            else:
-                logger.warning(f"Ollama setup failed: {message}")
-                return ""
+            logger.info("Ollama OCR not available; skipping OCR")
+            return ""
         
         try:
             # Convert PDF pages to images

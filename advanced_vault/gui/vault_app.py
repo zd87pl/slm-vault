@@ -45,6 +45,7 @@ from advanced_vault.private_models.manager import (
 )
 from advanced_vault.sheriff.core import SheriffCore
 from advanced_vault.wallet import WalletService
+from advanced_vault.gui.ollama_setup import ollama_download_prompt, ollama_pull_instructions
 
 # GUI sibling imports — use try/except for resilience
 try:
@@ -1407,12 +1408,23 @@ class VaultApp:
         
         return progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text
     
-    def _setup_qa_model_with_progress(self):
+    def _setup_qa_model_with_progress(self, confirmed_download: bool = False):
         """
         Setup TinyLlama Q&A model with visible progress dialog showing percentage and time remaining.
+
+        An Ollama model is downloaded only after the user confirms a prompt
+        that names it and its size.
         """
         if not self.qa_generator:
             logger.error("Q&A generator not initialized")
+            return
+
+        if not confirmed_download and self.qa_generator.needs_ollama_download():
+            self._confirm_ollama_model_download(
+                self.qa_generator.ollama_model,
+                "Q&A generation",
+                lambda: self._setup_qa_model_with_progress(confirmed_download=True),
+            )
             return
         
         progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
@@ -1487,7 +1499,9 @@ class VaultApp:
         
         # Setup Q&A model with progress callback
         try:
-            success, message = self.qa_generator.setup_qa_model(progress_callback=update_progress)
+            success, message = self.qa_generator.setup_qa_model(
+                progress_callback=update_progress, confirmed_download=confirmed_download
+            )
             if success:
                 # Update status based on actual method used
                 qa_status = self.qa_generator.get_qa_status()
@@ -1541,10 +1555,72 @@ class VaultApp:
         else:
             return self.tr("settings.qa_setup.tooltip.download_tinyllama")
 
-    def _setup_ollama_with_progress(self):
+    def _show_ollama_instructions(self, message: str) -> None:
+        """Explain how to set up Ollama by hand; Enclave never installs it."""
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Scanned-PDF OCR needs Ollama", color=LightTheme.TEXT_PRIMARY),
+            content=ft.Text(message, selectable=True, color=LightTheme.TEXT_SECONDARY),
+            actions=[ft.TextButton("OK", on_click=lambda e: self._close_dialog(dialog))],
+        )
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+
+    def _confirm_ollama_model_download(
+        self, model: str, purpose: str, on_confirm: Callable[[], None]
+    ) -> None:
+        """Ask before downloading an Ollama model; the prompt names it and its size."""
+        def confirm(e):
+            self._close_dialog(dialog)
+            on_confirm()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Download an Ollama model?", color=LightTheme.TEXT_PRIMARY),
+            content=ft.Text(ollama_download_prompt(model, purpose), color=LightTheme.TEXT_SECONDARY),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog(dialog)),
+                ft.ElevatedButton("Download", on_click=confirm),
+            ],
+        )
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+
+    def _ocr_setup_hint(self) -> str:
+        """How to enable scanned-PDF OCR; nothing is installed or downloaded automatically."""
+        ollama_setup = self.pdf_processor.ollama_setup
+        if not ollama_setup.is_ollama_installed():
+            return ollama_setup.install_instructions()
+        if not ollama_setup.is_ollama_running():
+            return (
+                "Scanned-PDF OCR needs Ollama running. Start the Ollama app (or run "
+                "`ollama serve`), then try again. Text-based PDFs work without it."
+            )
+        return ollama_pull_instructions(ollama_setup.model)
+
+    def _setup_ollama_with_progress(self, confirmed_download: bool = False):
         """
         Setup Ollama OCR with visible progress dialog showing percentage and time remaining.
+
+        Never installs Ollama (shows instructions instead), and downloads the
+        model only after the user confirms a prompt naming it and its size.
         """
+        ollama_setup = self.pdf_processor.ollama_setup
+        if not ollama_setup.is_ollama_installed():
+            self._show_ollama_instructions(ollama_setup.install_instructions())
+            return
+        if not confirmed_download and not (
+            ollama_setup.is_ollama_running() and ollama_setup.is_model_available()
+        ):
+            self._confirm_ollama_model_download(
+                ollama_setup.model,
+                "scanned-PDF OCR",
+                lambda: self._setup_ollama_with_progress(confirmed_download=True),
+            )
+            return
+
         progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
             self.tr("settings.ocr_setup.dialog_title"),
             self.tr("settings.ocr_setup.preparing"),
@@ -1582,7 +1658,9 @@ class VaultApp:
         
         # Setup Ollama with progress callback
         try:
-            success, message = self.pdf_processor.ollama_setup.setup_ollama(progress_callback=update_progress)
+            success, message = self.pdf_processor.ollama_setup.setup_ollama(
+                progress_callback=update_progress, confirmed_download=confirmed_download
+            )
             if success:
                 self.pdf_processor.ollama_available = self.pdf_processor._test_ollama_connection()
                 progress_text.value = "✅ AI Knowledge Extraction ready!"
@@ -1677,7 +1755,7 @@ class VaultApp:
                 self._setup_qa_model_with_progress()
 
             if ran_any_step:
-                self._show_user_message("Local setup completed. You can now index and ask immediately.", level="success")
+                self._show_user_message("Local setup checked. Follow any open dialog to finish.", level="info")
             else:
                 self._show_user_message("Local setup already ready.", level="info")
         except Exception as e:
@@ -1899,14 +1977,18 @@ class VaultApp:
                     f"Ready ({self.pdf_processor.get_backend_status_label()})"
                 )
             else:
+                # Nothing is installed or downloaded automatically. Text-layer
+                # extraction still works; the dialog says how to add OCR.
                 self._component_status["ocr"]["status"] = "checking"
-                self._component_status["ocr"]["message"] = "Setting up..."
+                self._component_status["ocr"]["message"] = "Scanned-PDF OCR not set up (text PDFs work)"
                 
-                # Close progress dialog if setup failed
                 if progress_dialog and progress_dialog.open:
-                    progress_text.value = "⚠️ Setup in progress... Check Settings for details."
+                    progress_dialog.title = ft.Text(
+                        "Scanned-PDF OCR is not set up", color=LightTheme.TEXT_PRIMARY
+                    )
+                    progress_text.value = self._ocr_setup_hint()
                     if progress_bar:
-                        progress_bar.value = None
+                        progress_bar.visible = False
                     if progress_percent:
                         progress_percent.value = ""
                     if time_remaining_text:
@@ -1932,10 +2014,7 @@ class VaultApp:
                         ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
                     ]
                     self.page.update()
-                else:
-                    # Setup failed - close dialog silently, user can setup from Settings
-                    progress_dialog.open = False
-                    self.page.update()
+                # Otherwise leave the dialog open: it explains how to set up OCR.
     
     def _needs_setup(self) -> bool:
         """Check if any components need setup."""
