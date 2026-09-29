@@ -47,7 +47,17 @@ def mcp_sdk_problem() -> str | None:
     return None
 
 
-__all__ = ["MCP_SDK_FIX", "main", "mcp_sdk_problem"]
+def exit_if_sdk_incompatible() -> None:
+    """Exit with one stderr line (no traceback) when the MCP SDK cannot run the server.
+
+    MCP clients surface the server's stderr to the user.
+    """
+    problem = mcp_sdk_problem()
+    if problem:
+        sys.exit(f"enclave-mcp: {problem}. Fix it with: {MCP_SDK_FIX}")
+
+
+__all__ = ["MCP_SDK_FIX", "exit_if_sdk_incompatible", "main", "mcp_sdk_problem"]
 
 # On an incompatible SDK, skip the server import so main() can explain the
 # problem instead of crashing with a traceback.
@@ -62,11 +72,7 @@ if mcp_sdk_problem() is None:
 
 def main() -> None:
     """Console entry point for `enclave-mcp` — runs the stdio MCP server."""
-    problem = mcp_sdk_problem()
-    if problem:
-        # One line on stderr and a non-zero exit, no traceback: MCP clients
-        # surface the server's stderr to the user.
-        sys.exit(f"enclave-mcp: {problem}. Fix it with: {MCP_SDK_FIX}")
+    exit_if_sdk_incompatible()
 
     import asyncio
 

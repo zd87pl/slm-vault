@@ -77,8 +77,10 @@ def _run_with_fake_mcp(tmp_path: Path, version: str, *args: str) -> subprocess.C
         ["-c", "import sys; from advanced_vault.mcp_server import main; sys.exit(main())"],
         # What `enclave mcp install` writes into the MCP client config.
         ["-m", "advanced_vault.mcp_server"],
+        # Running the server module directly.
+        ["-m", "advanced_vault.mcp_server.server"],
     ],
-    ids=["enclave-mcp", "python-m"],
+    ids=["enclave-mcp", "python-m", "python-m-server"],
 )
 def test_entry_points_fail_fast_on_mcp_2(tmp_path, entry_point):
     proc = _run_with_fake_mcp(tmp_path, "2.2.0", *entry_point)
@@ -100,3 +102,17 @@ def test_package_import_skips_server_and_mcp_on_mcp_2(tmp_path):
 
     assert proc.returncode == 0, proc.stderr
     assert proc.stdout.strip() == "[]"
+
+
+def test_create_vault_server_refuses_mcp_2(monkeypatch, tmp_path):
+    # The `mcp.servers` entry point calls create_vault_server directly.
+    from advanced_vault.mcp_server import server
+
+    monkeypatch.setattr(mcp_server, "_mcp_sdk_version", lambda: "2.2.0")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        server.create_vault_server(str(tmp_path / "vault"))
+
+    assert "mcp 2.2.0" in str(excinfo.value)
+    assert FIX in str(excinfo.value)
+    assert not (tmp_path / "vault").exists()

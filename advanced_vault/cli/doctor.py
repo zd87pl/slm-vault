@@ -94,7 +94,7 @@ def _total_ram_gb() -> float | None:
 
 # --- MCP server start-up check ---
 
-# Seconds for start-up plus the handshake; stopping the server adds at most ~3 s.
+# Seconds for start-up plus the handshake; stopping the server can add up to ~7 s.
 MCP_SERVER_TIMEOUT = 25.0
 
 # Besides a server's configured "env", an MCP client passes through only these
@@ -109,6 +109,13 @@ _CLIENT_INHERITED_ENV = (
 )
 _STDERR_TAIL_LINES = 8
 _MCP_SERVER_FIX = 'Run `pip install "mcp>=1.0.0,<2"` (or re-run ./setup.sh), then `enclave doctor` again'
+_MCP_SERVER_GENERIC_FIX = (
+    "Run `python -m advanced_vault.mcp_server` to see the server's full error "
+    "(Ctrl-C to stop), fix it, then `enclave doctor` again"
+)
+# stderr text that means the installed MCP SDK is the problem: the entry point's
+# own guard message, or the 1.x API missing under an unguarded start.
+_MCP_SDK_FAILURE_MARKERS = ("enclave-mcp: mcp ", "has no attribute 'list_tools'")
 
 
 class _MCPProbeError(Exception):
@@ -139,6 +146,9 @@ def _await_reply(
 ):
     """Return the result of request ``request_id``, skipping anything else the server sends."""
     while True:
+        # Checked on every line, so a server flooding stdout cannot outlast the deadline
+        if time.monotonic() >= deadline:
+            raise _MCPProbeError(f"no answer to `{method}` within {timeout:g}s")
         try:
             line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
         except queue.Empty:
@@ -202,8 +212,8 @@ def _list_mcp_tools(entry: dict, cwd: str, errlog, timeout: float) -> int:
 
     lines: queue.Queue = queue.Queue()
     reader = threading.Thread(target=_pump_lines, args=(proc.stdout, lines), daemon=True)
-    reader.start()
     try:
+        reader.start()
         _send_message(proc, {
             "jsonrpc": "2.0",
             "id": 1,
@@ -220,7 +230,8 @@ def _list_mcp_tools(entry: dict, cwd: str, errlog, timeout: float) -> int:
         result = _await_reply(proc, lines, 2, "tools/list", deadline, timeout)
     finally:
         _stop_server(proc)
-        reader.join(timeout=2)
+        if reader.ident is not None:
+            reader.join(timeout=2)
         if not reader.is_alive():
             proc.stdout.close()
 
@@ -266,9 +277,13 @@ def check_mcp_server(
             except _MCPProbeError as exc:
                 tail = _stderr_tail(stderr_path)
                 detail = f"{exc}; its stderr ends with:{tail}" if tail else str(exc)
-                return CheckResult(name, FAIL, detail, _MCP_SERVER_FIX)
+                sdk_problem = any(marker in tail for marker in _MCP_SDK_FAILURE_MARKERS)
+                fix = _MCP_SERVER_FIX if sdk_problem else _MCP_SERVER_GENERIC_FIX
+                return CheckResult(name, FAIL, detail, fix)
     except OSError as exc:
-        return CheckResult(name, FAIL, f"could not run the start-up check: {exc}", _MCP_SERVER_FIX)
+        return CheckResult(
+            name, FAIL, f"could not run the start-up check: {exc}", _MCP_SERVER_GENERIC_FIX
+        )
     return CheckResult(name, PASS, f"starts over stdio and lists {tool_count} tools")
 
 
@@ -278,13 +293,13 @@ def run_checks(vault_path: str = "~/.vault") -> DoctorReport:
 
     # --- Python ---
     py = sys.version_info
-    if (py.major, py.minor) >= (3, 10):
+    if (py.major, py.minor) >= (3, 11):
         report.add("Python", PASS, f"{platform.python_version()} at {sys.executable}")
     else:
         report.add(
             "Python",
             FAIL,
-            f"{platform.python_version()} — Enclave needs Python 3.10+",
+            f"{platform.python_version()} — Enclave needs Python 3.11+",
             "Install Python 3.11+ (e.g. `brew install python@3.11`) and re-run setup.sh",
         )
 

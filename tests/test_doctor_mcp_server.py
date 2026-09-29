@@ -126,6 +126,41 @@ def test_server_that_exits_fails_with_stderr_tail(isolated_home, tmp_path):
     assert FIX in result.fix
 
 
+def test_unrelated_crash_gets_a_generic_fix(isolated_home, tmp_path):
+    entry = _script(
+        tmp_path,
+        "crash_other.py",
+        "import sys\n"
+        "sys.stderr.write(\"ModuleNotFoundError: No module named 'hnswlib'\\n\")\n"
+        "sys.exit(1)\n",
+    )
+
+    result = check_mcp_server(timeout=60, server_entry=entry)
+
+    assert result.status == FAIL
+    assert "No module named 'hnswlib'" in result.detail
+    assert FIX not in result.fix  # the SDK pin would not help here
+    assert "python -m advanced_vault.mcp_server" in result.fix
+
+
+def test_flooding_server_still_times_out(isolated_home, tmp_path):
+    entry = _script(
+        tmp_path,
+        "flood.py",
+        "import sys\n"
+        "while True:\n"
+        "    sys.stdout.write('not json-rpc\\n')\n"
+        "    sys.stdout.flush()\n",
+    )
+
+    started = time.monotonic()
+    result = check_mcp_server(timeout=2, server_entry=entry)
+
+    assert result.status == FAIL
+    assert "no answer to `initialize` within 2s" in result.detail
+    assert time.monotonic() - started < 2 + 10
+
+
 @pytest.mark.skipif(sys.platform == "win32", reason="probes the pid with os.kill(pid, 0)")
 def test_hanging_server_times_out_and_is_killed(isolated_home, tmp_path):
     pid_file = tmp_path / "server.pid"
