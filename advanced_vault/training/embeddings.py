@@ -19,6 +19,8 @@ import hashlib
 
 import numpy as np
 
+from advanced_vault.model_cache import load_offline_first
+
 logger = logging.getLogger(__name__)
 
 # Module-level handle to sentence_transformers.SentenceTransformer. Bound
@@ -291,10 +293,12 @@ class EmbeddingEngine:
             if self.cache_dir:
                 model_kwargs["cache_folder"] = str(self.cache_dir)
 
-            self._model = sentence_transformer_cls(
+            # Load from the local cache when the model is already downloaded;
+            # loading by repo id would query the Hugging Face Hub every time.
+            self._model = load_offline_first(
                 self.model_name,
-                device=device,
-                **model_kwargs
+                lambda source: sentence_transformer_cls(source, device=device, **model_kwargs),
+                cache_dir=self.cache_dir,
             )
 
             self._dimension = self._model.get_sentence_embedding_dimension()

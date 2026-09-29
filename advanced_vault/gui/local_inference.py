@@ -26,6 +26,14 @@ from pathlib import Path
 from typing import Dict, Optional, Any, Callable
 from base64 import b64decode
 
+from advanced_vault.model_cache import (
+    ModelNotDownloadedError,
+    find_cached_snapshot,
+    hf_offline_enabled,
+    is_complete_snapshot,
+    load_offline_first,
+)
+
 logger = logging.getLogger(__name__)
 THINK_BLOCK_RE = re.compile(r"<think>.*?</think>", re.IGNORECASE | re.DOTALL)
 
@@ -170,12 +178,19 @@ class LocalInferenceEngine:
         return model_dir
 
     @classmethod
+    def find_local_mlx_model(cls, model_name: Optional[str] = None) -> Optional[Path]:
+        """Return a complete local copy of an MLX model, or None (no network access)."""
+        resolved_name = model_name or cls.MLX_MODEL_NAME
+        model_dir = cls.get_mlx_model_dir(resolved_name)
+        if is_complete_snapshot(model_dir):
+            return model_dir
+        # Reuse a copy already in the Hugging Face cache (e.g. fetched by mlx_lm).
+        return find_cached_snapshot(resolved_name)
+
+    @classmethod
     def is_mlx_model_available(cls, model_name: Optional[str] = None) -> bool:
         """Return True when the shared MLX model files exist locally."""
-        model_dir = cls.get_mlx_model_dir(model_name)
-        has_config = (model_dir / "config.json").exists()
-        has_weights = any(model_dir.glob("*.safetensors")) or (model_dir / "model.safetensors.index.json").exists()
-        return has_config and has_weights
+        return cls.find_local_mlx_model(model_name) is not None
 
     @classmethod
     def is_model_available(cls, model_name: Optional[str] = None) -> bool:
@@ -190,13 +205,20 @@ class LocalInferenceEngine:
         model_name: Optional[str] = None,
         progress_callback: Optional[Callable[[str], None]] = None,
     ) -> Path:
-        """Download the shared MLX model into the app-owned cache if needed."""
+        """Return a local copy of the MLX model, downloading it into the app-owned cache if needed."""
         resolved_name = model_name or cls.MLX_MODEL_NAME
         model_dir = cls.get_mlx_model_dir(resolved_name)
-        if cls.is_mlx_model_available(resolved_name):
+        local_model_path = cls.find_local_mlx_model(resolved_name)
+        if local_model_path is not None:
             if progress_callback:
                 progress_callback(f"{resolved_name.split('/')[-1]} is already on this Mac.")
-            return model_dir
+            return local_model_path
+
+        if hf_offline_enabled():
+            raise ModelNotDownloadedError(
+                f"Model '{resolved_name}' is not downloaded yet and HF_HUB_OFFLINE is set, "
+                "so it cannot be downloaded."
+            )
 
         if progress_callback:
             progress_callback(f"Downloading {resolved_name.split('/')[-1]} to this Mac...")
@@ -214,7 +236,7 @@ class LocalInferenceEngine:
             max_workers=8,
         )
 
-        if not cls.is_mlx_model_available(resolved_name):
+        if not is_complete_snapshot(model_dir):
             raise RuntimeError(f"Local model download appears incomplete for {resolved_name}")
 
         if progress_callback:
@@ -297,11 +319,11 @@ class LocalInferenceEngine:
                                 progress_callback=progress_callback,
                             )
                         else:
-                            if not self.is_mlx_model_available(model_name):
+                            local_model_path = self.find_local_mlx_model(model_name)
+                            if local_model_path is None:
                                 logger.info("MLX model is not downloaded yet: %s", model_name)
                                 last_error = RuntimeError(f"Model not downloaded: {model_name}")
                                 continue
-                            local_model_path = self.get_mlx_model_dir(model_name)
 
                         if progress_callback:
                             progress_callback(f"Loading {model_name.split('/')[-1]}...")
@@ -338,24 +360,35 @@ class LocalInferenceEngine:
                 
                 # Use CPU by default for local inference (more compatible)
                 device = "cuda" if torch.cuda.is_available() else "cpu"
-                
-                self.tokenizer = AutoTokenizer.from_pretrained(
+                torch_cache_dir = self.shared_model_root / "torch"
+
+                def load_torch_model(source: str):
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        source,
+                        cache_dir=torch_cache_dir,
+                        local_files_only=not allow_download,
+                    )
+                    model = AutoModelForCausalLM.from_pretrained(
+                        source,
+                        torch_dtype=torch.float16 if device == "cuda" else torch.float32,
+                        device_map="auto" if device == "cuda" else None,
+                        cache_dir=torch_cache_dir,
+                        local_files_only=not allow_download,
+                    )
+                    return tokenizer, model
+
+                # Load from the local cache when the model is already downloaded;
+                # loading by repo id would query the Hugging Face Hub every time.
+                self.tokenizer, self.model = load_offline_first(
                     self.MODEL_NAME,
-                    cache_dir=self.shared_model_root / "torch",
-                    local_files_only=not allow_download,
+                    load_torch_model,
+                    cache_dir=torch_cache_dir,
+                    allow_download=allow_download,
                 )
-                
+
                 if self.tokenizer.pad_token is None:
                     self.tokenizer.pad_token = self.tokenizer.eos_token
-                
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    self.MODEL_NAME,
-                    torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-                    device_map="auto" if device == "cuda" else None,
-                    cache_dir=self.shared_model_root / "torch",
-                    local_files_only=not allow_download,
-                )
-                
+
                 if device == "cpu":
                     self.model = self.model.to(device)
                 
