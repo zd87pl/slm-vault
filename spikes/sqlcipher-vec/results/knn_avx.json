@@ -1,0 +1,209 @@
+{
+  "environment": {
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpu_count": 4,
+    "loadavg_at_start": [
+      0.388671875,
+      0.55615234375,
+      0.40625
+    ],
+    "sqlcipher3_module": "<deps>/sqlcipher3/sqlcipher3/__init__.py",
+    "sqlite_version": "3.51.1",
+    "cipher_version": "4.12.0 community",
+    "cipher_provider": "openssl OpenSSL 3.6.0 1 Oct 2025",
+    "sqlite_vec_version": "v0.1.9",
+    "sqlite_vec_source": "<build>/avx/vec0.so",
+    "loadavg_at_end": [
+      1.3525390625,
+      0.8193359375,
+      0.5087890625
+    ]
+  },
+  "knn": {
+    "rows": [
+      {
+        "n": 10000,
+        "dim": 384,
+        "type": "float32",
+        "encrypted": false,
+        "insert_s": 0.35,
+        "file_mib": 15.3,
+        "default_cache": {
+          "first_query_ms": 5.45,
+          "p50_ms": 3.389,
+          "p95_ms": 5.257,
+          "mean_ms": 3.741,
+          "n": 10
+        },
+        "large_cache": {
+          "first_query_ms": 3.24,
+          "p50_ms": 3.055,
+          "p95_ms": 3.414,
+          "mean_ms": 3.105,
+          "n": 30
+        },
+        "exact_top10_match": true
+      },
+      {
+        "n": 10000,
+        "dim": 384,
+        "type": "float32",
+        "encrypted": true,
+        "insert_s": 0.36,
+        "file_mib": 15.6,
+        "default_cache": {
+          "first_query_ms": 80.11,
+          "p50_ms": 54.24,
+          "p95_ms": 73.293,
+          "mean_ms": 55.302,
+          "n": 10
+        },
+        "large_cache": {
+          "first_query_ms": 63.81,
+          "p50_ms": 2.045,
+          "p95_ms": 3.029,
+          "mean_ms": 2.144,
+          "n": 30
+        },
+        "exact_top10_match": true
+      },
+      {
+        "n": 10000,
+        "dim": 1024,
+        "type": "float32",
+        "encrypted": false,
+        "insert_s": 0.68,
+        "file_mib": 40.3,
+        "default_cache": {
+          "first_query_ms": 15.38,
+          "p50_ms": 9.233,
+          "p95_ms": 11.939,
+          "mean_ms": 9.599,
+          "n": 10
+        },
+        "large_cache": {
+          "first_query_ms": 9.01,
+          "p50_ms": 8.249,
+          "p95_ms": 8.837,
+          "mean_ms": 8.23,
+          "n": 30
+        },
+        "exact_top10_match": true
+      },
+      {
+        "n": 10000,
+        "dim": 1024,
+        "type": "float32",
+        "encrypted": true,
+        "insert_s": 0.68,
+        "file_mib": 41.1,
+        "default_cache": {
+          "first_query_ms": 136.21,
+          "p50_ms": 126.365,
+          "p95_ms": 198.429,
+          "mean_ms": 135.465,
+          "n": 10
+        },
+        "large_cache": {
+          "first_query_ms": 135.96,
+          "p50_ms": 5.256,
+          "p95_ms": 6.24,
+          "mean_ms": 5.365,
+          "n": 30
+        },
+        "exact_top10_match": true
+      },
+      {
+        "n": 100000,
+        "dim": 384,
+        "type": "float32",
+        "encrypted": false,
+        "insert_s": 2.24,
+        "file_mib": 149.4,
+        "default_cache": {
+          "first_query_ms": 38.42,
+          "p50_ms": 41.183,
+          "p95_ms": 44.116,
+          "mean_ms": 41.042,
+          "n": 10
+        },
+        "large_cache": {
+          "first_query_ms": 45.3,
+          "p50_ms": 39.443,
+          "p95_ms": 49.544,
+          "mean_ms": 41.029,
+          "n": 30
+        }
+      },
+      {
+        "n": 100000,
+        "dim": 384,
+        "type": "float32",
+        "encrypted": true,
+        "insert_s": 3.04,
+        "file_mib": 152.3,
+        "default_cache": {
+          "first_query_ms": 494.17,
+          "p50_ms": 501.454,
+          "p95_ms": 628.094,
+          "mean_ms": 520.031,
+          "n": 10
+        },
+        "large_cache": {
+          "first_query_ms": 1379.27,
+          "p50_ms": 25.458,
+          "p95_ms": 31.918,
+          "mean_ms": 26.715,
+          "n": 30
+        }
+      },
+      {
+        "n": 100000,
+        "dim": 1024,
+        "type": "float32",
+        "encrypted": false,
+        "insert_s": 8.36,
+        "file_mib": 394.6,
+        "default_cache": {
+          "first_query_ms": 109.75,
+          "p50_ms": 98.056,
+          "p95_ms": 128.047,
+          "mean_ms": 103.485,
+          "n": 10
+        },
+        "large_cache": {
+          "first_query_ms": 94.45,
+          "p50_ms": 104.027,
+          "p95_ms": 127.192,
+          "mean_ms": 107.779,
+          "n": 30
+        }
+      },
+      {
+        "n": 100000,
+        "dim": 1024,
+        "type": "float32",
+        "encrypted": true,
+        "insert_s": 8.33,
+        "file_mib": 402.4,
+        "default_cache": {
+          "first_query_ms": 1284.0,
+          "p50_ms": 1293.277,
+          "p95_ms": 1442.845,
+          "mean_ms": 1295.133,
+          "n": 10
+        },
+        "large_cache": {
+          "first_query_ms": 1750.36,
+          "p50_ms": 67.406,
+          "p95_ms": 84.75,
+          "mean_ms": 68.598,
+          "n": 30
+        }
+      }
+    ]
+  }
+}

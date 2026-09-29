@@ -41,7 +41,6 @@ hf_transfer>=0.3.0  # Rust-based fast download protocol (10-100x faster)
 
 # Local indexing/retrieval performance
 hnswlib>=0.8.0
-fastembed>=0.3.6
 
 # Encryption (already in main project)
 # cryptography

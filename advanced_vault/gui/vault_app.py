@@ -5831,10 +5831,9 @@ class VaultApp:
             clients["cursor"]["last_seen"] = "Connected locally" if configured else ("Detected on this computer" if installed else "Not detected")
 
         if "openclaw" in clients:
-            repo_root = Path(__file__).resolve().parents[2]
-            openclaw_exists = (repo_root / "integrations" / "openclaw-enclave").exists()
-            clients["openclaw"]["status"] = "active" if openclaw_exists else "ready"
-            clients["openclaw"]["last_seen"] = "Plugin assets present" if openclaw_exists else "Plugin scaffold not found"
+            # Generic MCP client: the bundled plugin now lives on the legacy archive branch
+            clients["openclaw"]["status"] = "ready"
+            clients["openclaw"]["last_seen"] = "Connect it as an MCP client"
 
         self.integration_clients = clients
         return clients

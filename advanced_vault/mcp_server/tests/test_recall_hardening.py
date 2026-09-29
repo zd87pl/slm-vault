@@ -206,13 +206,28 @@ class TestRedactToolArguments:
         assert entry["metadata"]["arguments"]["content"].startswith("[redacted")
 
 
+# The shipped policy gives the vault_* tools to no MCP client; these tests use
+# one the user has opted in, as the README describes.
+OPTED_IN_CLIENT = "vscode"
+OPT_IN_ENTRY = f"""
+[[agents]]
+agent_id = "{OPTED_IN_CLIENT}"
+allowed_modules = ["vault"]
+allowed_tools = ["agent_*", "vault_*"]
+"""
+
+
 class TestMCPToolCalls:
     """End-to-end through the registered MCP call_tool handler."""
 
     @pytest.fixture
     def server(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HOME", str(tmp_path / "home"))
-        return VaultMCPServer(vault_path=str(tmp_path / "vault"))
+        server = VaultMCPServer(vault_path=str(tmp_path / "vault"))
+        policy = server.runtime.config.path
+        policy.write_text(policy.read_text(encoding="utf-8") + OPT_IN_ENTRY, encoding="utf-8")
+        server.runtime.reload()
+        return server
 
     def _as_client(self, monkeypatch, server, app_identifier, consent=True):
         monkeypatch.setattr(server.consent_manager, "_get_app_identifier", lambda: app_identifier)
@@ -234,7 +249,7 @@ class TestMCPToolCalls:
 
     @pytest.mark.asyncio
     async def test_fuzzy_recall_returns_names_not_value(self, monkeypatch, server):
-        self._as_client(monkeypatch, server, "unknown")
+        self._as_client(monkeypatch, server, OPTED_IN_CLIENT)
         server._get_vault().store(STRIPE_SECRET, data_type="secret", service="stripe")
 
         text = await self._call(server, "vault_recall", {"query": "tell me about stripe"})
@@ -244,7 +259,7 @@ class TestMCPToolCalls:
 
     @pytest.mark.asyncio
     async def test_exact_recall_returns_value(self, monkeypatch, server):
-        self._as_client(monkeypatch, server, "unknown")
+        self._as_client(monkeypatch, server, OPTED_IN_CLIENT)
         server._get_vault().store(STRIPE_SECRET, data_type="secret", service="stripe")
 
         text = await self._call(server, "vault_recall", {"query": "stripe"})
@@ -274,7 +289,7 @@ class TestMCPToolCalls:
 
     @pytest.mark.asyncio
     async def test_consent_denied_store_keeps_secret_out_of_logs(self, tmp_path, monkeypatch, server, caplog):
-        self._as_client(monkeypatch, server, "unknown", consent=False)
+        self._as_client(monkeypatch, server, OPTED_IN_CLIENT, consent=False)
         caplog.set_level(logging.DEBUG)
 
         text = await self._call(server, "vault_store", {
@@ -287,7 +302,7 @@ class TestMCPToolCalls:
 
     @pytest.mark.asyncio
     async def test_allowed_store_and_recall_keep_secret_out_of_logs(self, tmp_path, monkeypatch, server, caplog):
-        self._as_client(monkeypatch, server, "unknown")
+        self._as_client(monkeypatch, server, OPTED_IN_CLIENT)
         caplog.set_level(logging.DEBUG)
 
         stored = await self._call(server, "vault_store", {

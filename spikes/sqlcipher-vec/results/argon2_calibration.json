@@ -1,0 +1,30 @@
+{
+  "chosen": {
+    "m_mib": 1024,
+    "t": 2,
+    "p": 4,
+    "median_ms": 821.1
+  },
+  "trace": [
+    {
+      "m_mib": 256,
+      "t": 2,
+      "p": 4,
+      "median_ms": 175.2
+    },
+    {
+      "m_mib": 512,
+      "t": 2,
+      "p": 4,
+      "median_ms": 425.4
+    },
+    {
+      "m_mib": 1024,
+      "t": 2,
+      "p": 4,
+      "median_ms": 821.1
+    }
+  ],
+  "ram_gib": 15.7,
+  "memory_cap_mib": 1024
+}

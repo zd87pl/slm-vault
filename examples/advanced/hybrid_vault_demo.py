@@ -186,7 +186,7 @@ def main():
     print("  2. Hybrid Vault: Unified interface for Layer 1 + Layer 2")
     print("  3. Layer 1: Encrypted KV store (ProtonMail-style E2EE)")
     print("  4. Layer 2: DoRA adapters (optional, not shown in this demo)")
-    print("\nNote: Layer 2 requires encrypted DoRA adapter (see privacy demo)")
+    print("\nNote: Enclave ships no Layer 2 inference engine; fuzzy queries fall back to Layer 1 entry names")
 
     # Run demos
     demo_smart_router()
@@ -196,11 +196,6 @@ def main():
     print("\n" + "="*70)
     print("✅ DEMO COMPLETE")
     print("="*70)
-    print("\nNext steps:")
-    print("  - Week 3: MCP integration for Claude Desktop")
-    print("  - Week 3: TEE-based private inference")
-    print("  - Week 4: Consent mechanism (OS notifications)")
-    print("\nSee advanced_vault/docs/ROADMAP.md for full plan")
 
 
 if __name__ == "__main__":

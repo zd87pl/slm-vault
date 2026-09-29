@@ -2,16 +2,12 @@
 Advanced Vault Features
 
 This package contains advanced features for the WDVA (Weight-Delta Vault Adapter) system,
-building on top of the proven baseline implementation.
+for the local, encrypted document vault.
 
 Key Features:
 - Encrypted KV store for exact data (API keys, passwords)
 - Smart query routing (exact vs fuzzy)
 - MCP integration for AI agents
-- Threshold cryptography for team vaults
-- Speculative decryption for performance
-- Homomorphic search (research)
-- Federated learning (research)
 
 Usage:
     from advanced_vault import HybridVault

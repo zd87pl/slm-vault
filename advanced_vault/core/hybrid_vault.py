@@ -66,8 +66,6 @@ class HybridVault:
         master_key: bytes,
         kv_db_path: str = "~/.vault/kv_store.db",
         dora_adapter_path: Optional[str] = None,
-        runpod_endpoint_id: Optional[str] = None,
-        runpod_api_key: Optional[str] = None,
         enable_router_logging: bool = False
     ):
         """
@@ -77,8 +75,6 @@ class HybridVault:
             master_key: 32-byte encryption key for KV encryption
             kv_db_path: Path to SQLite database
             dora_adapter_path: Path to encrypted DoRA adapter (optional)
-            runpod_endpoint_id: RunPod endpoint ID for remote inference (optional)
-            runpod_api_key: RunPod API key for remote inference (optional)
             enable_router_logging: Log routing decisions
         """
         self.master_key = master_key
@@ -87,63 +83,20 @@ class HybridVault:
         self.kv_store = EncryptedKVStore(master_key, db_path=kv_db_path)
         logger.info("Initialized Layer 1 (KV Store)")
 
-        # Initialize Layer 2: DoRA Adapters (optional)
+        # Layer 2: DoRA Adapters. Its inference engines (the legacy `src/`
+        # stack and a RunPod client) were removed from Enclave; they are kept
+        # on the legacy-archive-2026-09-29 branch. Without an engine, fuzzy
+        # queries fall back to Layer 1 entry names.
         self.dora_adapter_path = dora_adapter_path
-        self.runpod_endpoint_id = runpod_endpoint_id
-        self.runpod_api_key = runpod_api_key
-        self.dora_engine = None  # Will be initialized when needed
-
-        if dora_adapter_path and (runpod_endpoint_id and runpod_api_key):
-            self._init_dora_layer_runpod()
-        elif dora_adapter_path:
-            self._init_dora_layer()
+        self.dora_engine = None
+        if dora_adapter_path:
+            logger.warning("Layer 2 (DoRA) inference is not available; using Layer 1 only")
 
         # Initialize Smart Router
         self.router = SmartRouter()
         self.enable_router_logging = enable_router_logging
 
         logger.info("Initialized HybridVault")
-
-    def _init_dora_layer(self):
-        """Initialize Layer 2 (DoRA adapters) - local inference."""
-        try:
-            # Import here to avoid dependency if not using Layer 2
-            import sys
-            from pathlib import Path
-
-            # Add src to path to import baseline
-            src_path = Path(__file__).parent.parent.parent / "src"
-            if str(src_path) not in sys.path:
-                sys.path.insert(0, str(src_path))
-
-            from ephemeral_inference import EphemeralDoRAInference
-
-            self.dora_engine = EphemeralDoRAInference(
-                base_model_name="TinyLlama/TinyLlama-1.1B-Chat-v1.0",
-                encryption_key=self.master_key,
-                enable_cache=True,
-                load_in_4bit=True
-            )
-            logger.info("Initialized Layer 2 (DoRA - Local)")
-        except ImportError as e:
-            logger.warning(f"Could not initialize Layer 2: {e}")
-            self.dora_engine = None
-
-    def _init_dora_layer_runpod(self):
-        """Initialize Layer 2 (DoRA adapters) - RunPod inference."""
-        try:
-            # Create RunPod client for remote inference
-            from .runpod_client import RunPodDoRAClient
-
-            self.dora_engine = RunPodDoRAClient(
-                endpoint_id=self.runpod_endpoint_id,
-                api_key=self.runpod_api_key,
-                adapter_path=self.dora_adapter_path
-            )
-            logger.info("Initialized Layer 2 (DoRA - RunPod)")
-        except ImportError as e:
-            logger.warning(f"Could not initialize RunPod Layer 2: {e}")
-            self.dora_engine = None
 
     def store(
         self,
@@ -380,7 +333,7 @@ class HybridVault:
                 "layer": 2,
                 "service": plan.service,
                 "result": None,
-                "error": "Layer 2 (DoRA) not initialized. Set dora_adapter_path in constructor.",
+                "error": "Layer 2 (knowledge answers) is not available in this build; use an exact entry name.",
                 "metadata": {"confidence": plan.confidence}
             }
 

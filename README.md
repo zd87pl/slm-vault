@@ -47,9 +47,9 @@ receives that answer, not your files.
 > dialog appears: "Allow Once" is the cautious choice (you are asked again
 > next time), while "Always Allow" lets that app call every tool its policy
 > allows, with no expiry. On a default install Enclave cannot tell AI apps
-> apart, so "Always Allow" applies to all of them, and the policy lets all of
-> them use the `vault_*` secrets tools (see [Consent](#consent)). Calls are
-> logged locally either way.
+> apart, so "Always Allow" applies to all of them (see [Consent](#consent)),
+> but no app can use the `vault_*` secrets tools until you opt it in. Calls
+> are logged locally either way.
 
 ### Having trouble?
 
@@ -196,18 +196,22 @@ The main tools Enclave exposes to AI agents:
 | `agent_draft` | Draft content informed by your documents |
 | `agent_status` | Check indexed documents and agent status |
 | `vault_store` | Store secrets (API keys, passwords) |
-| `vault_recall` | Retrieve secrets with natural language |
+| `vault_recall` | Retrieve a stored secret by its exact entry name |
 
 The server also advertises experimental tools: `sheriff_*` file-access
 leases (which can return file contents; the default policy blocks them), a
 mock wallet, and cloud `langchain_*` tools that do nothing unless configured.
 
-Which tools each app may call is set in `~/.enclave/policies.toml`. Its
-entries for Claude Desktop and Cursor allow the `agent_*` tools but not the
-`vault_*` secrets tools — but on a default install Enclave cannot recognize
-those apps (see [Consent](#consent)), so they appear as `unknown` and get
-the `default` policy, which allows both. To keep AI apps away from your
-secrets, remove `vault_*` from the `default` entry.
+Which tools each app may call is set in `~/.enclave/policies.toml`. On a
+default install Enclave cannot tell AI apps apart (see [Consent](#consent)),
+so every app gets the file's `default` entry, which allows the `agent_*`
+tools and `query_knowledge` but not the `vault_*` secrets tools. To give
+them to one app, see
+[Letting one app use the secrets tools](#letting-one-app-use-the-secrets-tools).
+Earlier versions put `vault_*` in `default`. If you never edited the file,
+Enclave replaces it with the new default the next time it starts, keeping
+the old one as `policies.toml.bak-<date>`; if you did, `enclave doctor`
+tells you which line to change.
 
 **What agents receive**: the `agent_*` tools return text generated locally
 from retrieved passages, plus the names of the source documents — not the
@@ -365,7 +369,7 @@ your OS's full-disk encryption).
   optional `psutil` package is installed, the parent process name. `psutil` is
   not an Enclave dependency, so on a default install Claude Desktop, Cursor
   and every other client are all the same app, `unknown`: they get the
-  `default` policy, which also allows the `vault_*` secrets tools, and they
+  `default` policy (document tools only, no `vault_*` secrets tools) and they
   share one consent decision — "Always Allow" for one of them approves them
   all.
 - To change a decision, **fully quit the AI app first** — the MCP server
@@ -382,6 +386,35 @@ your OS's full-disk encryption).
   restarts.
 - **On Windows, consent prompts are not implemented, so every call that needs
   consent is denied.**
+
+#### Letting one app use the secrets tools
+
+No AI app can call the `vault_*` tools until you opt it in:
+
+1. Name the app: in its MCP config (`claude_desktop_config.json` for Claude
+   Desktop, `~/.cursor/mcp.json` for Cursor), add
+   `"MCP_CLIENT": "claude-desktop"` (or `"cursor"`) to the `"env"` of the
+   `enclave` server entry.
+2. In `~/.enclave/policies.toml`, add the tools to that app's `[[agents]]`
+   entry (`agent_id = "claude-desktop"` or `"cursor"`): for example
+   `"vault_recall", "vault_list_entries"` in its `allowed_tools`, or
+   `"vault_*"` to also allow storing and deleting.
+3. Fully quit and reopen the app.
+
+Naming the app applies everything in its `[[agents]]` entry, not just the tools
+you add: the shipped `claude-desktop` and `cursor` entries also allow the
+(mock) wallet tools, including `request_purchase` with auto-approval under
+$25. Remove `"wallet"` from that entry's `allowed_modules` if you don't want
+that.
+
+`MCP_CLIENT` is a label, not proof: any program that starts Enclave's server
+with the same label gets that entry (as does, with `psutil` installed, any
+app whose process name contains "claude" or "cursor"). Only software already
+running as you can do that, and it could read the vault files directly
+anyway. Re-running `enclave mcp install` rewrites the server entry without
+the label, which takes the secrets tools away again. Never add `vault_*` to
+`default` — that gives them to every app Enclave cannot identify, and
+`enclave doctor` warns about it.
 
 ### Network access
 
@@ -422,8 +455,9 @@ your OS's full-disk encryption).
 - **Partial encryption, key stored next to the data** — see
   [What is and isn't encrypted](#what-is-and-isnt-encrypted).
 - **Coarse consent**: no expiry; on a default install every AI app is
-  `unknown` and its policy allows the secrets tools; revoking access (or using
-  the kill switch) takes effect only after the AI app restarts. See
+  `unknown` and they all share one consent decision; opting one app in to the
+  secrets tools relies on a label its config declares; revoking access (or
+  using the kill switch) takes effect only after the AI app restarts. See
   [Consent](#consent).
 - **Documents can steer answers**: retrieved text goes into the local model's
   prompt as-is, so a malicious document can plant instructions in the answer
@@ -439,34 +473,31 @@ your OS's full-disk encryption).
 
 ```
 slm-vault/
-├── advanced_vault/          # Core application
+├── advanced_vault/          # Core application (see advanced_vault/README.md)
 │   ├── gui/                 # Desktop GUI (Flet)
 │   ├── cli/                 # `enclave` CLI (incl. doctor + MCP setup)
 │   ├── training/            # RAG index, embeddings, caching (+ experimental adapter training)
 │   ├── prosumer/            # Personal data vaults (Health, Finance, Legal, Personal)
-│   ├── mcp_server/          # MCP server implementation
-│   └── backend/             # LEGACY: cloud sync backend (FastAPI, Supabase, RunPod)
+│   └── mcp_server/          # MCP server implementation
 ├── setup.sh                 # One-command setup (macOS/Linux)
-├── browser-extension/       # EXPERIMENTAL: talks to a remote development backend
-├── langchain-enclave/       # EXPERIMENTAL: LangChain integration (cloud client by default)
-├── docs/                    # Documentation (much of it describes older designs)
-├── examples/                # Example scripts (mostly legacy WDVA demos)
-├── src/                     # LEGACY: cloud GPU training (RunPod) — not needed locally
-└── tests/                   # Test suite (legacy cloud tests auto-skip)
+├── docs/                    # Documentation (index: docs/README.md)
+├── examples/                # Secrets-store demo scripts
+├── scripts/                 # Build, packaging and verification scripts
+└── tests/                   # Test suite
 ```
 
-> `src/`, the RunPod scripts, `requirements.txt`, and the Dockerfiles support
-> the optional **cloud GPU training** path. Local Mac users never need them.
+> **Legacy code lives on the
+> [`legacy-archive-2026-09-29`](https://github.com/zd87pl/slm-vault/tree/legacy-archive-2026-09-29)
+> branch**, not on `main`: the RunPod cloud-training stack (`src/`, the
+> Dockerfiles and RunPod scripts), the sync backend (`advanced_vault/backend/`),
+> the browser extension, the LangChain package and the OpenClaw plugin, with
+> their docs. That code is unmaintained.
 
-**Not part of the local-only story**: the browser extension (an API-key
-manager whose content script runs on every page and which talks to a
-hard-coded remote development backend), the LangChain package (its default
-client targets the same backend), `advanced_vault/backend/`, and the desktop
-app's cloud sync, RunPod and backend-status features (which stay off until
-you configure a backend URL or RunPod credentials; see
-[Network access](#network-access)) are experimental or legacy. They are off
-by default or installed separately. They are not covered by the privacy
-model above and may be archived.
+**Not part of the local-only story**: the desktop app's cloud sync, RunPod and
+backend-status features (which stay off until you configure a backend URL or
+RunPod credentials) and the MCP server's `langchain_*` tools are experimental
+or legacy. They are not covered by the privacy model above and may be removed
+(see also [Network access](#network-access)).
 
 ## Requirements
 
@@ -568,9 +599,8 @@ mypy advanced_vault/
 - [MCP server](advanced_vault/mcp_server/README.md) — manual client setup and the `vault_*` secrets tools (its roadmap section is out of date)
 - [Private Language Models](docs/PRIVATE_LANGUAGE_MODELS.md) — CLI profiles: ingest, chat, adapters
 
-Most other files under `docs/` and `advanced_vault/docs/` describe earlier,
-cloud-based designs (RunPod, WDVA) and are due to be pruned; the most
-misleading ones carry a banner saying so.
+The [documentation index](docs/README.md) lists the rest; the older notes
+there may not match the code.
 
 ## Status
 
@@ -581,7 +611,6 @@ misleading ones carry a banner saying so.
 - [x] Activity logging and per-app consent (coarse; see [Consent](#consent))
 - [x] Desktop GUI (Flet) — local chat on Apple Silicon only
 - [x] Local LLM inference (MLX, Apple Silicon)
-- [x] Browser extension prototype (experimental; uses a remote development backend)
 - [x] Advanced local training (DPO, ORPO, GRPO, QAT via mlx-lm-lora) — experimental
 - [x] Encrypted adapter packaging & distribution — experimental
 - [x] One-command setup (`setup.sh`, macOS/Linux), `enclave doctor`, `enclave mcp install`

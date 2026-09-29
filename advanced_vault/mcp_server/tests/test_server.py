@@ -206,6 +206,9 @@ class TestVaultMCPServer:
     @pytest.mark.asyncio
     async def test_sheriff_access_read_revoke_flow(self, server, monkeypatch):
         """Test sheriff lease lifecycle through MCP handlers."""
+        # Sheriff re-checks the shared policy; the shipped one lets only the
+        # operator identities (local-ui, vault-cli) use it, not unknown apps.
+        app_identifier = "vault-cli"
         critical_file = Path(server.vault_path) / "tax_records_2025.pem"
         critical_file.write_text("password=supersecret")
 
@@ -217,7 +220,7 @@ class TestVaultMCPServer:
                 "purpose": "summarize for user",
                 "ttl_seconds": 300,
             },
-            app_identifier="test-app",
+            app_identifier=app_identifier,
         )
         payload = json.loads(request_result[0].text)
         assert payload["decision"] == "ALLOW_WITH_LEASE"
@@ -230,7 +233,7 @@ class TestVaultMCPServer:
                 "lease_id": lease_id,
                 "redact": True,
             },
-            app_identifier="test-app",
+            app_identifier=app_identifier,
         )
         assert "[REDACTED]" in read_result[0].text
 
@@ -242,7 +245,7 @@ class TestVaultMCPServer:
                 "resource": str(critical_file),
                 "lease_id": lease_id,
             },
-            app_identifier="test-app",
+            app_identifier=app_identifier,
         )
         assert "❌ Access denied" in denied_read[0].text
 

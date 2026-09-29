@@ -9,6 +9,10 @@ Model Context Protocol (MCP) server that exposes the Enclave vault to AI agents 
 
 ## Features
 
+> The `vault_*` secrets tools below are denied to AI apps by default. To let
+> one app use them, see "Letting one app use the secrets tools" in the main
+> [README](../../README.md#letting-one-app-use-the-secrets-tools).
+
 - **vault_store**: Store secrets and knowledge in the vault
 - **vault_recall**: Query using natural language (automatic Smart Router)
 - **vault_list_entries**: List all vault entries with filtering
@@ -85,8 +89,7 @@ first profile by name is used. If there are no profiles yet, it is
 }
 ```
 
-`ENCLAVE_PROFILE` only selects the profile these MCP tools read. The OpenClaw
-bridge's `ENCLAVE_PROFILE_NAME` is a separate setting for that integration.
+`ENCLAVE_PROFILE` only selects the profile these MCP tools read.
 
 The server re-checks the profile and the index on every call, so switching
 profiles or adding documents in the app works without restarting Claude
@@ -305,4 +308,3 @@ See `tests/test_server.py` for unit tests.
 - [ ] OS notifications for vault access
 - [ ] Per-app permissions
 
-See `advanced_vault/docs/ROADMAP.md` for complete development plan.

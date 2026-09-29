@@ -6,7 +6,7 @@ from pathlib import Path
 import advanced_vault.prosumer as prosumer
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-SCANNED_DIRS = ("advanced_vault", "src", "tests", "docs", "examples", "scripts")
+SCANNED_DIRS = ("advanced_vault", "tests", "docs", "examples", "scripts")
 SCANNED_SUFFIXES = {".py", ".md", ".txt", ".toml", ".sh"}
 SKIPPED_PARTS = {".venv", "node_modules", "__pycache__", ".git"}
 

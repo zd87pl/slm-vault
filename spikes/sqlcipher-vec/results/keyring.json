@@ -1,0 +1,23 @@
+{
+  "keyring_version": "25.7.0",
+  "env": {
+    "DBUS_SESSION_BUS_ADDRESS": null,
+    "XDG_RUNTIME_DIR": null,
+    "DISPLAY": null,
+    "WAYLAND_DISPLAY": null,
+    "PYTHON_KEYRING_BACKEND": null
+  },
+  "backends": [
+    {
+      "backend": "keyring.backends.fail.Keyring",
+      "priority": 0.0
+    },
+    {
+      "backend": "keyring.backends.chainer.ChainerBackend",
+      "priority": -1.0
+    }
+  ],
+  "secretservice_viable": "RuntimeError: Unable to initialize SecretService: Environment variable DBUS_SESSION_BUS_ADDRESS is unset",
+  "selected": "keyring.backends.fail.Keyring",
+  "round_trip": "NoKeyringError: No recommended backend was available. Install a recommended 3rd party backend package; or, install the keyrings.alt package if you want to use the non-recommended backends. See https://pypi.org/project/keyring for details."
+}

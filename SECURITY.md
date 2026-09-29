@@ -32,12 +32,16 @@ In scope:
   storage, and adapter package encryption.
 - The CLI, desktop app and setup scripts where they touch any of the above.
 
-Lower priority: the experimental and legacy components that are not part of
-the local app (`src/`, `advanced_vault/backend/`, `browser-extension/`,
-`langchain-enclave/`, `integrations/`). Reports are still welcome, but the fix
-may be to archive the component. The weaknesses listed below and in the
-README's [Known Limitations](README.md#known-limitations) are already known;
-please report them only if you find they are worse than described.
+Lower priority: the experimental parts of the desktop app that are not part of
+the local-only story (cloud sync, RunPod Q&A, the backend status check, and the
+MCP server's `langchain_*` tools); the fix may be to remove them. The legacy
+cloud-training stack, sync backend, browser extension, LangChain package and
+OpenClaw plugin are no longer on `main` (they are kept, unmaintained, on the
+`legacy-archive-2026-09-29` branch) and are out of scope.
+
+The weaknesses listed below and in the README's
+[Known Limitations](README.md#known-limitations) are already known; please
+report them only if you find they are worse than described.
 
 ## What to expect
 
@@ -68,14 +72,26 @@ What the code protects against today, and what it doesn't:
   bytes that cannot be zeroed.
 - **An agent you allow can learn what it asks about.** MCP agents get answers
   generated locally instead of files, but answers can quote your documents,
-  and `vault_recall` returns stored secrets. "Always Allow" does not expire.
+  and an app you opt in to the `vault_*` tools gets stored secrets from
+  `vault_recall`. "Always Allow" does not expire.
 - **Apps are not reliably told apart.** App identity is inferred from
   environment variables or, if the optional `psutil` package is installed,
   the parent process name. `psutil` is not an Enclave dependency, so on a
   default install every MCP client — Claude Desktop and Cursor included — is
-  `unknown`: all of them get the `default` policy, which allows the `vault_*`
-  secrets tools, and they share one consent decision, so "Always Allow" for
-  one approves all of them.
+  `unknown`: all of them get the `default` policy and share one consent
+  decision, so "Always Allow" for one approves all of them. The shipped
+  `default` policy allows the document tools but none of the `vault_*`
+  secrets tools. Earlier versions put `vault_*` in `default`; Enclave replaces
+  such a file if it was never edited (keeping a backup), and `enclave doctor`
+  warns when an edited one still gives `vault_*` to unidentified apps.
+- **Opting an app in to the secrets tools trusts a label.** The documented
+  opt-in ([Letting one app use the secrets tools](README.md#letting-one-app-use-the-secrets-tools))
+  sets `MCP_CLIENT` in that app's MCP config and adds `vault_*` tools to its
+  entry in `policies.toml`. Any program that starts the MCP server with the same
+  label gets that entry, as does, with `psutil` installed, any parent process
+  whose name matches. This keeps your secrets from apps and agents you have
+  not opted in; it does not stop software already running as you, which can
+  read the vault directly (see above).
 - **Consent and policy changes need a restart.** The MCP server reads
   `~/.vault/permissions.json` and `~/.enclave/policies.toml` only when it
   starts, so revoking access means editing those files and restarting the AI
