@@ -56,6 +56,10 @@ if [ ! -d .venv ]; then
     say "Creating virtual environment in .venv"
     "$PYTHON" -m venv .venv
 else
+    # A .venv from an older setup.sh may predate the 3.11 floor; pip would reject it.
+    if ! ./.venv/bin/python -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
+        fail "The existing .venv uses $(./.venv/bin/python --version 2>&1 || echo 'an unusable Python'), but Enclave needs 3.11+. Remove it with: rm -rf .venv   then re-run ./setup.sh"
+    fi
     say "Reusing existing .venv"
 fi
 VENV_PY="./.venv/bin/python"

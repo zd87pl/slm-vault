@@ -273,8 +273,9 @@ class EmbeddingEngine:
 
         import os
 
-        override = os.environ.get("ENCLAVE_EMBEDDING_DEVICE", "").strip()
+        override = os.environ.get("ENCLAVE_EMBEDDING_DEVICE", "").strip().lower()
         if override:
+            logger.info(f"Embedding device set to '{override}' by ENCLAVE_EMBEDDING_DEVICE")
             return override
 
         try:

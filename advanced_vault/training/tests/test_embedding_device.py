@@ -34,6 +34,12 @@ def test_override_is_trimmed(monkeypatch):
     assert _engine()._get_device() == "cpu"
 
 
+def test_override_is_case_insensitive(monkeypatch):
+    monkeypatch.setenv("ENCLAVE_EMBEDDING_DEVICE", "CPU")
+
+    assert _engine()._get_device() == "cpu"
+
+
 def test_explicit_device_wins_over_env_override(monkeypatch):
     monkeypatch.setenv("ENCLAVE_EMBEDDING_DEVICE", "cpu")
 
