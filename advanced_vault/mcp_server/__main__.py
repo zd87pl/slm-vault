@@ -5,8 +5,7 @@ Usage:
     python -m advanced_vault.mcp_server
 """
 
-import asyncio
-from .server import main
+from . import main
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
