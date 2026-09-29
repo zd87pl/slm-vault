@@ -68,9 +68,20 @@ What the code protects against today, and what it doesn't:
   bytes that cannot be zeroed.
 - **An agent you allow can learn what it asks about.** MCP agents get answers
   generated locally instead of files, but answers can quote your documents,
-  and `vault_recall` returns stored secrets. Consent is per app and "Always
-  Allow" does not expire; app identity is inferred from the calling process
-  and can fall back to `unknown`.
+  and `vault_recall` returns stored secrets. "Always Allow" does not expire.
+- **Apps are not reliably told apart.** App identity is inferred from
+  environment variables or, if the optional `psutil` package is installed,
+  the parent process name. `psutil` is not an Enclave dependency, so on a
+  default install every MCP client — Claude Desktop and Cursor included — is
+  `unknown`: all of them get the `default` policy, which allows the `vault_*`
+  secrets tools, and they share one consent decision, so "Always Allow" for
+  one approves all of them.
+- **Consent and policy changes need a restart.** The MCP server reads
+  `~/.vault/permissions.json` and `~/.enclave/policies.toml` only when it
+  starts, so revoking access means editing those files and restarting the AI
+  app; the desktop app's kill switch likewise reaches a running server only
+  after that restart. The desktop app's permission toggles and Revoke button
+  are not enforced.
 - **Documents can inject instructions.** Retrieved text goes into the local
   model's prompt as-is, so a malicious document can influence the answer an
   agent receives.

@@ -1,10 +1,11 @@
 # Cryptographic Technical Specifications
 
-> **Historical design document — not implemented.** The design described here
-> (XChaCha20, a key hierarchy, HSM/SGX, zero-knowledge proofs, homomorphic
-> encryption) was never built and does not describe the current code. For what
-> Enclave actually encrypts today, see [SECURITY.md](../../SECURITY.md) and the
-> README's [What is and isn't encrypted](../../README.md#what-is-and-isnt-encrypted).
+> **Historical design document — mostly not implemented.** Most of the design
+> described here (a key hierarchy, HSM/SGX, zero-knowledge proofs, homomorphic
+> encryption) was never built, and XChaCha20-Poly1305 is used only by the
+> legacy cloud-training path. It does not describe the current local app. For
+> what Enclave actually encrypts today, see [SECURITY.md](../../SECURITY.md)
+> and the README's [What is and isn't encrypted](../../README.md#what-is-and-isnt-encrypted).
 
 ## Overview
 
