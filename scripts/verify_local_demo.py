@@ -21,7 +21,7 @@ def main() -> int:
     print("== Enclave Local Demo Verification ==")
     print(f"Python: {platform.python_version()} ({platform.platform()})")
     version = sys.version_info
-    _require((version.major, version.minor) >= (3, 10), "Python 3.10+ is required")
+    _require((version.major, version.minor) >= (3, 11), "Python 3.11+ is required")
 
     import flet  # noqa: F401
     import flet_desktop  # noqa: F401
