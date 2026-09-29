@@ -262,9 +262,20 @@ class EmbeddingEngine:
         logger.info(f"Initializing EmbeddingEngine with model: {self.model_name}")
 
     def _get_device(self) -> str:
-        """Auto-detect best available device."""
+        """Auto-detect best available device.
+
+        When no device was passed in, ENCLAVE_EMBEDDING_DEVICE (e.g. "cpu")
+        overrides auto-detection: some hosts report MPS as available but
+        fail to allocate on it (GitHub-hosted Apple Silicon runners, for one).
+        """
         if self._device:
             return self._device
+
+        import os
+
+        override = os.environ.get("ENCLAVE_EMBEDDING_DEVICE", "").strip()
+        if override:
+            return override
 
         try:
             import torch
