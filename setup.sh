@@ -25,17 +25,17 @@ fail() { printf '\033[1;31mError:\033[0m %s\n' "$*" >&2; exit 1; }
 
 cd "$(dirname "$0")"
 
-# --- Pick a Python (3.10+ required, 3.11+ preferred) ---------------------------
+# --- Pick a Python (3.11+ required) ---------------------------------------------
 PYTHON=""
 for candidate in python3.12 python3.11 python3.13 python3; do
     if command -v "$candidate" >/dev/null 2>&1; then
-        if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
+        if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 11) else 1)' 2>/dev/null; then
             PYTHON="$(command -v "$candidate")"
             break
         fi
     fi
 done
-[ -n "$PYTHON" ] || fail "Python 3.10+ not found. On macOS: brew install python@3.12"
+[ -n "$PYTHON" ] || fail "Python 3.11+ not found. On macOS: brew install python@3.12"
 say "Using $("$PYTHON" --version) at $PYTHON"
 
 # --- Detect platform ------------------------------------------------------------

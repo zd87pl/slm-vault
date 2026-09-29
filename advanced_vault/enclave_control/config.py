@@ -6,11 +6,7 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 from typing import Dict, Tuple
-
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover - Python < 3.11 fallback
-    import tomli as tomllib  # type: ignore
+import tomllib
 
 from .models import AgentPolicy, KillSwitchState, utcnow_iso
 
