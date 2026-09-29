@@ -17,7 +17,6 @@
     "ENCLAVE_REQUIRE_AUTH": "0",
     "SUPABASE_URL": "",
     "SUPABASE_ANON_KEY": "",
-    "ENCLAVE_BACKEND_URL": "",
     "RUNPOD_QA_ENDPOINT_ID": "",
     "RUNPOD_API_KEY": "",
     "RUNPOD_QA_API_KEY": ""

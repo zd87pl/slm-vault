@@ -45,7 +45,11 @@ from advanced_vault.private_models.manager import (
 )
 from advanced_vault.sheriff.core import SheriffCore
 from advanced_vault.wallet import WalletService
-from advanced_vault.gui.ollama_setup import ollama_download_prompt, ollama_pull_instructions
+from advanced_vault.gui.ollama_setup import (
+    ollama_download_prompt,
+    ollama_pull_instructions,
+    ollama_start_instructions,
+)
 
 # GUI sibling imports — use try/except for resilience
 try:
@@ -1594,26 +1598,25 @@ class VaultApp:
         if not ollama_setup.is_ollama_installed():
             return ollama_setup.install_instructions()
         if not ollama_setup.is_ollama_running():
-            return (
-                "Scanned-PDF OCR needs Ollama running. Start the Ollama app (or run "
-                "`ollama serve`), then try again. Text-based PDFs work without it."
-            )
+            return ollama_start_instructions()
         return ollama_pull_instructions(ollama_setup.model)
 
     def _setup_ollama_with_progress(self, confirmed_download: bool = False):
         """
         Setup Ollama OCR with visible progress dialog showing percentage and time remaining.
 
-        Never installs Ollama (shows instructions instead), and downloads the
-        model only after the user confirms a prompt naming it and its size.
+        Never installs or starts Ollama (shows instructions instead), and
+        downloads the model only after the user confirms a prompt naming it
+        and its size.
         """
         ollama_setup = self.pdf_processor.ollama_setup
         if not ollama_setup.is_ollama_installed():
             self._show_ollama_instructions(ollama_setup.install_instructions())
             return
-        if not confirmed_download and not (
-            ollama_setup.is_ollama_running() and ollama_setup.is_model_available()
-        ):
+        if not ollama_setup.is_ollama_running():
+            self._show_ollama_instructions(ollama_start_instructions())
+            return
+        if not confirmed_download and not ollama_setup.is_model_available():
             self._confirm_ollama_model_download(
                 ollama_setup.model,
                 "scanned-PDF OCR",
@@ -1663,6 +1666,11 @@ class VaultApp:
             )
             if success:
                 self.pdf_processor.ollama_available = self.pdf_processor._test_ollama_connection()
+                if self.pdf_processor.ollama_available:
+                    self._component_status["ocr"]["status"] = "ready"
+                    self._component_status["ocr"]["message"] = (
+                        f"Ready ({self.pdf_processor.get_backend_status_label()})"
+                    )
                 progress_text.value = "✅ AI Knowledge Extraction ready!"
                 progress_bar.value = 1.0
                 progress_percent.value = "100%"

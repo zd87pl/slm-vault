@@ -63,6 +63,9 @@ class _World:
         return [(m, u) for m, u in self.requests if u.endswith("/api/pull")]
 
     def which(self, name, *args, **kwargs):
+        # Installer tools are always on PATH, so an installer would be reachable.
+        if name in {"brew", "curl", "sh"}:
+            return f"/usr/bin/{name}"
         return "/usr/local/bin/ollama" if (name == "ollama" and self.installed) else None
 
     def run(self, cmd, *args, **kwargs):
@@ -131,11 +134,24 @@ class TestOllamaSetup(_NoInstallAssertions):
         self.assert_nothing_installed_or_pulled(world)
 
     def test_missing_ollama_on_intel_mac_does_not_use_homebrew(self) -> None:
+        # brew and curl are on PATH; the old code ran `brew install ollama` here.
         with _fake_world(installed=False) as world:
             with patch("platform.system", return_value="Darwin"):
-                ok, _ = OllamaSetup().setup_ollama(confirmed_download=True)
+                ok, message = OllamaSetup().setup_ollama()
         self.assertFalse(ok)
+        self.assertIn("https://ollama.com", message)
         self.assert_nothing_installed_or_pulled(world)
+
+    def test_stopped_ollama_is_not_started_and_model_not_called_missing(self) -> None:
+        for confirmed in (False, True):
+            with self.subTest(confirmed_download=confirmed):
+                with _fake_world(installed=True, running=False) as world:
+                    ok, message = OllamaSetup().setup_ollama(confirmed_download=confirmed)
+                self.assertFalse(ok)
+                self.assertIn("not running", message)
+                self.assertIn("ollama serve", message)
+                self.assertNotIn("not downloaded", message)
+                self.assert_nothing_installed_or_pulled(world)
 
     def test_missing_model_is_not_pulled_without_confirmation(self) -> None:
         with _fake_world(installed=True, running=True) as world:
@@ -282,11 +298,14 @@ class TestVaultAppOllamaFlows(_NoInstallAssertions):
         self.assertIn("https://ollama.com", _dialog_text(instructions))
 
     def test_ocr_model_is_pulled_only_after_confirmation(self) -> None:
+        # What _initialize_pdf_processor leaves behind when no OCR backend exists.
+        self.app._component_status["ocr"] = {"status": "checking", "message": "not set up"}
         with _fake_world(installed=True, running=True) as world:
             self.app.pdf_processor = types.SimpleNamespace(
                 ollama_setup=OllamaSetup(),
                 ollama_available=False,
                 _test_ollama_connection=lambda: True,
+                get_backend_status_label=lambda: "Ollama OCR",
             )
             self.app._setup_ollama_with_progress()
 
@@ -300,6 +319,19 @@ class TestVaultAppOllamaFlows(_NoInstallAssertions):
         self.assertEqual(len(world.pulls), 1)
         self.assertEqual(world.models, [OCR_MODEL])
         self.assertEqual(world.commands, [])
+        self.assertEqual(self.app._component_status["ocr"]["status"], "ready")
+
+    def test_stopped_ollama_gets_a_start_hint_not_a_download_prompt(self) -> None:
+        with _fake_world(installed=True, running=False) as world:
+            self.app.pdf_processor = types.SimpleNamespace(ollama_setup=OllamaSetup())
+            self.app._setup_ollama_with_progress()
+
+        [dialog] = self._dialogs()
+        text = _dialog_text(dialog)
+        self.assertIn("ollama serve", text)
+        self.assertNotIn("about 8 GB", text)
+        self.assertNotIn("Download", [getattr(a, "text", None) for a in dialog.actions])
+        self.assert_nothing_installed_or_pulled(world)
 
     def test_ocr_download_can_be_declined(self) -> None:
         with _fake_world(installed=True, running=True) as world:
@@ -328,6 +360,7 @@ class TestVaultAppOllamaFlows(_NoInstallAssertions):
 
         self.assertEqual(len(world.pulls), 1)
         self.assertEqual(world.models, [QA_MODEL])
+        self.assertEqual(self.app._component_status["qa"]["status"], "ready")
 
 
 if __name__ == "__main__":

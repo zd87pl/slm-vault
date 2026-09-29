@@ -233,7 +233,8 @@ class QAGenerator:
         if not confirmed_download:
             return False, (
                 f"The Ollama model {self.ollama_model} is not downloaded. Run "
-                f"`ollama pull {self.ollama_model}` in a terminal, or confirm the download."
+                f"`ollama pull {self.ollama_model}` in a terminal, or download it from "
+                "Settings → Run Local Setup."
             )
         
         try:

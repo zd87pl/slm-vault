@@ -2,22 +2,21 @@
 Ollama Setup and Management
 
 Detects a local Ollama install for OCR and, only after the user confirms,
-downloads the model it needs. Enclave never installs Ollama itself: when it
-is missing, callers show install_instructions() instead.
+downloads the model it needs. Enclave never installs or starts Ollama itself:
+callers show install or start instructions instead.
 """
 
 import logging
-import subprocess
 import shutil
 import requests
 import time
-from pathlib import Path
 from typing import Optional, Callable, Tuple
 import platform
 
 logger = logging.getLogger(__name__)
 
 OLLAMA_WEBSITE = "https://ollama.com"
+OLLAMA_OCR_READY = "Ollama OCR is ready"
 
 # Approximate download sizes from the Ollama library (https://ollama.com/library),
 # shown to the user before a model download is confirmed.
@@ -46,11 +45,20 @@ def ollama_install_instructions(model: str) -> str:
     )
 
 
+def ollama_start_instructions() -> str:
+    """Explain how to start an installed Ollama (Enclave never starts it)."""
+    return (
+        "Ollama is installed but not running. Start it (open the Ollama app, or run "
+        "`ollama serve` in a terminal), then try again. Text-based PDFs work without it."
+    )
+
+
 def ollama_pull_instructions(model: str) -> str:
     """Explain how to get a missing model without an automatic download."""
     return (
         f"The Ollama model {model} ({approx_model_size(model)}) is not downloaded. "
-        f"Run `ollama pull {model}` in a terminal, or confirm the download in Settings."
+        f"Run `ollama pull {model}` in a terminal, or download it from "
+        "Settings → Run Local Setup."
     )
 
 
@@ -108,57 +116,6 @@ class OllamaSetup:
         """How to install Ollama and this model by hand."""
         return ollama_install_instructions(self.model)
 
-    def start_ollama_server(self, progress_callback: Optional[Callable[[str], None]] = None) -> bool:
-        """
-        Start Ollama server (non-blocking).
-        
-        Args:
-            progress_callback: Optional callback for progress updates
-            
-        Returns:
-            True if server started successfully
-        """
-        if self.is_ollama_running():
-            logger.info("Ollama server already running")
-            return True
-        
-        if not self.is_ollama_installed():
-            logger.error("Ollama not installed, cannot start server")
-            return False
-        
-        try:
-            if progress_callback:
-                progress_callback("Starting Ollama server...")
-            
-            logger.info("Starting Ollama server...")
-            # Start Ollama in background (non-blocking)
-            subprocess.Popen(
-                ["ollama", "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
-            
-            # Wait for server to start (max 10 seconds)
-            for _ in range(20):
-                time.sleep(0.5)
-                if self.is_ollama_running():
-                    logger.info("Ollama server started successfully")
-                    if progress_callback:
-                        progress_callback("Serwer Ollama uruchomiony")
-                    return True
-            
-            logger.warning("Ollama server did not start within timeout")
-            if progress_callback:
-                progress_callback("Serwer Ollama nie uruchomił się")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error starting Ollama server: {e}")
-            if progress_callback:
-                progress_callback(f"Server start error: {str(e)}")
-            return False
-    
     def is_model_available(self) -> bool:
         """
         Check if the required vision model is available.
@@ -364,11 +321,12 @@ class OllamaSetup:
         confirmed_download: bool = False,
     ) -> Tuple[bool, str]:
         """
-        Get an installed Ollama ready: start its server, download the model.
+        Get a running Ollama ready by downloading the model it needs.
 
-        Never installs Ollama. Starting the server and downloading the model
-        happen only with confirmed_download=True, which callers pass after the
-        user confirmed a prompt naming the model and its size.
+        Never installs or starts Ollama: when it is missing or stopped, the
+        message says what to do. The model is downloaded only with
+        confirmed_download=True, which callers pass after the user confirmed
+        a prompt naming the model and its size.
         
         Args:
             progress_callback: Optional callback(message, percent, time_remaining) for progress updates
@@ -389,24 +347,22 @@ class OllamaSetup:
                     # Old-style callback, just pass message
                     progress_callback(msg)
         
-        # Step 1: Ollama must already be installed; never install it.
+        # Ollama must already be installed and running; never install or start it.
         if not self.is_ollama_installed():
             return False, self.install_instructions()
+        if not self.is_ollama_running():
+            return False, ollama_start_instructions()
 
         if not confirmed_download:
-            if self.is_ollama_running() and self.is_model_available():
-                return True, "Ollama OCR gotowe do użycia"
+            if self.is_model_available():
+                return True, OLLAMA_OCR_READY
             return False, ollama_pull_instructions(self.model)
         
-        # Step 2: Start server
-        if not self.start_ollama_server(lambda msg: wrapped_callback(msg, None, None)):
-            return False, "Nie udało się uruchomić serwera Ollama"
-        
-        # Step 3: Download model (this one supports detailed progress)
+        # Download model (this one supports detailed progress)
         if not self.download_model(wrapped_callback, confirmed=True):
             return False, f"Nie udało się pobrać modelu {self.model}"
         
-        return True, "Ollama OCR gotowe do użycia"
+        return True, OLLAMA_OCR_READY
     
     def get_status(self) -> dict:
         """
