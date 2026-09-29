@@ -1570,6 +1570,8 @@ def mcp_install(ctx, target):
         for client, result in outcome['results'].items():
             if result.get('success'):
                 click.echo(f"✅ {client}: configured ({result.get('config_path')})")
+                if result.get('backup_path'):
+                    click.echo(f"   previous config backed up to {result['backup_path']}")
             else:
                 click.echo(f"⚠️  {client}: {result.get('error')}")
         if not outcome['success']:
@@ -1580,6 +1582,8 @@ def mcp_install(ctx, target):
     result = helper.auto_configure(target=target)
     if result.get('success'):
         click.echo(f"✅ {target.capitalize()} configured: {result.get('config_path')}")
+        if result.get('backup_path'):
+            click.echo(f"   Previous config backed up to {result['backup_path']}")
         click.echo(f"\nRestart {target.capitalize()} and ask it about your documents —")
         click.echo("Enclave answers locally; your files never leave this machine.")
     else:
