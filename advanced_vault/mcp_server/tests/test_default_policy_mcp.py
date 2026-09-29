@@ -19,6 +19,9 @@ from advanced_vault.enclave_control.config import DEFAULT_POLICY_TOML, SECRETS_T
 from advanced_vault.enclave_control.legacy_defaults import LEGACY_DEFAULT_POLICY_TOMLS
 from advanced_vault.mcp_server.server import VaultMCPServer
 
+# Short test ids instead of the full TOML text
+LEGACY_DEFAULT_IDS = ["2026-03", "2026-07"]
+
 STRIPE_SECRET = "sk_live_REALSECRET123"
 DOCUMENT_QA_TOOLS = {"agent_query", "agent_summarize", "agent_draft", "agent_status", "query_knowledge"}
 SECRETS_TOOL_ARGUMENTS = {
@@ -196,7 +199,7 @@ async def test_an_app_named_by_mcp_client_and_opted_in_gets_the_secrets_tools(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("legacy", LEGACY_DEFAULT_POLICY_TOMLS)
+@pytest.mark.parametrize("legacy", LEGACY_DEFAULT_POLICY_TOMLS, ids=LEGACY_DEFAULT_IDS)
 async def test_an_old_default_on_disk_is_upgraded_before_the_first_call(
     tmp_path, home, monkeypatch, consent_requests, legacy
 ):

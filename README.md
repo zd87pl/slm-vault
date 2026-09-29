@@ -401,6 +401,12 @@ No AI app can call the `vault_*` tools until you opt it in:
    `"vault_*"` to also allow storing and deleting.
 3. Fully quit and reopen the app.
 
+Naming the app applies everything in its `[[agents]]` entry, not just the tools
+you add: the shipped `claude-desktop` and `cursor` entries also allow the
+(mock) wallet tools, including `request_purchase` with auto-approval under
+$25. Remove `"wallet"` from that entry's `allowed_modules` if you don't want
+that.
+
 `MCP_CLIENT` is a label, not proof: any program that starts Enclave's server
 with the same label gets that entry (as does, with `psutil` installed, any
 app whose process name contains "claude" or "cursor"). Only software already

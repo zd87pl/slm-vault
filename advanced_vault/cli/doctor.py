@@ -396,7 +396,7 @@ def check_secrets_policy(policy_path: str | os.PathLike | None = None) -> CheckR
                 f"{path} is an unmodified default from an older Enclave, which lets apps Enclave "
                 "cannot identify (on a default install, every MCP client) use the vault_* secrets "
                 "tools; Enclave replaces it automatically, keeping a backup, the next time the "
-                "Enclave app or its MCP server starts",
+                "Enclave app or its MCP server starts (including the MCP server check below)",
                 "Fully quit and reopen your AI app so its Enclave server restarts, then run "
                 "`enclave doctor` again. If this warning stays, Enclave cannot write the file "
                 "(it enforces the new default anyway): check the file's permissions",

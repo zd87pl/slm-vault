@@ -35,6 +35,9 @@ SHIPPED_DEFAULTS_SHA256 = {
     "f00a98c16b3bd96e42c906efa5ce3e6d78f9d4925a11d297f46000f51e17eb58",  # b492c3a .. 2ec68a7
 }
 
+# Short test ids instead of the full TOML text
+LEGACY_DEFAULT_IDS = ["2026-03", "2026-07"]
+
 DOCUMENT_QA_TOOLS = ("agent_query", "agent_summarize", "agent_draft", "agent_status", "query_knowledge")
 SHERIFF_TOOLS = (
     "sheriff_request_access", "sheriff_read", "sheriff_list_audit", "sheriff_revoke",
@@ -130,7 +133,7 @@ class TestLegacyDefaults:
 
         assert digests == SHIPPED_DEFAULTS_SHA256
 
-    @pytest.mark.parametrize("legacy", LEGACY_DEFAULT_POLICY_TOMLS)
+    @pytest.mark.parametrize("legacy", LEGACY_DEFAULT_POLICY_TOMLS, ids=LEGACY_DEFAULT_IDS)
     def test_each_gave_unknown_clients_the_secrets_tools(self, legacy):
         # The migration exists because of this; if it ever stops being true
         # the text is not one of the vulnerable defaults.
@@ -146,7 +149,7 @@ class TestLegacyDefaults:
 
 
 class TestUpgradeUnmodifiedLegacyDefault:
-    @pytest.mark.parametrize("legacy", LEGACY_DEFAULT_POLICY_TOMLS)
+    @pytest.mark.parametrize("legacy", LEGACY_DEFAULT_POLICY_TOMLS, ids=LEGACY_DEFAULT_IDS)
     def test_is_replaced_with_a_backup(self, tmp_path, policy_path, legacy, caplog):
         original = _write(policy_path, legacy, mode=0o640)
         caplog.set_level(logging.WARNING, logger=policy_config.__name__)
@@ -310,7 +313,7 @@ class TestUserModifiedFileIsNeverRewritten:
             id="entry-added",
         ),
     ])
-    @pytest.mark.parametrize("legacy", LEGACY_DEFAULT_POLICY_TOMLS)
+    @pytest.mark.parametrize("legacy", LEGACY_DEFAULT_POLICY_TOMLS, ids=LEGACY_DEFAULT_IDS)
     def test_is_left_byte_for_byte(self, tmp_path, policy_path, legacy, edit):
         modified = edit(legacy)
         assert modified != legacy
