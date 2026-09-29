@@ -7,3 +7,4 @@ keyring==25.7.0
 apsw-sqlite3mc==3.53.4.0   # fallback binding, only for check_apsw_sqlite3mc.py
 numpy>=1.26
 cryptography>=41           # own page decryption in the crypto checks
+threadpoolctl>=3           # optional: 1-thread numbers in bench_vector_paths.py

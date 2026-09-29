@@ -4,6 +4,11 @@ This spike backs [ADR 0001](../../docs/design/0001-vault-engine.md). It answers 
 lists as "sqlite-vec inside SQLCipher untested across platforms" and checks the key-management
 building blocks. Measured on 2026-09-29.
 
+**Revision (review round 1, finding B1).** The warm-cache vector numbers in §6 do not survive the engine's real
+write pattern. In WAL mode, one commit by another connection empties every reader connection's page cache, and the
+next encrypted KNN query costs 534–549 ms instead of 41 ms. The ADR therefore queries vectors from an **in-engine numpy
+matrix**, with SQLCipher only for persistence. §9 has the measurements. sqlite-vec is not on the Phase 1 query path.
+
 ## Verdict
 
 - **It works.** One `sqlcipher3` connection (SQLCipher 4.12.0 community, SQLite 3.51.1) runs FTS5 and the
@@ -19,15 +24,18 @@ building blocks. Measured on 2026-09-29.
 - **Deletes need two settings.** `secure_delete` is on by default for keyed SQLCipher databases, and sqlite-vec zeroes
   deleted vectors. But **FTS5 keeps a deleted document's tokens in its index, even after VACUUM**,
   unless the table's `secure-delete` option is on. The engine must turn it on.
-- **Encryption costs little, if the page cache is sized.** File-size overhead is about 2%. FTS5 queries are
-  unaffected. With SQLCipher's default 2 MB page cache, every vector scan re-decrypts the vector pages
-  (100k × 384 float32: 523 ms vs 55 ms plaintext). With a cache big enough for the vector table, the encrypted
-  scan is as fast as plaintext or faster (40 ms). The price is plaintext vectors held in RAM while the vault is
-  unlocked.
-- **Brute-force KNN on this x86 box is slower than the roadmap's figure** ("5–15 ms per 100k", from a secondary source).
-  Measured: 40 ms for 100k × 384 and 120 ms for 100k × 1024 (float32, encrypted, warm cache). The PyPI
-  Linux wheel has no AVX code. A local build with `-DSQLITE_VEC_ENABLE_AVX` cut those to 25 ms and 67 ms. The macOS
-  arm64 wheel does use NEON (`fmla.4s` in `distance_l2_sqr_float`). Mac numbers still need a Mac.
+- **Encryption costs little for FTS5 and storage; vectors need a different query path.** File-size overhead is about 2%.
+  FTS5 queries are unaffected, even right after another connection commits: 10–11 ms becomes 21–23 ms for a common term,
+  and a rare term stays under 2 ms (§9). An encrypted sqlite-vec scan is fast only with a warm cache as large as the
+  vector table: 100k × 384 float32 takes 40 ms warm and 523 ms with the default 2 MB cache. But any commit on another
+  connection empties that cache: 534–549 ms (§9).
+- **In-engine matrix instead (§9).** A numpy float32 matrix, loaded from a BLOB table at unlock, answers top-50 in
+  1.9 ms (100k × 384) and 9.6–19.8 ms (100k × 1024). Updates cost under 1 ms per 20-chunk document. Loading it at
+  unlock takes 1.2–1.6 s and 2.9–3.9 s respectively, dominated by decryption. Hybrid FTS5 + matrix + RRF takes 1.2–11 ms
+  even with a commit before every query.
+- **sqlite-vec brute force on this x86 box is slower than the roadmap's figure** ("5–15 ms per 100k", from a secondary
+  source): 40 ms for 100k × 384 and 120 ms for 100k × 1024 (float32, encrypted, warm cache). The PyPI Linux wheel has no AVX
+  code; a local AVX build gave 25 ms and 67 ms. The macOS arm64 wheel uses NEON. With the numpy matrix this question is moot.
 - **Argon2id:** a memory-first calibration picked **m = 1 GiB, t = 2, p = 4 (0.82 s)** here. Timings at p = 4 swing by up to
   2× with background load, so calibrate at vault creation and store the parameters.
 - **`keyring` has no usable backend in this container.** It falls back to `keyring.backends.fail.Keyring`, because
@@ -60,6 +68,7 @@ python3.11 -m venv /tmp/spike-venv
 cd spikes/sqlcipher-vec
 /tmp/spike-venv/bin/python spike_sqlcipher_vec.py all --out /tmp/results.json   # caps, crypto, fts, knn (~3 min here)
 /tmp/spike-venv/bin/python spike_sqlcipher_vec.py knn --knn-sizes 10000 --knn-dims 384   # quick subset
+/tmp/spike-venv/bin/python bench_vector_paths.py --out /tmp/vector_paths.json    # §9, ~1 min
 /tmp/spike-venv/bin/python bench_argon2.py --out /tmp/argon2.json                # ~1 min
 /tmp/spike-venv/bin/python check_keyring.py
 /tmp/spike-venv/bin/python check_apsw_sqlite3mc.py
@@ -179,7 +188,8 @@ file: 570 ms. First query after open: 20 ms encrypted vs 12 ms plaintext. An ear
 had encrypted "common term" at 24.7 ms p50; single-digit-ms differences between columns are noise.
 
 Every query sits well inside the roadmap's "under 100 ms search-as-you-type" budget. The one row that moves
-is the hybrid query: its KNN half re-decrypts 15 MiB of vector pages per query when the cache is 2 MB.
+is the hybrid query: its KNN half re-decrypts 15 MiB of vector pages per query when the cache is 2 MB. The ADR
+no longer runs the KNN half in SQLite: §9C measures hybrid with the in-engine matrix.
 
 ### 6. sqlite-vec brute-force KNN (`knn`, k = 10)
 
@@ -232,6 +242,7 @@ Observations:
 - int8 does not speed up the scan much in this build. bit vectors do, by 10–20×, but they need a float rescore of the
   candidates for quality. That is the standard binary-prefilter pattern, and only worth it well above 100k chunks.
 - Insert throughput (about 10–30k vectors/s) is not a bottleneck next to embedding time.
+- **These are single-connection numbers.** §9 shows that they collapse once another connection writes.
 
 ### 7. Argon2id (`bench_argon2.py`, argon2-cffi 25.1.0)
 
@@ -270,6 +281,43 @@ build must include them. The engine treats `fail.Keyring`, the chainer with no b
 plaintext/"encrypted file" backends as **"no OS keystore"**: convenience unlock is off and only passphrase and
 recovery-key unlock work (ADR 0001 §5).
 
+### 9. Vector search under concurrent writes, and the in-engine matrix (`bench_vector_paths.py`)
+
+Added after review finding B1, adapting the reviewer's `cache_invalidation.py`. Encrypted database, WAL, a reader connection
+with a cache 1.5 × the file, and a second connection that commits one row to an unrelated table, as the engine's audit,
+`last_seen` and job writes do on almost every request. Two full runs; `results/vector_paths.json` is the second.
+
+**A. Page-cache invalidation** (100k × 384 vec0 plus 10k-chunk FTS5, 202 MiB; p50 in ms):
+
+| Query | Warm | After another connection commits one row | After the same connection commits |
+|---|---|---|---|
+| sqlite-vec KNN, k = 10 | 41.4 | **534–549** | 41.2–44.7 |
+| FTS5, common term | 10.3–11.4 | 21.2–23.1 | n/a |
+| FTS5, rare term | 0.15–0.28 | 1.5–1.7 | n/a |
+
+The reviewer's run of the same script gave 723 ms and 608 ms, and my rerun of it gave 626 and 571 ms (20k × 384:
+10 → 108–125 ms). A reader's cache survives only its *own* connection's commits, and the engine needs concurrent readers.
+FTS5 reads few pages per query, so invalidation costs it about 10 ms at most.
+
+**B. In-engine numpy matrix** (`chunk_vectors(chunk_id INTEGER PRIMARY KEY, vec BLOB)` in SQLCipher; numpy 2.4 with
+OpenBLAS; top-50 by dot product plus `argpartition`; results matched an exact search):
+
+| n × dim | Matrix in RAM | Load at unlock (per-row / 4096-vector blocks) | Top-50 p50, BLAS threads / 1 thread | With a 30% collection mask | Persist one 20-chunk document | In-memory append | Delete one vector |
+|---|---|---|---|---|---|---|---|
+| 100k × 384 | 146 MiB | 1.56–1.65 s / 1.21 s | **1.9 ms** / 6.6–7.5 ms | 2.1–2.3 ms | 0.6–1.0 ms | 0.04–0.05 ms | 0.3–0.5 ms |
+| 100k × 1024 | 391 MiB | 2.9–3.9 s / 3.55 s | **9.6–19.8 ms** / 29 ms | 9.4–16.1 ms | 0.9–1.1 ms | 0.02 ms | 0.2–0.4 ms |
+
+The unlock load is dominated by decrypting the whole table, so a block snapshot helps little. It runs in the
+background after unlock; until it finishes, search is keyword-only. The 1024-d rows (4 KiB) overflow a 4 KiB page, and
+≤ 512-d rows fit, so 512 dimensions should load in about 2 s.
+
+**C. Hybrid** (FTS5 top-50 in SQLCipher + matrix top-50 + RRF in Python, 10k chunks, 384-d):
+
+| Query | Warm p50 | Commit before every query: p50 / p95 |
+|---|---|---|
+| two terms (AND) | 0.6–4.0 ms | 1.2–3.5 / 1.7–3.6 ms |
+| common term | 10.6–20.0 ms | 11.3–19.4 / 12.0–43.8 ms |
+
 ## Blockers, workarounds and what this spike did not show
 
 - **No blocker** on Linux x86_64. Loading the extension into SQLCipher builds works, so no workaround was needed. If a
@@ -279,19 +327,21 @@ recovery-key unlock work (ADR 0001 §5).
 - **Not run on macOS or Windows.** Mac numbers (NEON build), the hardened-runtime load of a re-signed `vec0.dylib`,
   and notarization all need a macOS CI job with a signing identity. That is PR 13 in the ADR's plan. Windows arm64 needs a
   self-built `vec0.dll`.
-- The x86 numbers come from the PyPI wheel's scalar/SSE kernels on a 2.1 GHz shared VM. They are an upper bound for
-  Windows/Linux. Ship an AVX build of `vec0` for x86_64, with runtime CPU detection or a non-AVX fallback.
+- The x86 sqlite-vec numbers come from the PyPI wheel's scalar/SSE kernels on a 2.1 GHz shared VM. This is moot
+  for Phase 1, because the ADR queries vectors from numpy (§9). An AVX `vec0` would need two binaries and runtime CPU dispatch.
+- Matrix load time and BLAS-threaded query times vary run to run on this shared 4-vCPU VM (ranges above). Mac numbers
+  (Accelerate/OpenBLAS on Apple Silicon) are unmeasured.
 - Cold-from-disk latency was not measured, because dropping the OS page cache would disturb other jobs on this machine.
   "first" numbers include decryption but read from the OS page cache.
 - SQLite's `vec1` extension, bundled in apsw wheels (IVF-PQ, needs training), was found but not evaluated.
 
 ## Implications carried into ADR 0001
 
-1. Store: `sqlcipher3` pinned, raw 256-bit key, WAL, `secure_delete = ON` set explicitly, FTS5 tables created
-   with `secure-delete = 1`, and sqlite-vec loaded per connection with load-extension switched off right after.
-2. Page cache sized to hold the vec0 table and warmed at unlock. Default embedding width 512 at most
-   (Qwen3-Embedding MRL), float32 up to about 100k chunks, int8 or bit prefilter beyond that.
+1. Store: `sqlcipher3` pinned, a 256-bit raw key (HKDF-derived from the DEK), WAL, `secure_delete = ON` set explicitly,
+   and FTS5 tables created with `secure-delete = 1`. Extension loading is never enabled, because sqlite-vec is not needed on the query path.
+2. Vectors are persisted as BLOB rows in SQLCipher and queried from an in-engine numpy matrix that is loaded in the background
+   at unlock (§9). Default embedding width is 512 at most (Qwen3-Embedding MRL); the matrix stays float32 up to about 100k chunks.
 3. Backups via `VACUUM INTO` (same key) or `sqlcipher_export` (new key). Both were verified to produce encrypted copies.
 4. Argon2id calibrated memory-first at vault creation, with parameters stored in the key header. On slow machines the floor is RFC 9106's second recommended option (64 MiB, t = 3).
 5. OS-keystore unlock is optional, and "no backend" is a normal state, not an error.
-6. Every bundled Mach-O is re-signed with the app's Team ID, including `vec0.dylib`.
+6. Every bundled Mach-O is re-signed with the app's Team ID. sqlite-vec is not bundled in Phase 1.
