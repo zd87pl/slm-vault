@@ -23,7 +23,7 @@ from advanced_vault.enclave_control import EnclaveRuntime
 from advanced_vault.sheriff.core import SheriffCore
 from advanced_vault.sheriff.models import AccessDecision
 from advanced_vault.mcp_server.consent import ConsentManager
-from advanced_vault.mcp_server.activity_logger import ActivityLogger
+from advanced_vault.mcp_server.activity_logger import ActivityLogger, redact_tool_arguments
 from advanced_vault.mcp_server.agent import get_agent, LocalAgent
 from advanced_vault.wallet import WalletService
 
@@ -165,13 +165,13 @@ class VaultMCPServer:
                 ),
                 Tool(
                     name="vault_recall",
-                    description="Query the vault using natural language. Automatically routes to exact data (Layer 1) or knowledge (Layer 2) based on query type. Examples: 'What's my Stripe API key?' (exact), 'Why did I choose Stripe?' (knowledge), 'Show me everything about Stripe' (hybrid).",
+                    description="Retrieve an entry from the vault. A stored value (secret or note) is returned only when the query is exactly the name of one stored entry, case-insensitive (e.g. 'stripe'). Any other query, such as 'What's my Stripe API key?', returns only the names of matching entries so you can ask again with the exact name; values are never returned for partial or natural-language matches. Use vault_list_entries to see all entry names.",
                     inputSchema={
                         "type": "object",
                         "properties": {
                             "query": {
                                 "type": "string",
-                                "description": "Natural language query"
+                                "description": "Exact entry name (e.g. 'stripe'); other queries return matching entry names only"
                             }
                         },
                         "required": ["query"]
@@ -658,7 +658,7 @@ class VaultMCPServer:
                         decision="DENY",
                         resource=query_preview,
                         summary=policy_reason,
-                        metadata={"arguments": args},
+                        metadata={"arguments": redact_tool_arguments(name, args)},
                         source="mcp_server",
                     )
                     return [

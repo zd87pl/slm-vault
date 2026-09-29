@@ -13,6 +13,8 @@ import csv
 import io
 import json
 import logging
+import re
+from collections.abc import Mapping
 from pathlib import Path
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
@@ -45,6 +47,73 @@ _APP_DISPLAY_NAMES: Dict[str, str] = {
 
 #: Fallback display name when no better match is found.
 _DEFAULT_APP_DISPLAY_NAME = f"Claude {_MCP_DISPLAY_SUFFIX}"
+
+#: Words that mark an argument as sensitive when they make up its name or one
+#: of its ``_``/``-``/camelCase-separated parts (e.g. ``api_key``, ``accessToken``).
+_SENSITIVE_ARGUMENT_WORDS = frozenset({
+    "value", "secret", "password", "passwd", "passphrase",
+    "token", "key", "apikey", "credential", "credentials",
+})
+
+#: Tool arguments that carry secret material under a generic name.
+_SENSITIVE_TOOL_ARGUMENTS: Dict[str, frozenset] = {
+    "vault_store": frozenset({"content"}),
+}
+
+
+def redact_tool_arguments(tool_name: str, arguments: Any) -> Dict[str, Any]:
+    """
+    Return an audit-safe copy of MCP tool arguments.
+
+    Argument names are kept so the audit trail shows what was requested, but
+    the values of sensitive arguments (the ``content`` of vault_store, or any
+    argument named like a value, secret, password, token or key, at any
+    nesting depth) are replaced by a marker with their length. Use this
+    wherever tool arguments are persisted.
+
+    Args:
+        tool_name: MCP tool name (e.g., "vault_store")
+        arguments: Tool arguments as received from the client
+
+    Returns:
+        Redacted copy of the arguments (the input is not modified)
+    """
+    if not isinstance(arguments, Mapping):
+        return {"_redacted": type(arguments).__name__}
+    return _redact_mapping(tool_name, arguments)
+
+
+def _redact_mapping(tool_name: str, mapping: Mapping) -> Dict[str, Any]:
+    return {
+        name: (
+            _redaction_marker(value)
+            if _is_sensitive_argument(tool_name, name)
+            else _redact_value(tool_name, value)
+        )
+        for name, value in mapping.items()
+    }
+
+
+def _redact_value(tool_name: str, value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _redact_mapping(tool_name, value)
+    if isinstance(value, (list, tuple)):
+        return [_redact_value(tool_name, item) for item in value]
+    return value
+
+
+def _is_sensitive_argument(tool_name: str, name: Any) -> bool:
+    name = str(name)
+    if name.lower() in _SENSITIVE_TOOL_ARGUMENTS.get(tool_name, frozenset()):
+        return True
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
+    return any(word in _SENSITIVE_ARGUMENT_WORDS for word in re.split(r"[^a-z0-9]+", words))
+
+
+def _redaction_marker(value: Any) -> str:
+    if isinstance(value, str):
+        return f"[redacted: {len(value)} chars]"
+    return "[redacted]"
 
 
 class ActivityLogger:
@@ -84,11 +153,15 @@ class ActivityLogger:
             query_preview: Preview of query/operation
             granted: Whether access was granted
             result_summary: Brief summary of result (e.g., "Found 4 entries")
-            metadata: Additional metadata
+            metadata: Additional metadata (sensitive values are redacted
+                with redact_tool_arguments before anything is written)
         """
         # Generate friendly app name
         app_name = self._format_app_name(app_identifier)
-        
+
+        # Never persist sensitive values, e.g. tool arguments passed as metadata
+        metadata = redact_tool_arguments(tool_name, metadata or {})
+
         log_entry = {
             "timestamp": datetime.now().isoformat(),
             "tool_name": tool_name,
@@ -97,7 +170,7 @@ class ActivityLogger:
             "query_preview": query_preview,
             "granted": granted,
             "result_summary": result_summary,
-            "metadata": metadata or {}
+            "metadata": metadata
         }
         
         try:
@@ -115,7 +188,7 @@ class ActivityLogger:
                 metadata={
                     "app_name": app_name,
                     "granted": granted,
-                    **(metadata or {}),
+                    **metadata,
                 },
                 source="activity_logger",
             )

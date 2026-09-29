@@ -10,13 +10,31 @@ using the smart router.
 """
 
 import logging
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from pathlib import Path
 
 from .smart_router import SmartRouter, QueryStrategy
-from advanced_vault.encrypted_kv import EncryptedKVStore, EntryType
+from advanced_vault.encrypted_kv import EncryptedKVStore, EntryType, QueryFilter
 
 logger = logging.getLogger(__name__)
+
+# Common words ignored when looking for entries related to a query
+_STOP_WORDS = frozenset({
+    "my", "the", "a", "an", "is", "are", "what", "show", "get", "give", "find", "retrieve"
+})
+
+
+def _normalize_name(name: str) -> str:
+    """Normalize an entry name for comparison (case- and whitespace-insensitive)."""
+    return " ".join(name.split()).casefold()
+
+
+def _names_only_message(names: List[str]) -> str:
+    """Explain why no value was returned and which exact names to ask for."""
+    return (
+        "Values are only returned for an exact entry name. "
+        f"Matching entries: {', '.join(names)}. Ask again with one of these names."
+    )
 
 
 class HybridVault:
@@ -37,7 +55,8 @@ class HybridVault:
         vault.store("Chose Stripe for webhooks", type="knowledge")
 
         # Query (auto-routed)
-        vault.query("What's my Stripe key?")        # → Layer 1
+        vault.query("stripe")                       # → Layer 1 value (exact entry name)
+        vault.query("What's my Stripe key?")        # → Layer 1 entry names only
         vault.query("Why did I choose Stripe?")     # → Layer 2
         vault.query("Tell me about Stripe")         # → Hybrid
     """
@@ -185,8 +204,14 @@ class HybridVault:
         """
         Query vault with automatic routing.
 
+        A stored Layer 1 value (secret or note) is returned only when the query
+        is exactly the name of one stored entry (case- and whitespace-
+        insensitive). Any other query can at most list the names of related
+        entries in ``matches`` so the caller can ask again with the exact name;
+        it never returns their values.
+
         Args:
-            query_text: Natural language query
+            query_text: Entry name or natural language query
 
         Returns:
             Dictionary with:
@@ -194,8 +219,15 @@ class HybridVault:
                 - layer: Layer(s) queried
                 - service: Extracted service (if any)
                 - result: Query result(s)
+                - matches: Names of related entries, when no value is returned
                 - metadata: Additional info
         """
+        # Layer 1 values are released only for a precise entry name, never on
+        # keyword overlap with a natural-language query
+        exact = self._query_by_name(query_text)
+        if exact is not None:
+            return exact
+
         # Route query
         plan = self.router.route(query_text)
 
@@ -212,83 +244,104 @@ class HybridVault:
         elif plan.strategy == QueryStrategy.HYBRID:
             return self._query_hybrid(plan, query_text)
 
-    def _query_exact(self, plan, query_text: str) -> Dict[str, Any]:
-        """Query Layer 1 (Encrypted KV)."""
-        # If service name is provided, try direct lookup first
-        if plan.service:
-            secret = self.kv_store.get(plan.service)
-            if secret is not None:
-                return {
-                    "strategy": "exact",
-                    "layer": 1,
-                    "service": plan.service,
-                    "result": secret,
-                    "metadata": {
-                        "confidence": plan.confidence,
-                        "reasoning": plan.reasoning
-                    }
-                }
-        
-        # If no service name or direct lookup failed, search all entries
-        # Extract keywords from query to find matching entries
-        from advanced_vault.encrypted_kv import QueryFilter
-        filter = QueryFilter()
-        entries = self.kv_store.search(filter)
-        
-        query_lower = query_text.lower()
-        query_words = set(query_lower.split())
-        
-        # Remove common stop words
-        stop_words = {"my", "the", "a", "an", "is", "are", "what", "show", "get", "give", "find", "retrieve"}
-        query_words = query_words - stop_words
-        
-        # Find best matching entry
-        best_match = None
-        best_score = 0
-        
-        for entry in entries:
-            # Calculate match score
-            service_lower = entry.service.lower()
-            service_words = set(service_lower.split())
-            
+    def _query_by_name(self, query_text: str) -> Optional[Dict[str, Any]]:
+        """
+        Return the stored value when the query is exactly one entry's name.
+
+        Returns None when no entry has that name, so the query is routed as
+        natural language instead.
+        """
+        wanted = _normalize_name(query_text)
+        if not wanted:
+            return None
+
+        names = [name for name in self.kv_store.list_services() if _normalize_name(name) == wanted]
+        if len(names) > 1 and query_text.strip() in names:
+            # Names differing only in case are distinct entries; the verbatim
+            # name still selects exactly one of them
+            names = [query_text.strip()]
+
+        if not names:
+            return None
+        if len(names) > 1:
+            return self._names_only("exact", 1, None, names, confidence=1.0)
+
+        service = names[0]
+        return {
+            "strategy": "exact",
+            "layer": 1,
+            "service": service,
+            "result": self.kv_store.get(service),
+            "metadata": {
+                "confidence": 1.0,
+                "reasoning": f"Query is the exact name of entry '{service}'"
+            }
+        }
+
+    def _matching_names(self, query_text: str, service_hint: Optional[str] = None) -> List[str]:
+        """
+        Names of entries related to a natural-language query, best match first.
+
+        Only entry metadata is compared; values are never decrypted here.
+        """
+        query_words = set(query_text.lower().split()) - _STOP_WORDS
+        hint = _normalize_name(service_hint) if service_hint else None
+
+        scores: Dict[str, float] = {}
+        for entry in self.kv_store.search(QueryFilter()):
             # Check if query words appear in service name
-            matches = query_words & service_words
-            score = len(matches)
-            
-            # Also check if query contains the service name as substring
+            service_lower = entry.service.lower()
+            score = len(query_words & set(service_lower.split()))
+
+            # Service name extracted by the router
+            if hint and _normalize_name(entry.service) == hint:
+                score += 1
+
+            # Also check if query words appear inside the service name
             if any(word in service_lower for word in query_words if len(word) > 2):
                 score += 1
-            
+
             # Also check tags and description
             if entry.tags:
-                tag_words = set(" ".join(entry.tags).lower().split())
-                tag_matches = query_words & tag_words
-                score += len(tag_matches) * 0.5
-            
+                score += len(query_words & set(" ".join(entry.tags).lower().split())) * 0.5
             if entry.description:
-                desc_words = set(entry.description.lower().split())
-                desc_matches = query_words & desc_words
-                score += len(desc_matches) * 0.3
-            
-            if score > best_score:
-                best_score = score
-                best_match = entry
-        
-        # If we found a good match, return it
-        if best_match and best_score > 0:
-            secret = self.kv_store.get(best_match.service)
-            if secret is not None:
-                return {
-                    "strategy": "exact",
-                    "layer": 1,
-                    "service": best_match.service,
-                    "result": secret,
-                    "metadata": {
-                        "confidence": min(plan.confidence + 0.1, 1.0),
-                        "reasoning": f"Found matching entry '{best_match.service}' (score: {best_score:.1f})"
-                    }
-                }
-        
+                score += len(query_words & set(entry.description.lower().split())) * 0.3
+
+            if score > scores.get(entry.service, 0):
+                scores[entry.service] = score
+
+        return sorted(scores, key=lambda name: (-scores[name], name))
+
+    def _names_only(
+        self,
+        strategy: str,
+        layer,
+        service: Optional[str],
+        names: List[str],
+        confidence: float
+    ) -> Dict[str, Any]:
+        """Result for a query that is not exactly one entry name: names, never values."""
+        return {
+            "strategy": strategy,
+            "layer": layer,
+            "service": service,
+            "result": None,
+            "matches": names,
+            "error": _names_only_message(names),
+            "metadata": {"confidence": confidence}
+        }
+
+    def _query_exact(self, plan, query_text: str) -> Dict[str, Any]:
+        """
+        Query Layer 1 (Encrypted KV) with a natural-language query.
+
+        The query is not exactly an entry name (see _query_by_name), so only
+        the names of matching entries are returned, never their values.
+        """
+        names = self._matching_names(query_text, plan.service)
+        if names:
+            return self._names_only("exact", 1, plan.service, names, plan.confidence)
+
         # No match found
         if not plan.service:
             return {
@@ -315,46 +368,13 @@ class HybridVault:
             # Fallback to Layer 1 if Layer 2 is not available
             # This handles cases where query was routed to fuzzy but Layer 2 isn't initialized
             logger.warning(f"Layer 2 not available, falling back to Layer 1 for query: {query_text}")
-            
-            # Try to find service name and query Layer 1
-            if plan.service:
-                secret = self.kv_store.get(plan.service)
-                if secret:
-                    return {
-                        "strategy": "exact_fallback",
-                        "layer": 1,
-                        "service": plan.service,
-                        "result": secret,
-                        "metadata": {
-                            "confidence": plan.confidence,
-                            "reasoning": "Layer 2 not available, used Layer 1 fallback"
-                        }
-                    }
-            
-            # If no service found, try searching for any matching entries
-            # Extract potential service names from query
-            query_lower = query_text.lower()
-            # Look for common patterns that might indicate a service name
-            from advanced_vault.encrypted_kv import QueryFilter
-            filter = QueryFilter()
-            entries = self.kv_store.search(filter)
-            
-            # Try to match query words with entry service names
-            query_words = set(query_lower.split())
-            for entry in entries:
-                service_words = set(entry.service.lower().split())
-                if query_words & service_words:  # If any words overlap
-                    return {
-                        "strategy": "exact_fallback",
-                        "layer": 1,
-                        "service": entry.service,
-                        "result": self.kv_store.get(entry.service),
-                        "metadata": {
-                            "confidence": 0.7,
-                            "reasoning": f"Layer 2 not available, found matching entry: {entry.service}"
-                        }
-                    }
-            
+
+            # List matching Layer 1 entries by name only: a natural-language
+            # query must never return a stored value
+            names = self._matching_names(query_text, plan.service)
+            if names:
+                return self._names_only("exact_fallback", 1, plan.service, names, plan.confidence)
+
             return {
                 "strategy": "fuzzy",
                 "layer": 2,
@@ -406,14 +426,12 @@ class HybridVault:
             "metadata": {"confidence": plan.confidence}
         }
 
-        # Query Layer 1 (exact data)
-        if plan.service:
-            secret = self.kv_store.get(plan.service)
-            if secret:
-                results["results"]["exact_data"] = {
-                    "service": plan.service,
-                    "value": secret
-                }
+        # Query Layer 1 (exact data): names of matching entries only, never
+        # their values
+        names = self._matching_names(query_text, plan.service)
+        if names:
+            results["matches"] = names
+            results["error"] = _names_only_message(names)
 
         # Query Layer 2 (knowledge/context)
         if self.dora_engine and self.dora_adapter_path:

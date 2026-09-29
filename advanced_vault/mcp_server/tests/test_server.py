@@ -105,8 +105,8 @@ class TestVaultMCPServer:
             service="stripe"
         )
 
-        # Recall it
-        args = {"query": "What's my Stripe API key?"}
+        # Recall it by its exact entry name
+        args = {"query": "stripe"}
         result = await server._handle_recall(vault, args)
 
         assert len(result) == 1
@@ -356,8 +356,8 @@ class TestVaultIntegration:
             result = await server._handle_store(vault, store_args)
             assert "✅ Stored stripe secret" in result[0].text
 
-            # 2. Recall the secret
-            recall_args = {"query": "What's my Stripe API key?"}
+            # 2. Recall the secret by its exact entry name
+            recall_args = {"query": "stripe"}
             result = await server._handle_recall(vault, recall_args)
             assert "sk_live_PRODUCTION_KEY" in result[0].text
 
