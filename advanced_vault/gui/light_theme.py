@@ -1,6 +1,6 @@
 """
 Light Theme System
-Warm-neutral, investor-demo theme aligned to the current Enclave desktop design.
+Warm-neutral theme aligned to the current Enclave desktop design.
 """
 
 class LightTheme:

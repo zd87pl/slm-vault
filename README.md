@@ -2,15 +2,21 @@
 
 **Privacy-First AI Personal Data Manager**
 
-> Your local agent that external AIs command via MCP — they never see your documents.
+> Your local agent that external AIs query via MCP — they get answers generated on your machine instead of your files.
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![Python](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
 [![MCP](https://img.shields.io/badge/MCP-compatible-green.svg)](https://modelcontextprotocol.io/)
 
-## Quick Start (macOS, ~5 minutes)
+> **Early beta.** Local chat in the desktop app works only on Apple Silicon
+> Macs today, and only document text and secret values are encrypted at rest.
+> Read [Known Limitations](#known-limitations) before trusting it with
+> sensitive files.
 
-Best experience: a MacBook with Apple Silicon and 16 GB+ RAM — everything runs locally.
+## Quick Start (Apple Silicon Mac)
+
+Local chat needs a Mac with Apple Silicon (M1 or later); 16 GB+ RAM is
+recommended. Other machines: see [Platform support](#platform-support).
 
 ```bash
 git clone https://github.com/zd87pl/slm-vault
@@ -26,19 +32,24 @@ environment check. Then:
 source .venv/bin/activate
 
 enclave-gui             # 1. Launch the desktop app
-enclave mcp install     # 2. Connect Claude Desktop (safe: merges, never overwrites)
+enclave mcp install     # 2. Connect Claude Desktop (merges into your existing config)
 enclave doctor          # 3. Anytime something looks off
 ```
 
-Restart Claude Desktop after step 2 and ask Claude about your documents —
-Enclave answers locally. Your files never leave your machine.
+Restart Claude Desktop after step 2 and ask Claude about your documents.
+Enclave retrieves the relevant passages and writes the answer locally; Claude
+receives that answer, not your files.
 
-> **First run notes**: the first chat downloads a ~1 GB local model
-> (Qwen 2.5 1.5B, 4-bit) from Hugging Face; the first document you index
-> downloads a ~130 MB embedding model. Both are cached afterwards and
-> everything then works offline. The first time an AI agent touches your
-> vault, macOS shows a consent dialog — choose "Always Allow" for the
-> agents you trust; every access is logged either way.
+> **First run notes**: the install itself is several GB (it includes PyTorch).
+> The first chat downloads a ~1 GB local model (Qwen 2.5 1.5B, 4-bit) from
+> Hugging Face; the first document you index downloads a ~130 MB embedding
+> model. Both are cached afterwards. When an AI app calls Enclave, a consent
+> dialog appears: "Allow Once" is the cautious choice (you are asked again
+> next time), while "Always Allow" lets that app call every tool its policy
+> allows, with no expiry. On a default install Enclave cannot tell AI apps
+> apart, so "Always Allow" applies to all of them, and the policy lets all of
+> them use the `vault_*` secrets tools (see [Consent](#consent)). Calls are
+> logged locally either way.
 
 ### Having trouble?
 
@@ -52,9 +63,6 @@ Every AI wants your data to be useful. But once you share documents with
 Claude, Cursor, or Copilot, you lose control. They see your raw data. You
 can't audit access. You can't revoke it.
 
-**The governance gap is real**: 79% of organizations are adopting agentic AI,
-but only 48% have frameworks for limiting AI autonomy.
-
 ## The Solution
 
 Enclave is a **local trusted agent** that sits between you and external AIs.
@@ -65,36 +73,46 @@ External Agent (Claude Desktop / Cursor / Copilot)
         ↓
 ┌───────────────────────────────────────┐
 │  LOCAL TRUSTED AGENT (Enclave)        │
-│  • Full access to your encrypted docs │
+│  • Full access to your indexed docs   │
 │  • Reads & processes locally          │
 │  • Generates synthesized response     │
 │  • Logs every access                  │
 └───────────────────────────────────────┘
         ↓ Response: "Q3 revenue was $4.2M..."
         ↓
-External Agent (never saw the actual document)
+External Agent (gets the answer, not the file)
 ```
 
-External AIs send commands. Enclave reads your documents locally and returns
-synthesized answers. **They never see your raw data.**
+External AIs send requests. Enclave retrieves the relevant passages and
+generates an answer locally, and the agent receives that answer instead of
+your files. This limits bulk copying, but answers can quote or closely
+paraphrase your documents, so an agent you allow can still learn whatever it
+asks about. **Consent prompts and the activity log are the controls** — see
+[Privacy Model](#privacy-model).
 
 ## Features
 
-- **Local RAG**: Drop documents, instantly queryable via semantic search
+- **Local RAG**: Add documents and ask questions over them with semantic search
 - **MCP Integration**: Works with Claude Desktop, Cursor, and any MCP client
-- **Encrypted Storage**: ChaCha20-Poly1305 encryption for all data at rest
-- **Activity Logging**: See every command from every AI agent
-- **Per-Agent Permissions**: Control what each AI can access
-- **Local Inference**: MLX-powered LLM on Apple Silicon (Qwen 2.5, Phi-4, Llama)
-- **Desktop GUI**: Native macOS/Windows/Linux application
-- **Adapter Training**: Fine-tune local models on your documents
+- **Encrypted document text**: ChaCha20-Poly1305 for document and chunk text
+  in the index (names, embeddings and chat history are not encrypted yet —
+  see [What is and isn't encrypted](#what-is-and-isnt-encrypted))
+- **Activity Logging**: MCP tool calls are recorded locally with the calling app
+- **Consent and Allow-Lists**: A consent prompt per calling app, plus a
+  per-app tool allow-list in `~/.enclave/policies.toml` (app detection is
+  limited — see [Consent](#consent))
+- **Local Inference**: MLX-powered LLM on Apple Silicon (Qwen 2.5 1.5B by default)
+- **Desktop GUI**: Flet app; local chat currently needs an Apple Silicon Mac
+- **Adapter Training** (experimental, Apple Silicon only): Fine-tune local
+  models on your documents
 
 ### Performance Optimizations
 
-- **HNSW Index**: 10-30x faster vector search at scale
-- **E5-small Embeddings**: +15% retrieval quality vs MiniLM
-- **Persistent Cache**: 2-9x speedup for repeated queries
-- **Recursive Chunking**: Better recall with semantic boundaries
+- **HNSW Index**: Approximate vector search via `hnswlib` (installed by
+  `setup.sh`; without it Enclave falls back to brute-force search)
+- **E5-small Embeddings**: `intfloat/e5-small-v2`, 384 dimensions
+- **Persistent Cache**: Embeddings are cached on disk, so unchanged text is not re-embedded
+- **Recursive Chunking**: Chunks split on paragraph and sentence boundaries
 
 ## Installation Options
 
@@ -108,10 +126,11 @@ pip install -U pip
 # Apple Silicon Mac — everything (MLX + GUI + fast search):
 pip install -e ".[mac]"
 
-# Any other machine — GUI + fast search, no local LLM:
+# Any other machine — GUI + fast search; no MLX, so desktop chat does not
+# work and CLI/MCP answers come from a small fallback model (see Platform support):
 pip install -e ".[gui,mac-performance]"
 
-# Minimal — CLI + MCP server only:
+# Minimal — CLI + MCP server only (still pulls PyTorch, several GB):
 pip install -e .
 ```
 
@@ -126,7 +145,8 @@ Entry points installed with the package:
 ### Connect Claude Desktop
 
 The easy way — detects Claude Desktop, merges into your existing config
-(other MCP servers are preserved), and points at the right Python:
+(other MCP servers are preserved; back the file up first if it may not be
+valid JSON), and points at the right Python:
 
 ```bash
 enclave mcp install          # or: enclave mcp install --target cursor
@@ -167,7 +187,7 @@ with RAGIndex(master_key=master_key, db_path="./demo_rag.db") as index:
 
 ## MCP Tools
 
-Enclave exposes these tools to AI agents:
+The main tools Enclave exposes to AI agents:
 
 | Tool | Description |
 |------|-------------|
@@ -178,13 +198,26 @@ Enclave exposes these tools to AI agents:
 | `vault_store` | Store secrets (API keys, passwords) |
 | `vault_recall` | Retrieve secrets with natural language |
 
-**Key principle**: `agent_query` returns synthesized answers, not raw
-documents. External AIs never see your actual content.
+The server also advertises experimental tools: `sheriff_*` file-access
+leases (which can return file contents; the default policy blocks them), a
+mock wallet, and cloud `langchain_*` tools that do nothing unless configured.
+
+Which tools each app may call is set in `~/.enclave/policies.toml`. Its
+entries for Claude Desktop and Cursor allow the `agent_*` tools but not the
+`vault_*` secrets tools — but on a default install Enclave cannot recognize
+those apps (see [Consent](#consent)), so they appear as `unknown` and get
+the `default` policy, which allows both. To keep AI apps away from your
+secrets, remove `vault_*` from the `default` entry.
+
+**What agents receive**: the `agent_*` tools return text generated locally
+from retrieved passages, plus the names of the source documents — not the
+files. That text can quote your documents, so treat anything an allowed agent
+asks about as shared with it. `vault_recall` returns the stored secret itself.
 
 ## Personal Data Vaults
 
-Enclave organizes your documents into **semantic vault categories** with
-domain-specific AI adapters:
+Enclave can sort your documents into **vault categories**, each with an
+optional, experimental adapter preset:
 
 | Vault | Documents | AI Adapter |
 |-------|-----------|------------|
@@ -195,7 +228,8 @@ domain-specific AI adapters:
 
 ### Auto-Classification
 
-Drop any file and Enclave automatically detects its type:
+Enclave suggests a category from keywords in each file's name and content
+(a heuristic, so check the result):
 
 ```bash
 # Classify a single file
@@ -205,26 +239,28 @@ enclave prosumer classify blood_test.pdf
 enclave prosumer classify-folder ~/Documents --recursive
 ```
 
-### One-Click Adapter Training
+### Adapter Training (experimental)
 
-Train a domain-specific AI on your documents:
+Train a domain-specific adapter on your documents (Apple Silicon only):
 
 ```bash
 # List training presets
 enclave prosumer presets list
 
-# Train via GUI: Drop docs → Click "Train AI" → Done in 5-15 min
+# Train via GUI: Drop docs → Click "Train AI"
 ```
 
-Each preset includes safety guardrails:
+Each preset's system prompt asks the model to stay within limits (these are
+instructions to the model, not guarantees):
 - **Health Advisor**: Never prescribes, always recommends seeing a doctor
 - **Tax Assistant**: Shows calculations, suggests consulting a CPA
 - **Legal Companion**: Summarizes only, never gives legal advice
 
-### Encrypted Adapter Backup & Sharing
+### Encrypted Adapter Backup & Sharing (experimental)
 
-Your trained adapter contains learned patterns — not your raw documents. Back
-it up or share it safely:
+A trained adapter is not a copy of your documents, but it can memorize parts
+of them. Treat an exported adapter as being as sensitive as the documents it
+was trained on:
 
 ```bash
 # Export encrypted adapter
@@ -241,8 +277,11 @@ enclave prosumer backup verify ./health.enclave
 enclave prosumer backup list
 ```
 
-**What's included**: Encrypted learned weights (WDVA format) + metadata.
-**What's NOT included**: Your raw documents, filenames, or personal data.
+**What's included**: The adapter file exactly as it is on disk (WDVA
+adapters are already encrypted; the backup adds no encryption of its own) +
+metadata.
+**What's NOT included**: The document files themselves, or any key needed to
+decrypt the adapter — move that separately if you import on another device.
 
 ## Architecture
 
@@ -271,16 +310,121 @@ enclave prosumer backup list
 
 ## Privacy Model
 
-1. **Your data stays local**: Documents are indexed and stored on your device
-2. **Encryption at rest**: All content encrypted with ChaCha20-Poly1305
-3. **Synthesized responses**: External AIs get answers, not raw documents
-4. **Consent required**: Every access requires explicit permission
-5. **Full audit trail**: See exactly what each AI accessed and when
-6. **Key zeroing**: Encryption keys securely wiped from memory after use
+1. **Documents stay local**: They are indexed and stored on your device. What
+   leaves is what Enclave returns to an agent (answers, or a secret via
+   `vault_recall`) — and if that agent is a cloud assistant such as Claude, it
+   becomes part of that conversation.
+2. **Answers, not files**: Agents get locally generated answers and source
+   document names. Answers can quote passages, so this limits bulk copying but
+   cannot stop an allowed agent from learning what it asks about.
+3. **Consent and allow-lists**: See [Consent](#consent).
+4. **Audit trail**: MCP tool calls are logged locally with the calling app,
+   the tool, and whether it was allowed (`~/.vault/activity.jsonl`, plus a
+   policy audit log for calls the allow-list blocks). A call that crashes with
+   an unexpected error after consent is not logged.
+5. **Encryption at rest (partial)**: See below.
 
-Network access at runtime: Hugging Face (model downloads, first run only).
-The optional cloud-sync backend is **off by default** and only used if you
-set `ENCLAVE_API_KEY`.
+### What is and isn't encrypted
+
+Encrypted with ChaCha20-Poly1305 (random 96-bit nonce per record):
+
+- Document text and chunk text in the RAG index (`rag.db`)
+- Secrets and notes stored with `vault_store`, `enclave add-secret` or
+  `enclave add-note` (their service names, tags and descriptions are not
+  encrypted)
+
+Not encrypted yet:
+
+- File names, full source paths and folder metadata
+- Content hashes — an unsalted SHA-256 of each document, which lets anyone
+  holding the database check whether it contains a file they already have
+- Embeddings/vectors (in `rag.db` and the HNSW index files) and the shared
+  embedding cache `~/.enclave/embedding_cache.db`, which keeps entries after a
+  document is deleted; embeddings can leak some of the text they came from
+- Chat history (`~/.vault/chat_history_<profile>.json`, `~/.vault/question_history.json`)
+- Query, activity and audit logs
+
+**The key**: each encrypted database uses a random 32-byte key kept in a
+`master.key` file right next to it. There is no passphrase and no OS keychain
+yet, so anything that can read that folder — malware running as you, a backup
+or sync of the whole folder — can read the vault. The encryption only helps
+when a database file is copied without its key file. Turn on FileVault (or
+your OS's full-disk encryption).
+
+### Consent
+
+- When an app calls a tool (other than the `sheriff_*` tools, which use
+  their own lease flow), Enclave asks in a system dialog. On macOS the choices
+  are Allow Once, Always Allow or Deny; the Linux (zenity) dialog also offers
+  Deny Always. Until you make a lasting choice you are asked on every call. If
+  no dialog can be shown or you don't answer in time, the call is denied.
+- **"Always Allow" covers every tool that app's policy allows, with no
+  expiry.**
+- **App identity is a best guess**, from the `MCP_CLIENT` or `PARENT_PROCESS`
+  environment variables (neither is set by `enclave mcp install`) or, if the
+  optional `psutil` package is installed, the parent process name. `psutil` is
+  not an Enclave dependency, so on a default install Claude Desktop, Cursor
+  and every other client are all the same app, `unknown`: they get the
+  `default` policy, which also allows the `vault_*` secrets tools, and they
+  share one consent decision — "Always Allow" for one of them approves them
+  all.
+- To change a decision, **fully quit the AI app first** — the MCP server
+  reads `permissions.json` and `policies.toml` only when it starts, and a
+  running server can write its old permissions back — then edit and restart
+  the app. Remove the app's entry from `~/.vault/permissions.json` to undo
+  "Always Allow"; replace it with `{"denied": true}` to block the app
+  permanently (macOS has no Deny Always button); edit
+  `~/.enclave/policies.toml` to limit which tools an app can call at all.
+- The desktop app also shows per-app permission toggles, a Revoke button,
+  finer-grained scopes and time-limited access; these are **not enforced yet**.
+  Its global kill switch (Settings → Security) is saved to `policies.toml`,
+  so it reaches an MCP server that is already running only after the AI app
+  restarts.
+- **On Windows, consent prompts are not implemented, so every call that needs
+  consent is denied.**
+
+### Network access
+
+- **Hugging Face Hub**: model downloads on first use; loading a cached model
+  may also check the Hub for updates. No document content is sent.
+- **npm**: if a PDF has little extractable text and Node's `npx` is on your
+  PATH, the parser runs `npx -y @llamaindex/liteparse`, which downloads and
+  runs that package. Set `ENCLAVE_LITEPARSE_ALLOW_NPX=false` to prevent this.
+- **PyPI**: some desktop-app features (SmolDocling PDF extraction, Q&A
+  generation) pip-install missing packages the first time you use them.
+- **Remote development backend**: some older desktop-app screens (for
+  example Settings → Advanced → System Setup, Training Queue or Activity Log)
+  check whether a remote backend is reachable by requesting its `/health`
+  endpoint. The URL (`ENCLAVE_BACKEND_URL`) defaults to a hard-coded Railway
+  development server. No vault content is sent. To prevent it, add an empty
+  `ENCLAVE_BACKEND_URL=` line to `~/.enclave/config.env` (an empty environment
+  variable does not work).
+- **Cloud features** (desktop cloud sync and sign-in, the MCP `langchain_*`
+  tools) are **off by default**; the MCP tools stay inert unless both
+  `ENCLAVE_API_KEY` and `ENCLAVE_API_BASE_URL` are set.
+
+## Known Limitations
+
+- **Local chat needs Apple Silicon.** On Intel Macs, Linux and Windows the
+  desktop app's chat never sends (it keeps offering a model download), and the
+  CLI and MCP server fall back to TinyLlama 1.1B on PyTorch, whose answers are
+  poor.
+- **Windows**: no setup script, and no consent prompt, so MCP calls are denied.
+- **Partial encryption, key stored next to the data** — see
+  [What is and isn't encrypted](#what-is-and-isnt-encrypted).
+- **Coarse consent**: no expiry; on a default install every AI app is
+  `unknown` and its policy allows the secrets tools; revoking access (or using
+  the kill switch) takes effect only after the AI app restarts. See
+  [Consent](#consent).
+- **Documents can steer answers**: retrieved text goes into the local model's
+  prompt as-is, so a malicious document can plant instructions in the answer
+  an agent receives.
+- **Heavy install**: the core install pulls PyTorch — about 5–6 GB on Linux,
+  several GB on macOS.
+- **No releases yet**: no signed app, installer or PyPI package; install from source.
+- **Adapter training and packaging are experimental**, and training needs
+  Apple Silicon. Password-protected adapter packages derive their key with a
+  single unsalted SHA-256, so use a long random password.
 
 ## Project Structure
 
@@ -289,15 +433,15 @@ slm-vault/
 ├── advanced_vault/          # Core application
 │   ├── gui/                 # Desktop GUI (Flet)
 │   ├── cli/                 # `enclave` CLI (incl. doctor + MCP setup)
-│   ├── training/            # RAG index, embeddings, caching
+│   ├── training/            # RAG index, embeddings, caching (+ experimental adapter training)
 │   ├── prosumer/            # Personal data vaults (Health, Finance, Legal, Personal)
 │   ├── mcp_server/          # MCP server implementation
-│   └── backend/             # Self-hosted sync backend (optional)
-├── setup.sh                 # One-command setup for beta users
-├── browser-extension/       # Browser extension
-├── langchain-enclave/       # LangChain integration
-├── docs/                    # Documentation
-├── examples/                # Example scripts
+│   └── backend/             # LEGACY: cloud sync backend (FastAPI, Supabase, RunPod)
+├── setup.sh                 # One-command setup (macOS/Linux)
+├── browser-extension/       # EXPERIMENTAL: talks to a remote development backend
+├── langchain-enclave/       # EXPERIMENTAL: LangChain integration (cloud client by default)
+├── docs/                    # Documentation (much of it describes older designs)
+├── examples/                # Example scripts (mostly legacy WDVA demos)
 ├── src/                     # LEGACY: cloud GPU training (RunPod) — not needed locally
 └── tests/                   # Test suite (legacy cloud tests auto-skip)
 ```
@@ -305,17 +449,39 @@ slm-vault/
 > `src/`, the RunPod scripts, `requirements.txt`, and the Dockerfiles support
 > the optional **cloud GPU training** path. Local Mac users never need them.
 
+**Not part of the local-only story**: the browser extension (an API-key
+manager whose content script runs on every page and which talks to a
+hard-coded remote development backend), the LangChain package (its default
+client targets the same backend), `advanced_vault/backend/`, and the desktop
+app's cloud sync, RunPod and backend-status features (its default backend
+URL is that same server; see [Network access](#network-access)) are
+experimental or legacy. Except for the backend status check, they are off by
+default or installed separately. They are not covered by the privacy model
+above and may be archived.
+
 ## Requirements
 
-- Python 3.10+ (3.11 recommended)
-- macOS (Apple Silicon recommended), Windows, or Linux
+- Python 3.11+
+- For local chat: a Mac with Apple Silicon (M1 or later)
 - 8 GB+ RAM (16 GB+ recommended for local LLM)
-- ~3 GB disk for dependencies + ~1.5 GB for models (first run)
+- Disk: the core install pulls PyTorch (through `sentence-transformers`) —
+  about 5–6 GB on Linux, where pip also fetches the CUDA libraries, and
+  several GB on macOS — plus about 1.1 GB of models on first use (the non-Mac
+  fallback model alone is about 2.2 GB)
 
-## Advanced Local Training
+### Platform support
 
-Enclave supports advanced training algorithms via `mlx-lm-lora` on Apple
-Silicon (`pip install -e ".[advanced-training]"`):
+| | Apple Silicon Mac | Intel Mac, Linux | Windows |
+|---|---|---|---|
+| Desktop app chat | Yes (MLX) | No — keeps offering a model download | No |
+| CLI and MCP server | Yes | Run, but answers come from TinyLlama 1.1B (PyTorch) and are poor | Same as Linux, and MCP calls are denied (no consent prompt) |
+| `setup.sh` | Yes | Yes | No (bash only; install with pip) |
+
+## Advanced Local Training (experimental)
+
+Apple Silicon only. Enclave supports advanced training algorithms via
+`mlx-lm-lora` (`pip install -e ".[advanced-training]"`). There is no
+evaluation yet showing that adapters answer better than retrieval alone.
 
 | Algorithm | Use Case | Env Var |
 |-----------|----------|---------|
@@ -353,6 +519,9 @@ export ENCLAVE_LOCAL_TRAINING=true       # true | false | auto
 
 ### Package & Share Adapters
 
+The password is turned into a key with a single unsalted SHA-256, which is
+weak against guessing — use a long random password.
+
 ```bash
 # Package a trained adapter (prompts for an encryption password)
 enclave model package ~/.enclave/adapters/my_adapter ./my_adapter.enclave \
@@ -377,8 +546,8 @@ pip install -e ".[dev]"
 # Run tests (tests needing missing optional deps skip automatically)
 pytest
 
-# Lint (correctness rules)
-ruff check advanced_vault/ --select F,E9
+# Lint (the correctness rules CI enforces)
+ruff check advanced_vault/ --select F821,F811,F823,E9,F63,F7
 
 # Type checking
 mypy advanced_vault/
@@ -386,25 +555,31 @@ mypy advanced_vault/
 
 ## Documentation
 
-- [Architecture Overview](docs/architecture/ARCHITECTURE.md)
-- [Cryptographic Specs](docs/architecture/CRYPTOGRAPHIC_SPECS.md)
-- [MLX DoRA Architecture](docs/MLX_DORA_ARCHITECTURE.md)
-- [Security Analysis](docs/security/SECURITY_ANALYSIS_PDF_QA.md)
-- [Deployment Guide](docs/deployment/RUNPOD_DEPLOYMENT.md)
+- [Security policy and threat model](SECURITY.md)
+- [MCP server](advanced_vault/mcp_server/README.md) — manual client setup and the `vault_*` secrets tools (its roadmap section is out of date)
+- [Private Language Models](docs/PRIVATE_LANGUAGE_MODELS.md) — CLI profiles: ingest, chat, adapters
+
+Most other files under `docs/` and `advanced_vault/docs/` describe earlier,
+cloud-based designs (RunPod, WDVA) and are due to be pruned; the most
+misleading ones carry a banner saying so.
 
 ## Status
 
-- [x] RAG indexing with HNSW acceleration
+- [x] RAG indexing (HNSW acceleration when `hnswlib` is installed)
 - [x] E5-small embeddings with persistent cache
 - [x] MCP server with agent commands
-- [x] Encrypted vault storage (ChaCha20-Poly1305)
-- [x] Activity logging and consent management
-- [x] Desktop GUI (Flet)
-- [x] Local LLM inference (MLX)
-- [x] Browser extension
-- [x] Advanced local training (DPO, ORPO, GRPO, QAT via mlx-lm-lora)
-- [x] Encrypted adapter packaging & distribution
-- [x] One-command setup (`setup.sh`), `enclave doctor`, `enclave mcp install`
+- [x] ChaCha20-Poly1305 encryption of document text and secret values
+- [x] Activity logging and per-app consent (coarse; see [Consent](#consent))
+- [x] Desktop GUI (Flet) — local chat on Apple Silicon only
+- [x] Local LLM inference (MLX, Apple Silicon)
+- [x] Browser extension prototype (experimental; uses a remote development backend)
+- [x] Advanced local training (DPO, ORPO, GRPO, QAT via mlx-lm-lora) — experimental
+- [x] Encrypted adapter packaging & distribution — experimental
+- [x] One-command setup (`setup.sh`, macOS/Linux), `enclave doctor`, `enclave mcp install`
+- [ ] Encrypted file names, embeddings, chat history and logs
+- [ ] Vault key protected by a passphrase or the OS keychain
+- [ ] Usable local chat on Intel Macs, Linux and Windows
+- [ ] Fine-grained, expiring consent
 - [ ] Multi-device sync (encrypted)
 - [ ] Adapter marketplace
 
@@ -417,6 +592,8 @@ We welcome contributions! Please:
 3. Make your changes
 4. Run tests and linting
 5. Submit a pull request
+
+Please report security issues privately — see [SECURITY.md](SECURITY.md).
 
 ## License
 

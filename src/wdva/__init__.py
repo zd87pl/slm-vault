@@ -1,6 +1,6 @@
 """
 WDVA (Weight-Delta Vault Adapters) Core Module
-Copyright © 2025 Zygmunt Dyras. All rights reserved.
+Copyright © 2025 Zygmunt Dyras. Licensed under the Apache License 2.0 (see LICENSE).
 """
 
 from .crypto import WDVAEncryptor

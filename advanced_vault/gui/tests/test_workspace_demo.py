@@ -1,4 +1,4 @@
-"""Smoke tests for the investor-demo workspace render path."""
+"""Smoke tests for the demo workspace render path."""
 
 from __future__ import annotations
 
@@ -125,8 +125,8 @@ class TestWorkspaceDemo(unittest.TestCase):
             strings = _collect_strings(page.controls[0])
             self.assertIn("Private AI workspace for the agentic web", strings)
             self.assertIn("Add Private Files", strings)
-            self.assertIn("Open Investor Demo", strings)
-            self.assertIn("Runs on this Mac", strings)
+            self.assertIn("Open Sample Workspace", strings)
+            self.assertIn("Runs on this computer", strings)
             self.assertIn("Works before cloud setup", strings)
             self.assertIn("Exposure stays under your approval", strings)
             self.assertIn("Add private files", strings)
@@ -205,7 +205,7 @@ class TestWorkspaceDemo(unittest.TestCase):
             strings = _collect_strings(page.controls[0])
             self.assertIn("Connect AI Apps", strings)
             self.assertIn("Connect a New App", strings)
-            self.assertIn("Investor Demo Flow", strings)
+            self.assertIn("Getting Started", strings)
             self.assertIn("Common Agent Paths", strings)
             self.assertIn("Claude Desktop", strings)
             self.assertIn("ChatGPT-like / MCP tools", strings)
@@ -214,7 +214,7 @@ class TestWorkspaceDemo(unittest.TestCase):
             self.assertIn("Connect Claude Desktop", strings)
             self.assertIn("Connect Cursor", strings)
             self.assertIn("Copy for OpenClaw / other MCP apps", strings)
-            self.assertTrue(any("Ready on this Mac" in value or "Connected" in value or "Not detected" in value for value in strings))
+            self.assertTrue(any("Ready on this computer" in value or "Connected" in value or "Not detected" in value for value in strings))
             self.assertTrue(any("ChatGPT-like/MCP tools" in value for value in strings))
 
     def test_protection_view_frames_exposure_control(self) -> None:

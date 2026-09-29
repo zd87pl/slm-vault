@@ -1,5 +1,12 @@
 # Cryptographic Technical Specifications
 
+> **Historical design document — mostly not implemented.** Most of the design
+> described here (a key hierarchy, HSM/SGX, zero-knowledge proofs, homomorphic
+> encryption) was never built, and XChaCha20-Poly1305 is used only by the
+> legacy cloud-training path. It does not describe the current local app. For
+> what Enclave actually encrypts today, see [SECURITY.md](../../SECURITY.md)
+> and the README's [What is and isn't encrypted](../../README.md#what-is-and-isnt-encrypted).
+
 ## Overview
 
 This document provides detailed technical specifications for the cryptographic components of the Weight-Delta Vault Adapters (WDVA) system, ensuring privacy-preserving personalization for genetic fitness applications.
@@ -743,5 +750,5 @@ def choose_privacy_technique(use_case: str) -> str:
 
 ---
 
-Copyright © 2025 Zygmunt Dyras. All rights reserved.
+Copyright © 2025 Zygmunt Dyras. Licensed under the Apache License 2.0 (see LICENSE).
 Technical specifications subject to patent protection.

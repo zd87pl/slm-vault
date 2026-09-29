@@ -1,6 +1,6 @@
 """
 Genomics Processing Pipeline for WDVA Genetic Fitness Platform
-Copyright © 2025 Zygmunt Dyras. All rights reserved.
+Copyright © 2025 Zygmunt Dyras. Licensed under the Apache License 2.0 (see LICENSE).
 """
 
 from .vcf_processor import (

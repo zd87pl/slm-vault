@@ -1,5 +1,9 @@
 # Documentation Index
 
+> **Out of date.** This index predates the current local-first app: several
+> links are broken and many of the listed documents describe the earlier cloud
+> (RunPod) design. Start from the main [README](../README.md) instead.
+
 Welcome to the SLM Vault documentation. This directory contains organized documentation for all aspects of the project.
 
 ## 📚 Quick Links

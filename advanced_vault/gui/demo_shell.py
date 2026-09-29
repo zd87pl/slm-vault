@@ -618,7 +618,7 @@ def show_connections_view(app: Any) -> None:
             )
         if normalized == "ready":
             return (
-                "Ready on this Mac",
+                "Ready on this computer",
                 "The app is available locally. Finish setup so it routes through Enclave instead of touching files directly.",
                 "Configure MCP link",
             )
@@ -733,9 +733,9 @@ def show_connections_view(app: Any) -> None:
     guided_flow = app._build_surface_card(
         ft.Column(
             [
-                ft.Text("Investor Demo Flow", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
+                ft.Text("Getting Started", size=16, weight=ft.FontWeight.W_600, color=LightTheme.TEXT_PRIMARY),
                 ft.Text(
-                    "Show the product in this order: import context, ask privately, connect an app, then show approvals and spend controls.",
+                    "Try Enclave in this order: import files, ask privately, connect an app, then review approvals and spend controls.",
                     size=12,
                     color=LightTheme.TEXT_SECONDARY,
                 ),
@@ -1105,8 +1105,8 @@ def show_security_view(app: Any) -> None:
                 ),
                 ft.ResponsiveRow(
                     [
-                        ft.Container(status_card(ft.Icons.MEMORY_ROUNDED, "Local AI", "On", "Runs on this Mac.", LightTheme.ACCENT_SUCCESS), col={"sm": 12, "md": 4}),
-                        ft.Container(status_card(ft.Icons.LOCK_ROUNDED, "Vault", "Encrypted", "Files stay encrypted at rest.", LightTheme.ACCENT_PRIMARY), col={"sm": 12, "md": 4}),
+                        ft.Container(status_card(ft.Icons.MEMORY_ROUNDED, "Local AI", "On", "Runs on this computer.", LightTheme.ACCENT_SUCCESS), col={"sm": 12, "md": 4}),
+                        ft.Container(status_card(ft.Icons.LOCK_ROUNDED, "Vault", "Encrypted", "Document text is encrypted at rest.", LightTheme.ACCENT_PRIMARY), col={"sm": 12, "md": 4}),
                         ft.Container(status_card(ft.Icons.HUB_ROUNDED, "Exposure Controls", "On", "Checks private access and spend.", LightTheme.ACCENT_PRIMARY), col={"sm": 12, "md": 4}),
                     ],
                     spacing=12,

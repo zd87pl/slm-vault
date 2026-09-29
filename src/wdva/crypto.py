@@ -1,7 +1,7 @@
 """
 WDVA Cryptographic Core
 Implements XChaCha20-Poly1305 encryption for weight deltas
-Copyright © 2025 Zygmunt Dyras. All rights reserved.
+Copyright © 2025 Zygmunt Dyras. Licensed under the Apache License 2.0 (see LICENSE).
 """
 
 import os

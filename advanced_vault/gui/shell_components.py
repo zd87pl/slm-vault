@@ -90,7 +90,7 @@ def build_status_badge(
     icon: Optional[str] = None,
     tint: Optional[str] = None,
 ) -> ft.Container:
-    """Small pill badge used across the investor demo shell."""
+    """Small pill badge used across the main shell."""
     badge_color = color or LightTheme.TEXT_MUTED
     badge_tint = tint or (badge_color + "12" if badge_color.startswith("#") else LightTheme.BG_HOVER)
     controls = []
@@ -110,7 +110,7 @@ def build_surface_card(
     padding: int = 20,
     bgcolor: Optional[str] = None,
 ) -> ft.Container:
-    """Standard elevated card surface for investor-demo views."""
+    """Standard elevated card surface for main-shell views."""
     return ft.Container(
         content=content,
         padding=padding,
