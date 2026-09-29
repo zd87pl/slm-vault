@@ -1,7 +1,7 @@
 """
 EVO2 (Evolutionary Optimization Version 2) Genetic Fitness Optimizer
 Implements evolutionary algorithms for personalized fitness optimization
-Copyright © 2025 Zygmunt Dyras. All rights reserved.
+Copyright © 2025 Zygmunt Dyras. Licensed under the Apache License 2.0 (see LICENSE).
 """
 
 import numpy as np

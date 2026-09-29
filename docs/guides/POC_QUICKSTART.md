@@ -547,4 +547,4 @@ weight_delta = np.random.randn(100, 100)  # Smaller test
 
 **Estimated Time**: With this guide, you should have a working WDVA crypto module in under 1 hour.
 
-Copyright © 2025 Zygmunt Dyras. All rights reserved.
+Copyright © 2025 Zygmunt Dyras. Licensed under the Apache License 2.0 (see LICENSE).

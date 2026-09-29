@@ -749,5 +749,5 @@ def choose_privacy_technique(use_case: str) -> str:
 
 ---
 
-Copyright © 2025 Zygmunt Dyras. All rights reserved.
+Copyright © 2025 Zygmunt Dyras. Licensed under the Apache License 2.0 (see LICENSE).
 Technical specifications subject to patent protection.

@@ -1,7 +1,7 @@
 """
 VCF (Variant Call Format) Processing Pipeline for WDVA System
 Implements genomics-aware processing with privacy safeguards
-Copyright © 2025 Zygmunt Dyras. All rights reserved.
+Copyright © 2025 Zygmunt Dyras. Licensed under the Apache License 2.0 (see LICENSE).
 """
 
 import hashlib
