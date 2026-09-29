@@ -6,4 +6,4 @@ under [`spikes/`](../../spikes/).
 
 | ADR | Title | Status |
 |---|---|---|
-| [0001](0001-vault-engine.md) | One vault engine that owns the key, the index and consent (engine process, IPC, SQLCipher store, key hierarchy, consent/audit, MCP shim, Tauri sidecar, migration, Phase 1 PR plan) | Proposed |
+| [0001](0001-vault-engine.md) | One vault engine that owns the key, the index and consent (engine process, IPC, SQLCipher store, in-engine vector search, key hierarchy, consent/audit, MCP shim, Tauri sidecar, migration, Phase 1 PR plan) | Proposed (revision 2, after review round 1) |
