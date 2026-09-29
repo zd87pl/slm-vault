@@ -1,0 +1,24 @@
+{
+  "apsw": "3.53.4.0",
+  "sqlite": "3.53.4",
+  "compile_options": [
+    "ENABLE_FTS5",
+    "SECURE_DELETE"
+  ],
+  "vec_version": "v0.1.9",
+  "fts5_and_vec0": true,
+  "bundled_vec1_extension": [
+    "vec1.so"
+  ],
+  "sqlite3mc_reads_sqlcipher3_file": [
+    [
+      "written by sqlcipher3"
+    ]
+  ],
+  "sqlcipher3_reads_sqlite3mc_file": [
+    [
+      "written by sqlite3mc"
+    ]
+  ],
+  "sqlite3mc_file_header_hex": "2ab98e382862093439d3b4d70fcf5be5"
+}

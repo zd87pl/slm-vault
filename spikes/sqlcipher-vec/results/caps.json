@@ -1,0 +1,50 @@
+{
+  "environment": {
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpu_count": 4,
+    "loadavg_at_start": [
+      0.79150390625,
+      0.884765625,
+      0.58056640625
+    ],
+    "sqlcipher3_module": "<deps>/sqlcipher3/sqlcipher3/__init__.py",
+    "sqlite_version": "3.51.1",
+    "cipher_version": "4.12.0 community",
+    "cipher_provider": "openssl OpenSSL 3.6.0 1 Oct 2025",
+    "sqlite_vec_version": "v0.1.9",
+    "sqlite_vec_source": "<deps>/common/sqlite_vec/vec0",
+    "loadavg_at_end": [
+      0.79150390625,
+      0.884765625,
+      0.58056640625
+    ]
+  },
+  "caps": {
+    "compile_options_of_interest": [
+      "ENABLE_FTS3",
+      "ENABLE_FTS3_PARENTHESIS",
+      "ENABLE_FTS4",
+      "ENABLE_FTS5",
+      "ENABLE_LOAD_EXTENSION",
+      "HAS_CODEC",
+      "TEMP_STORE=2",
+      "THREADSAFE=1"
+    ],
+    "cipher_default_settings": [
+      "PRAGMA cipher_default_kdf_iter = 256000;",
+      "PRAGMA cipher_default_page_size = 4096;",
+      "PRAGMA cipher_default_use_hmac = 1;",
+      "PRAGMA cipher_default_plaintext_header_size = 0;",
+      "PRAGMA cipher_default_hmac_algorithm = HMAC_SHA512;",
+      "PRAGMA cipher_default_kdf_algorithm = PBKDF2_HMAC_SHA512;"
+    ],
+    "cipher_memory_security": "0",
+    "has_enable_load_extension": true,
+    "vec_version": "v0.1.9",
+    "fts5_and_vec0_in_one_query": true,
+    "vec_loaded_before_key_ok": true
+  }
+}

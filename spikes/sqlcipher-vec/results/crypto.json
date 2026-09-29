@@ -1,0 +1,151 @@
+{
+  "environment": {
+    "python": "3.11.15",
+    "platform": "Linux-6.18.44-fc-v37-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "cpu": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "cpu_count": 4,
+    "loadavg_at_start": [
+      0.26025390625,
+      0.25634765625,
+      0.20458984375
+    ],
+    "sqlcipher3_module": "<deps>/sqlcipher3/sqlcipher3/__init__.py",
+    "sqlite_version": "3.51.1",
+    "cipher_version": "4.12.0 community",
+    "cipher_provider": "openssl OpenSSL 3.6.0 1 Oct 2025",
+    "sqlite_vec_version": "v0.1.9",
+    "loadavg_at_end": [
+      0.26025390625,
+      0.25634765625,
+      0.20458984375
+    ]
+  },
+  "crypto": {
+    "plaintext_control": {
+      "file_header_is_sqlite_magic": true,
+      "first_16_bytes_hex": "53514c69746520666f726d6174203300",
+      "markers_in_wal_before_checkpoint": {
+        "text": true,
+        "fts_token": true,
+        "vector": true
+      },
+      "markers_in_main_file": {
+        "text": true,
+        "fts_token": true,
+        "vector": true
+      }
+    },
+    "encrypted": {
+      "file_header_is_sqlite_magic": false,
+      "first_16_bytes_hex": "4e8bb912d7a5d230e1286e102fbfb16f",
+      "markers_in_wal_before_checkpoint": {
+        "text": false,
+        "fts_token": false,
+        "vector": false
+      },
+      "markers_in_main_file": {
+        "text": false,
+        "fts_token": false,
+        "vector": false
+      }
+    },
+    "open_with_stdlib_sqlite3": "DatabaseError: file is not a database",
+    "open_sqlcipher_no_key": "DatabaseError: file is not a database",
+    "open_sqlcipher_wrong_key": "DatabaseError: file is not a database",
+    "open_sqlcipher_right_key": "OPENED",
+    "rekey_in_wal_mode": "ok",
+    "after_rekey_old_key": "DatabaseError: file is not a database",
+    "after_rekey_new_key": "OPENED",
+    "vacuum_into": {
+      "header_is_sqlite_magic": false,
+      "markers_in_copy": {
+        "text": false,
+        "fts_token": false,
+        "vector": false
+      },
+      "opens_with_same_key": true
+    },
+    "sqlcipher_export_new_key": {
+      "header_is_sqlite_magic": false,
+      "markers_in_copy": {
+        "text": false,
+        "fts_token": false,
+        "vector": false
+      },
+      "row_counts": {
+        "docs": 51,
+        "fts": 51,
+        "vec": 51
+      },
+      "vec_knn_finds_marker": true,
+      "fts_finds_marker": true
+    },
+    "own_page_decryption": {
+      "page_size_field": 4096,
+      "reserved_bytes_field": 80,
+      "live_markers_visible_in_decrypted_pages": {
+        "text": true,
+        "fts_token": true,
+        "vector": true
+      }
+    },
+    "delete_residue_sqlcipher_defaults": {
+      "secure_delete_effective": 1,
+      "fts5_secure_delete_option": false,
+      "marker_found_before_delete": {
+        "text": true,
+        "fts_token": true,
+        "vector": true
+      },
+      "marker_found_after_delete": {
+        "text": false,
+        "fts_token": true,
+        "vector": false
+      },
+      "marker_found_after_vacuum": {
+        "text": false,
+        "fts_token": true,
+        "vector": false
+      }
+    },
+    "delete_residue_secure_delete_off": {
+      "secure_delete_effective": 0,
+      "fts5_secure_delete_option": false,
+      "marker_found_before_delete": {
+        "text": true,
+        "fts_token": true,
+        "vector": true
+      },
+      "marker_found_after_delete": {
+        "text": true,
+        "fts_token": true,
+        "vector": false
+      },
+      "marker_found_after_vacuum": {
+        "text": false,
+        "fts_token": true,
+        "vector": false
+      }
+    },
+    "delete_residue_fts5_secure_delete": {
+      "secure_delete_effective": 1,
+      "fts5_secure_delete_option": true,
+      "marker_found_before_delete": {
+        "text": true,
+        "fts_token": true,
+        "vector": true
+      },
+      "marker_found_after_delete": {
+        "text": false,
+        "fts_token": false,
+        "vector": false
+      },
+      "marker_found_after_vacuum": {
+        "text": false,
+        "fts_token": false,
+        "vector": false
+      }
+    }
+  }
+}
