@@ -354,7 +354,8 @@ your OS's full-disk encryption).
   To limit which tools an app can call at all, edit `~/.enclave/policies.toml`.
 - The desktop app also shows per-app permission toggles, a Revoke button,
   finer-grained scopes and time-limited access; these are **not enforced yet**.
-- **On Windows, consent prompts are not implemented and every request is denied.**
+- **On Windows, consent prompts are not implemented, so every call that needs
+  consent is denied.**
 - App identity is a best guess from environment variables or the parent
   process name (the latter needs the optional `psutil` package). Apps Enclave
   cannot identify are treated as `unknown` and get the `default` policy.
@@ -375,10 +376,10 @@ your OS's full-disk encryption).
 ## Known Limitations
 
 - **Local chat needs Apple Silicon.** On Intel Macs, Linux and Windows the
-  desktop app opens but chat never sends (it keeps offering a model download);
-  the CLI and MCP server fall back to TinyLlama 1.1B on PyTorch, whose answers
-  are poor.
-- **Windows**: no setup script, and consent prompts deny every MCP call.
+  desktop app's chat never sends (it keeps offering a model download), and the
+  CLI and MCP server fall back to TinyLlama 1.1B on PyTorch, whose answers are
+  poor.
+- **Windows**: no setup script, and no consent prompt, so MCP calls are denied.
 - **Partial encryption, key stored next to the data** — see
   [What is and isn't encrypted](#what-is-and-isnt-encrypted).
 - **Coarse consent**: per app, with no expiry; see [Consent](#consent).
@@ -438,7 +439,7 @@ above, and may be archived.
 | | Apple Silicon Mac | Intel Mac, Linux | Windows |
 |---|---|---|---|
 | Desktop app chat | Yes (MLX) | No — keeps offering a model download | No |
-| CLI and MCP server | Yes | Run, but answers come from TinyLlama 1.1B (PyTorch) and are poor | Same as Linux, and consent prompts deny every call |
+| CLI and MCP server | Yes | Run, but answers come from TinyLlama 1.1B (PyTorch) and are poor | Same as Linux, and MCP calls are denied (no consent prompt) |
 | `setup.sh` | Yes | Yes | No (bash only; install with pip) |
 
 ## Advanced Local Training (experimental)
