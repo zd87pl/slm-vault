@@ -6,6 +6,8 @@ launch as a local, private LLM document vault (September 2026).
 - [ROADMAP.md](ROADMAP.md) — the plan: current-state assessment, positioning,
   target experience and architecture, phased roadmap, launch playbook, metrics,
   risks, and open decisions.
+- [../design/](../design/README.md) — design decisions (ADRs) that implement it,
+  starting with the Phase 1 vault engine and key management.
 
 Research notes behind it (`research/`):
 
