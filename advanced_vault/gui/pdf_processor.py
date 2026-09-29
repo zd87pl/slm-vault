@@ -27,6 +27,7 @@ except ImportError:
 
 import requests
 
+from advanced_vault.model_cache import ModelNotDownloadedError, load_offline_first
 from advanced_vault.parsing import extract_pdf_text, has_liteparse_backend, is_text_quality_good
 
 # Try to import LiteParse (Python wrapper around Node CLI)
@@ -45,9 +46,9 @@ SMOLDOCLING_AVAILABLE = False
 try:
     import sys
     if sys.version_info >= (3, 12):  # SmolDocling requires Python 3.12+
-        from mlx_vlm import load as mlx_load, generate as mlx_generate
+        from mlx_vlm import generate as mlx_generate
         from mlx_vlm.prompt_utils import apply_chat_template
-        from mlx_vlm.utils import load_config as mlx_load_config, stream_generate
+        from mlx_vlm.utils import stream_generate
         from docling_core.types.doc import DocTagsDocument, DoclingDocument
         from PIL import Image
         SMOLDOCLING_AVAILABLE = True
@@ -135,6 +136,26 @@ def _is_apple_silicon() -> bool:
         return "Apple" in result.stdout
     except Exception:
         return False
+
+
+SMOLDOCLING_MODEL_ID = "ds4sd/SmolDocling-256M-preview-mlx-bf16"
+
+
+def _load_smoldocling_model() -> tuple[Any, Any, dict[str, Any]]:
+    """
+    Load SmolDocling with mlx_vlm and return (model, processor, config).
+
+    Uses the copy in the local Hugging Face cache when it is already
+    downloaded: loading by repo id would query the Hugging Face Hub every time.
+    """
+    from mlx_vlm import load as load_model
+    from mlx_vlm.utils import load_config
+
+    def load_from(source: str) -> tuple[Any, Any, dict[str, Any]]:
+        model, processor = load_model(source)
+        return model, processor, load_config(source)
+
+    return load_offline_first(SMOLDOCLING_MODEL_ID, load_from)
 
 
 def _install_smoldocling_dependencies(progress_callback: Optional[Callable[[str], None]] = None) -> bool:
@@ -299,11 +320,17 @@ class PDFProcessor:
             if SMOLDOCLING_AVAILABLE:
                 try:
                     logger.info("Initializing SmolDocling OCR (Apple Silicon optimized)...")
-                    model_path = "ds4sd/SmolDocling-256M-preview-mlx-bf16"
-                    self.smoldocling_model, self.smoldocling_processor = mlx_load(model_path)
-                    self.smoldocling_config = mlx_load_config(model_path)
+                    (
+                        self.smoldocling_model,
+                        self.smoldocling_processor,
+                        self.smoldocling_config,
+                    ) = _load_smoldocling_model()
                     self.smoldocling_available = True
                     logger.info("SmolDocling OCR initialized successfully (~500MB model)")
+                except ModelNotDownloadedError as e:
+                    # Offline and not downloaded yet: installing packages cannot help.
+                    logger.info(f"SmolDocling OCR unavailable: {e}")
+                    self.smoldocling_available = False
                 except Exception as e:
                     logger.warning(f"SmolDocling initialization failed: {e}. Attempting dependency installation...")
                     self.smoldocling_available = False
@@ -313,14 +340,12 @@ class PDFProcessor:
                         if _install_smoldocling_dependencies(progress_callback=progress_callback):
                             # Retry initialization after installing dependencies
                             try:
-                                # Reload imports after installation
-                                from mlx_vlm import load as mlx_load
-                                from mlx_vlm.utils import load_config as mlx_load_config
-                                
                                 logger.info("Retrying SmolDocling initialization...")
-                                model_path = "ds4sd/SmolDocling-256M-preview-mlx-bf16"
-                                self.smoldocling_model, self.smoldocling_processor = mlx_load(model_path)
-                                self.smoldocling_config = mlx_load_config(model_path)
+                                (
+                                    self.smoldocling_model,
+                                    self.smoldocling_processor,
+                                    self.smoldocling_config,
+                                ) = _load_smoldocling_model()
                                 self.smoldocling_available = True
                                 logger.info("SmolDocling OCR initialized successfully after dependency installation")
                             except Exception as e2:
@@ -332,15 +357,15 @@ class PDFProcessor:
                 if _install_smoldocling_dependencies(progress_callback=progress_callback):
                     # Try importing again
                     try:
-                        from mlx_vlm import load as mlx_load
-                        from mlx_vlm.utils import load_config as mlx_load_config
                         from docling_core.types.doc import DocTagsDocument, DoclingDocument
                         from PIL import Image
                         
                         logger.info("Retrying SmolDocling initialization...")
-                        model_path = "ds4sd/SmolDocling-256M-preview-mlx-bf16"
-                        self.smoldocling_model, self.smoldocling_processor = mlx_load(model_path)
-                        self.smoldocling_config = mlx_load_config(model_path)
+                        (
+                            self.smoldocling_model,
+                            self.smoldocling_processor,
+                            self.smoldocling_config,
+                        ) = _load_smoldocling_model()
                         self.smoldocling_available = True
                         logger.info("SmolDocling OCR initialized successfully (~500MB model)")
                     except Exception as e:

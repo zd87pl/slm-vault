@@ -207,17 +207,25 @@ class LocalInferenceEngine:
     ) -> Path:
         """Return a local copy of the MLX model, downloading it into the app-owned cache if needed."""
         resolved_name = model_name or cls.MLX_MODEL_NAME
-        model_dir = cls.get_mlx_model_dir(resolved_name)
         local_model_path = cls.find_local_mlx_model(resolved_name)
         if local_model_path is not None:
             if progress_callback:
                 progress_callback(f"{resolved_name.split('/')[-1]} is already on this Mac.")
             return local_model_path
+        return cls._download_mlx_model(resolved_name, progress_callback)
 
+    @classmethod
+    def _download_mlx_model(
+        cls,
+        resolved_name: str,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ) -> Path:
+        """Download an MLX model into the app-owned cache and return its directory."""
+        model_dir = cls.get_mlx_model_dir(resolved_name)
         if hf_offline_enabled():
             raise ModelNotDownloadedError(
-                f"Model '{resolved_name}' is not downloaded yet and HF_HUB_OFFLINE is set, "
-                "so it cannot be downloaded."
+                f"Model '{resolved_name}' is not downloaded yet and offline mode is on "
+                "(HF_HUB_OFFLINE / TRANSFORMERS_OFFLINE), so it cannot be downloaded."
             )
 
         if progress_callback:
@@ -327,7 +335,23 @@ class LocalInferenceEngine:
 
                         if progress_callback:
                             progress_callback(f"Loading {model_name.split('/')[-1]}...")
-                        self.model, self.tokenizer = mlx_load(str(local_model_path))
+                        try:
+                            self.model, self.tokenizer = mlx_load(str(local_model_path))
+                        except Exception as load_err:
+                            # A copy reused from the Hugging Face cache may be unusable
+                            # (e.g. tokenizer files missing); fetch a fresh one instead.
+                            if (
+                                not allow_download
+                                or hf_offline_enabled()
+                                or local_model_path == self.get_mlx_model_dir(model_name)
+                            ):
+                                raise
+                            logger.warning(
+                                "Cached copy of %s failed to load (%s); downloading it again",
+                                model_name, load_err,
+                            )
+                            local_model_path = self._download_mlx_model(model_name, progress_callback)
+                            self.model, self.tokenizer = mlx_load(str(local_model_path))
                         self.MLX_MODEL_NAME = model_name  # Remember which one worked
                         logger.info(f"✓ Successfully loaded: {model_name}")
                         break
@@ -362,18 +386,18 @@ class LocalInferenceEngine:
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 torch_cache_dir = self.shared_model_root / "torch"
 
-                def load_torch_model(source: str):
+                def load_torch_model(source: str, local_files_only: bool = not allow_download):
                     tokenizer = AutoTokenizer.from_pretrained(
                         source,
                         cache_dir=torch_cache_dir,
-                        local_files_only=not allow_download,
+                        local_files_only=local_files_only,
                     )
                     model = AutoModelForCausalLM.from_pretrained(
                         source,
                         torch_dtype=torch.float16 if device == "cuda" else torch.float32,
                         device_map="auto" if device == "cuda" else None,
                         cache_dir=torch_cache_dir,
-                        local_files_only=not allow_download,
+                        local_files_only=local_files_only,
                     )
                     return tokenizer, model
 
@@ -384,6 +408,7 @@ class LocalInferenceEngine:
                     load_torch_model,
                     cache_dir=torch_cache_dir,
                     allow_download=allow_download,
+                    load_local=lambda: load_torch_model(self.MODEL_NAME, local_files_only=True),
                 )
 
                 if self.tokenizer.pad_token is None:
