@@ -117,7 +117,9 @@ class TestRecallRequiresExactName:
     def test_knowledge_notes_follow_the_same_rule(self, vault):
         vault.store("Chose Stripe for its webhooks", data_type="knowledge", service="payments-notes")
 
-        assert "Chose Stripe" not in _dump(vault.query("why did I choose stripe webhooks"))
+        fuzzy = _dump(vault.query("why did I choose stripe webhooks"))
+        assert "Chose Stripe" not in fuzzy
+        assert STRIPE_SECRET not in fuzzy
         assert vault.query("payments-notes")["result"] == "Chose Stripe for its webhooks"
 
 
@@ -143,6 +145,16 @@ class TestRedactToolArguments:
         "apiKey", "access_token", "client-secret", "PASSWORD",
     ])
     def test_sensitive_names_are_redacted_for_any_tool(self, name):
+        redacted = activity_logger.redact_tool_arguments("any_tool", {name: "hunter2", "note": "ok"})
+
+        assert redacted == {name: "[redacted: 7 chars]", "note": "ok"}
+
+    @pytest.mark.parametrize("name", [
+        "secrets", "tokens", "passwords", "keys", "api_keys", "values",
+        "APIToken", "APISecret", "apitoken", "clientsecret", "privatekey",
+        "auth", "authorization", "Authorization", "bearer", "pwd", "cookie",
+    ])
+    def test_plural_joined_and_auth_names_are_redacted(self, name):
         redacted = activity_logger.redact_tool_arguments("any_tool", {name: "hunter2", "note": "ok"})
 
         assert redacted == {name: "[redacted: 7 chars]", "note": "ok"}

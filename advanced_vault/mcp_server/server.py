@@ -834,7 +834,7 @@ class VaultMCPServer:
         else:
             return [TextContent(
                 type="text",
-                text=f"✅ Stored knowledge (ID: {entry_id[:8] if entry_id else 'N/A'}...)\nType: knowledge\nNote: Knowledge will be available for fuzzy queries"
+                text=f"✅ Stored knowledge (ID: {entry_id[:8] if entry_id else 'N/A'}...)\nType: knowledge\nNote: vault_recall returns a stored note only for its exact entry name"
             )]
 
     async def _handle_recall(self, vault: HybridVault, args: dict) -> Sequence[TextContent]:

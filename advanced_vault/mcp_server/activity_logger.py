@@ -49,11 +49,20 @@ _APP_DISPLAY_NAMES: Dict[str, str] = {
 _DEFAULT_APP_DISPLAY_NAME = f"Claude {_MCP_DISPLAY_SUFFIX}"
 
 #: Words that mark an argument as sensitive when they make up its name or one
-#: of its ``_``/``-``/camelCase-separated parts (e.g. ``api_key``, ``accessToken``).
+#: of its ``_``/``-``/camelCase-separated parts, singular or plural (e.g.
+#: ``api_key``, ``accessToken``, ``secrets``).
 _SENSITIVE_ARGUMENT_WORDS = frozenset({
-    "value", "secret", "password", "passwd", "passphrase",
+    "value", "secret", "password", "passwd", "passphrase", "pwd",
     "token", "key", "apikey", "credential", "credentials",
+    "auth", "authorization", "bearer", "cookie",
 })
+
+#: Endings that mark a joined, lower-case name as sensitive (``apitoken``,
+#: ``clientsecret``, ``privatekey``).
+_SENSITIVE_ARGUMENT_SUFFIXES = ("token", "secret", "password", "passwd", "key")
+
+#: Names that contain a sensitive word but carry no secret material.
+_NON_SENSITIVE_ARGUMENT_NAMES = frozenset({"max_tokens"})
 
 #: Tool arguments that carry secret material under a generic name.
 _SENSITIVE_TOOL_ARGUMENTS: Dict[str, frozenset] = {
@@ -104,10 +113,19 @@ def _redact_value(tool_name: str, value: Any) -> Any:
 
 def _is_sensitive_argument(tool_name: str, name: Any) -> bool:
     name = str(name)
-    if name.lower() in _SENSITIVE_TOOL_ARGUMENTS.get(tool_name, frozenset()):
+    lowered = name.lower()
+    if lowered in _SENSITIVE_TOOL_ARGUMENTS.get(tool_name, frozenset()):
         return True
-    words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", name).lower()
-    return any(word in _SENSITIVE_ARGUMENT_WORDS for word in re.split(r"[^a-z0-9]+", words))
+    if lowered in _NON_SENSITIVE_ARGUMENT_NAMES:
+        return False
+    # Split snake/kebab/camelCase, keeping acronyms whole ("APIToken" -> api, token)
+    spaced = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", spaced).lower()
+    for word in re.split(r"[^a-z0-9]+", spaced):
+        singular = word[:-1] if len(word) > 3 and word.endswith("s") else word
+        if singular in _SENSITIVE_ARGUMENT_WORDS or singular.endswith(_SENSITIVE_ARGUMENT_SUFFIXES):
+            return True
+    return False
 
 
 def _redaction_marker(value: Any) -> str:
