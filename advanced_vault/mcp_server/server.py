@@ -83,14 +83,14 @@ class VaultMCPServer:
         logger.info(f"Initialized Enclave MCP Server at {self.vault_path}")
 
     def _get_agent(self) -> LocalAgent:
-        """Get or create local agent with master key."""
+        """Get or create the local agent.
+
+        The agent reads the active profile's document index and key -- the
+        ones the Enclave app and ``enclave model ingest`` write under
+        ``<vault_path>/private_models`` -- not the secrets store's key here.
+        """
         if self._agent is None:
-            # Ensure vault is initialized to get master key
-            self._get_vault()
-            self._agent = get_agent(
-                vault_path=str(self.vault_path),
-                master_key=self._master_key
-            )
+            self._agent = get_agent(vault_path=str(self.vault_path))
         return self._agent
 
     def _get_vault(self) -> HybridVault:
@@ -1254,6 +1254,23 @@ class VaultMCPServer:
                 lines.append(f"Model: {status['model_name']}")
 
             lines.append(f"\nRAG Index: {'✅ Available' if status['rag_available'] else '❌ Not available'}")
+            if status.get("profile"):
+                lines.append(f"Profile: {status['profile']}")
+            if status.get("index_path"):
+                index_path = Path(status["index_path"])
+                if index_path.is_relative_to(Path.home()):
+                    index_path = Path("~") / index_path.relative_to(Path.home())
+                lines.append(f"Index: {index_path}")
+            if status.get("index_error"):
+                lines.append(f"Index error: {status['index_error']}")
+            elif status.get("index_hint"):
+                lines.append(status["index_hint"])
+            if status.get("legacy_index_documents"):
+                lines.append(
+                    f"Note: {status['legacy_index_documents']} document(s) indexed by an older "
+                    "Enclave version (in $VAULT_PATH/rag.db) are no longer read. Add those files "
+                    "again in the Enclave app to make them available here."
+                )
             lines.append(f"Documents indexed: {status['document_count']}")
             lines.append(f"Total chunks: {status['chunk_count']}")
 
