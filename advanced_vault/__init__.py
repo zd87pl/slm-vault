@@ -18,7 +18,7 @@ Usage:
 
     vault = HybridVault(master_key="...")
     vault.store("sk_live_ABC", type="secret", service="stripe")
-    result = vault.query("What's my Stripe key?")
+    result = vault.query("stripe")  # values only for an exact entry name
 """
 
 __version__ = "0.1.0"

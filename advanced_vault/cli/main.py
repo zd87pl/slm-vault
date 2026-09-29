@@ -415,11 +415,14 @@ def export(ctx, file, format):
 @click.pass_context
 def query(ctx, query):
     """
-    Query the vault using natural language (Smart Router).
+    Query the vault (Smart Router).
+
+    A stored secret or note is returned only for its exact entry name; any
+    other query lists the names of matching entries.
 
     Examples:
-        enclave query "What's my Stripe API key?"
-        enclave query "Why did I choose Stripe?"
+        enclave query stripe
+        enclave query "What's my Stripe API key?"   # lists matching entry names
     """
     vault_cli = VaultCLI(ctx.obj['vault_path'])
 

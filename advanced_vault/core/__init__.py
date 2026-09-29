@@ -15,7 +15,7 @@ Usage:
     vault.store("sk_live_ABC", type="secret", service="stripe")
 
     # Query (auto-routed)
-    result = vault.query("What's my Stripe key?")  # → Layer 1
+    result = vault.query("stripe")  # → Layer 1 value (exact entry name only)
 """
 
 from .smart_router import SmartRouter, QueryStrategy, QueryPlan
