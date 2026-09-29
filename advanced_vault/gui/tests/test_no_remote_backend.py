@@ -142,6 +142,15 @@ class TestBackendUrlConfig(unittest.TestCase):
             config_loader.apply_config()
             self.assertEqual(os.environ[BACKEND_KEY], "")
 
+    def test_other_empty_environment_variables_still_fall_back(self) -> None:
+        # Only the backend URL treats "set but empty" as a value. The packaged
+        # app (flet.json) exports SUPABASE_URL="", which must keep its default.
+        default = config_loader.DEFAULT_CONFIG["SUPABASE_URL"]
+        with _isolated_home(SUPABASE_URL=""):
+            self.assertEqual(config_loader.get_config()["SUPABASE_URL"], default)
+            config_loader.apply_config()
+            self.assertEqual(os.environ["SUPABASE_URL"], default)
+
 
 class _FakeWindow:
     def __init__(self) -> None:
@@ -266,6 +275,8 @@ class TestVaultAppBackendGating(unittest.TestCase):
         # Settings -> Advanced (System Setup, Training Queue, Activity Log)
         # rebuilds this UI, which used to request the default backend's /health.
         with _isolated_home():
+            # vault_app runs apply_config() at import; repeat it with this HOME.
+            self.vault_app.apply_config()
             app = self._construct_app()
             with patch.object(self.vault_app.VaultApp, "load_secrets", autospec=True):
                 with patch.object(

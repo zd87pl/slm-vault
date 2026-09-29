@@ -6,11 +6,11 @@ Loads environment variables from multiple sources in priority order:
 2. User config file (~/.enclave/config.env)
 3. Embedded defaults (lowest priority)
 
-A variable that is set but empty still counts as set, so an empty value in
-the environment or in config.env clears the value below it.
-
 There is no default cloud backend: ENCLAVE_BACKEND_URL is empty unless the
-user sets it, and an empty value means "not configured" (local-only).
+user sets it, and an empty value means "not configured" (local-only). An
+empty ENCLAVE_BACKEND_URL in the environment therefore overrides a URL in
+config.env, just as an empty line in config.env does. For other keys an
+empty environment variable is ignored.
 """
 
 import os
@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
+
+BACKEND_URL_KEY = "ENCLAVE_BACKEND_URL"
 
 # Default configuration (embedded in app)
 DEFAULT_CONFIG = {
@@ -85,11 +87,11 @@ def get_config() -> Dict[str, str]:
         logger.info(f"Loaded user config from {user_config_path}")
     
     # Override with system environment variables (highest priority).
-    # A variable set to an empty string overrides too, like an empty line in
-    # config.env does.
+    # An empty ENCLAVE_BACKEND_URL overrides too ("no backend"), like an empty
+    # line in config.env does; other empty variables are ignored.
     for key in DEFAULT_CONFIG.keys():
         env_value = os.getenv(key)
-        if env_value is not None:
+        if env_value or (key == BACKEND_URL_KEY and env_value is not None):
             config[key] = env_value
     
     # Log which values are set
@@ -110,7 +112,9 @@ def apply_config(config: Optional[Dict[str, str]] = None) -> None:
         config = get_config()
     
     for key, value in config.items():
-        if value and key not in os.environ:
+        # A set-but-empty ENCLAVE_BACKEND_URL is kept ("no backend").
+        already_set = key in os.environ if key == BACKEND_URL_KEY else bool(os.getenv(key))
+        if value and not already_set:
             os.environ[key] = value
             logger.debug(f"Set {key} from config")
 
@@ -144,7 +148,7 @@ def get_backend_url(config: Optional[Dict[str, str]] = None) -> Optional[str]:
     """
     if config is None:
         config = get_config()
-    url = (config.get("ENCLAVE_BACKEND_URL") or "").strip().rstrip("/")
+    url = (config.get(BACKEND_URL_KEY) or "").strip().rstrip("/")
     return url or None
 
 
