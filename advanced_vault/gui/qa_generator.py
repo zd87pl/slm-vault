@@ -162,12 +162,27 @@ class QAGenerator:
         
         return False
     
-    def setup_qa_model(self, progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None) -> Tuple[bool, str]:
+    def needs_ollama_download(self) -> bool:
+        """Whether setup_qa_model would download an Ollama model (checks localhost only)."""
+        return (
+            not self.mlx_available
+            and self.is_ollama_available()
+            and not self.is_qa_model_available()
+        )
+
+    def setup_qa_model(
+        self,
+        progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None,
+        *,
+        confirmed_download: bool = False,
+    ) -> Tuple[bool, str]:
         """
         Setup Q&A model (MLX preferred, Ollama fallback) with progress tracking.
         
         Args:
             progress_callback: Optional callback(message, percent, time_remaining) for progress updates
+            confirmed_download: True only after the user confirmed a prompt naming
+                the Ollama model and its size. Without it, no Ollama model is pulled.
         
         Returns:
             (success: bool, message: str)
@@ -202,15 +217,25 @@ class QAGenerator:
                 logger.info("MLX Q&A model already initialized")
                 return True, "MLX Q&A model ready (Qwen2.5-3B-Instruct-4bit)"
         
-        # Fallback to Ollama setup
+        # Fallback to Ollama setup (Enclave never installs Ollama itself)
         if not self.is_ollama_available():
-            return False, "Ollama server is not running. Please start Ollama first."
+            return False, (
+                "Ollama is not running. Install it from https://ollama.com if needed, "
+                "start it, then try again."
+            )
         
         if self.is_qa_model_available():
             logger.info("Q&A model already available")
             if progress_callback:
                 progress_callback("Q&A model already available", 100.0, None)
             return True, "Q&A model already available"
+
+        if not confirmed_download:
+            return False, (
+                f"The Ollama model {self.ollama_model} is not downloaded. Run "
+                f"`ollama pull {self.ollama_model}` in a terminal, or download it from "
+                "Settings → Run Local Setup."
+            )
         
         try:
             if progress_callback:

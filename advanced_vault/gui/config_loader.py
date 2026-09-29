@@ -5,6 +5,12 @@ Loads environment variables from multiple sources in priority order:
 1. System environment variables (highest priority)
 2. User config file (~/.enclave/config.env)
 3. Embedded defaults (lowest priority)
+
+There is no default cloud backend: ENCLAVE_BACKEND_URL is empty unless the
+user sets it, and an empty value means "not configured" (local-only). An
+empty ENCLAVE_BACKEND_URL in the environment therefore overrides a URL in
+config.env, just as an empty line in config.env does. For other keys an
+empty environment variable is ignored.
 """
 
 import os
@@ -14,11 +20,13 @@ from typing import Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+BACKEND_URL_KEY = "ENCLAVE_BACKEND_URL"
+
 # Default configuration (embedded in app)
 DEFAULT_CONFIG = {
     "SUPABASE_URL": "https://ibiapabkyskoazpgcymo.supabase.co",
     "SUPABASE_ANON_KEY": "",  # Must be set by user or in config file
-    "ENCLAVE_BACKEND_URL": "https://keen-curiosity-production-1288.up.railway.app",
+    "ENCLAVE_BACKEND_URL": "",  # Optional cloud backend; empty = local-only
     "RUNPOD_QA_ENDPOINT_ID": "",  # Optional
     "RUNPOD_API_KEY": "",  # Optional
     "RUNPOD_QA_API_KEY": "",  # Optional
@@ -78,10 +86,12 @@ def get_config() -> Dict[str, str]:
         config.update(user_config)
         logger.info(f"Loaded user config from {user_config_path}")
     
-    # Override with system environment variables (highest priority)
+    # Override with system environment variables (highest priority).
+    # An empty ENCLAVE_BACKEND_URL overrides too ("no backend"), like an empty
+    # line in config.env does; other empty variables are ignored.
     for key in DEFAULT_CONFIG.keys():
         env_value = os.getenv(key)
-        if env_value:
+        if env_value or (key == BACKEND_URL_KEY and env_value is not None):
             config[key] = env_value
     
     # Log which values are set
@@ -102,7 +112,9 @@ def apply_config(config: Optional[Dict[str, str]] = None) -> None:
         config = get_config()
     
     for key, value in config.items():
-        if value and not os.getenv(key):
+        # A set-but-empty ENCLAVE_BACKEND_URL is kept ("no backend").
+        already_set = key in os.environ if key == BACKEND_URL_KEY else bool(os.getenv(key))
+        if value and not already_set:
             os.environ[key] = value
             logger.debug(f"Set {key} from config")
 
@@ -122,6 +134,24 @@ def get_config_value(key: str, default: str = "") -> str:
     return config.get(key, default)
 
 
+def get_backend_url(config: Optional[Dict[str, str]] = None) -> Optional[str]:
+    """
+    Get the user-configured cloud backend URL.
+
+    Args:
+        config: Optional config dict. If None, loads config automatically.
+
+    Returns:
+        The URL without a trailing slash, or None when ENCLAVE_BACKEND_URL is
+        unset or empty. None means "not configured": callers must not make
+        any backend request.
+    """
+    if config is None:
+        config = get_config()
+    url = (config.get(BACKEND_URL_KEY) or "").strip().rstrip("/")
+    return url or None
+
+
 def validate_config() -> tuple[bool, list[str]]:
     """
     Validate that required configuration values are set.
@@ -130,7 +160,8 @@ def validate_config() -> tuple[bool, list[str]]:
         Tuple of (is_valid, list_of_missing_keys)
     """
     config = get_config()
-    required_keys = ["SUPABASE_URL", "SUPABASE_ANON_KEY", "ENCLAVE_BACKEND_URL"]
+    # ENCLAVE_BACKEND_URL is optional: unset means local-only.
+    required_keys = ["SUPABASE_URL", "SUPABASE_ANON_KEY"]
     missing = [key for key in required_keys if not config.get(key)]
     return len(missing) == 0, missing
 

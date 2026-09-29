@@ -425,13 +425,22 @@ the label, which takes the secrets tools away again. Never add `vault_*` to
   runs that package. Set `ENCLAVE_LITEPARSE_ALLOW_NPX=false` to prevent this.
 - **PyPI**: some desktop-app features (SmolDocling PDF extraction, Q&A
   generation) pip-install missing packages the first time you use them.
-- **Remote development backend**: some older desktop-app screens (for
-  example Settings → Advanced → System Setup, Training Queue or Activity Log)
-  check whether a remote backend is reachable by requesting its `/health`
-  endpoint. The URL (`ENCLAVE_BACKEND_URL`) defaults to a hard-coded Railway
-  development server. No vault content is sent. To prevent it, add an empty
-  `ENCLAVE_BACKEND_URL=` line to `~/.enclave/config.env` (an empty environment
-  variable does not work).
+- **Ollama** (optional OCR for scanned PDFs, and Q&A generation where MLX is
+  unavailable): the desktop app never installs or starts Ollama, and never
+  runs an installer script. If Ollama is missing or stopped, it tells you to
+  install it from https://ollama.com or start it yourself. It downloads an
+  Ollama model (for example `llama3.2-vision:11b`, about 8 GB) only after you
+  confirm a prompt that names the model and its size (Settings → Run Local
+  Setup). Otherwise it only checks whether Ollama is running on `localhost`
+  (or at `OLLAMA_BASE_URL`, if you set it).
+- **Cloud backend**: none by default. Unless you set `ENCLAVE_BACKEND_URL`
+  (in the environment or in `~/.enclave/config.env`), the desktop app sends
+  no backend requests, and on older screens (for example Settings → Advanced
+  → System Setup, Training Queue or Activity Log) the app bar's status icon
+  has the tooltip "Cloud backend: not configured (local-only)". An empty
+  value counts as unset. If you set it, those screens request its `/health`
+  endpoint to show whether it is reachable (no vault content is sent), and
+  the desktop cloud features use it once you sign in.
 - **Cloud features** (desktop cloud sync and sign-in, the MCP `langchain_*`
   tools) are **off by default**; the MCP tools stay inert unless both
   `ENCLAVE_API_KEY` and `ENCLAVE_API_BASE_URL` are set.
@@ -485,9 +494,10 @@ slm-vault/
 > their docs. That code is unmaintained.
 
 **Not part of the local-only story**: the desktop app's cloud sync, RunPod and
-backend-status features and the MCP server's `langchain_*` tools are
-experimental or legacy. They are not covered by the privacy model above and
-may be removed (see also [Network access](#network-access)).
+backend-status features (which stay off until you configure a backend URL or
+RunPod credentials) and the MCP server's `langchain_*` tools are experimental
+or legacy. They are not covered by the privacy model above and may be removed
+(see also [Network access](#network-access)).
 
 ## Requirements
 

@@ -136,7 +136,9 @@ For production releases, consider creating a DMG installer:
 
 The app includes default configuration for:
 - `SUPABASE_URL`: Backend database URL
-- `ENCLAVE_BACKEND_URL`: API endpoint URL
+
+`ENCLAVE_BACKEND_URL` (the optional cloud backend) has no default: leave it
+unset or empty for local-only use, and the app makes no backend requests.
 
 ### User Override
 

@@ -45,6 +45,11 @@ from advanced_vault.private_models.manager import (
 )
 from advanced_vault.sheriff.core import SheriffCore
 from advanced_vault.wallet import WalletService
+from advanced_vault.gui.ollama_setup import (
+    ollama_download_prompt,
+    ollama_pull_instructions,
+    ollama_start_instructions,
+)
 
 # GUI sibling imports — use try/except for resilience
 try:
@@ -139,9 +144,10 @@ except ImportError:
     simple_metric_card = None
 
 try:
-    from config_loader import apply_config, validate_config, show_config_status
+    from config_loader import apply_config, get_backend_url, validate_config, show_config_status
 except ImportError:
     def apply_config(): pass
+    def get_backend_url(): return (os.getenv("ENCLAVE_BACKEND_URL") or "").strip().rstrip("/") or None
     def validate_config(): return True
     def show_config_status(): pass
 
@@ -155,6 +161,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 DEFAULT_PRIVATE_MODEL_NAME = "mlx-community/Qwen2.5-1.5B-Instruct-4bit"
+BACKEND_NOT_CONFIGURED_LABEL = "Cloud backend: not configured (local-only)"
 PRIVATE_MODEL_IMPORT_EXTENSIONS = sorted(ext.lstrip(".") for ext in SUPPORTED_EXTENSIONS)
 
 # Load configuration early (before app initialization)
@@ -213,7 +220,9 @@ class VaultApp:
             logger.info(f"Config status: {show_config_status()}")
             # Continue anyway - some features may not work
         
-        self.backend_url = os.getenv("ENCLAVE_BACKEND_URL", "")
+        # Optional cloud backend. Empty unless the user sets ENCLAVE_BACKEND_URL;
+        # when empty, nothing may send a request to it.
+        self.backend_url = get_backend_url() or ""
 
         # Authentication state
         self.session_data = None
@@ -1403,12 +1412,23 @@ class VaultApp:
         
         return progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text
     
-    def _setup_qa_model_with_progress(self):
+    def _setup_qa_model_with_progress(self, confirmed_download: bool = False):
         """
         Setup TinyLlama Q&A model with visible progress dialog showing percentage and time remaining.
+
+        An Ollama model is downloaded only after the user confirms a prompt
+        that names it and its size.
         """
         if not self.qa_generator:
             logger.error("Q&A generator not initialized")
+            return
+
+        if not confirmed_download and self.qa_generator.needs_ollama_download():
+            self._confirm_ollama_model_download(
+                self.qa_generator.ollama_model,
+                "Q&A generation",
+                lambda: self._setup_qa_model_with_progress(confirmed_download=True),
+            )
             return
         
         progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
@@ -1483,7 +1503,9 @@ class VaultApp:
         
         # Setup Q&A model with progress callback
         try:
-            success, message = self.qa_generator.setup_qa_model(progress_callback=update_progress)
+            success, message = self.qa_generator.setup_qa_model(
+                progress_callback=update_progress, confirmed_download=confirmed_download
+            )
             if success:
                 # Update status based on actual method used
                 qa_status = self.qa_generator.get_qa_status()
@@ -1537,10 +1559,71 @@ class VaultApp:
         else:
             return self.tr("settings.qa_setup.tooltip.download_tinyllama")
 
-    def _setup_ollama_with_progress(self):
+    def _show_ollama_instructions(self, message: str) -> None:
+        """Explain how to set up Ollama by hand; Enclave never installs it."""
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Scanned-PDF OCR needs Ollama", color=LightTheme.TEXT_PRIMARY),
+            content=ft.Text(message, selectable=True, color=LightTheme.TEXT_SECONDARY),
+            actions=[ft.TextButton("OK", on_click=lambda e: self._close_dialog(dialog))],
+        )
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+
+    def _confirm_ollama_model_download(
+        self, model: str, purpose: str, on_confirm: Callable[[], None]
+    ) -> None:
+        """Ask before downloading an Ollama model; the prompt names it and its size."""
+        def confirm(e):
+            self._close_dialog(dialog)
+            on_confirm()
+
+        dialog = ft.AlertDialog(
+            modal=True,
+            title=ft.Text("Download an Ollama model?", color=LightTheme.TEXT_PRIMARY),
+            content=ft.Text(ollama_download_prompt(model, purpose), color=LightTheme.TEXT_SECONDARY),
+            actions=[
+                ft.TextButton("Cancel", on_click=lambda e: self._close_dialog(dialog)),
+                ft.ElevatedButton("Download", on_click=confirm),
+            ],
+        )
+        self.page.overlay.append(dialog)
+        dialog.open = True
+        self.page.update()
+
+    def _ocr_setup_hint(self) -> str:
+        """How to enable scanned-PDF OCR; nothing is installed or downloaded automatically."""
+        ollama_setup = self.pdf_processor.ollama_setup
+        if not ollama_setup.is_ollama_installed():
+            return ollama_setup.install_instructions()
+        if not ollama_setup.is_ollama_running():
+            return ollama_start_instructions()
+        return ollama_pull_instructions(ollama_setup.model)
+
+    def _setup_ollama_with_progress(self, confirmed_download: bool = False):
         """
         Setup Ollama OCR with visible progress dialog showing percentage and time remaining.
+
+        Never installs or starts Ollama (shows instructions instead), and
+        downloads the model only after the user confirms a prompt naming it
+        and its size.
         """
+        ollama_setup = self.pdf_processor.ollama_setup
+        if not ollama_setup.is_ollama_installed():
+            self._show_ollama_instructions(ollama_setup.install_instructions())
+            return
+        if not ollama_setup.is_ollama_running():
+            self._show_ollama_instructions(ollama_start_instructions())
+            return
+        if not confirmed_download and not ollama_setup.is_model_available():
+            self._confirm_ollama_model_download(
+                ollama_setup.model,
+                "scanned-PDF OCR",
+                lambda: self._setup_ollama_with_progress(confirmed_download=True),
+            )
+            return
+
         progress_dialog, progress_text, progress_bar, progress_percent, time_remaining_text = self._create_progress_dialog(
             self.tr("settings.ocr_setup.dialog_title"),
             self.tr("settings.ocr_setup.preparing"),
@@ -1578,9 +1661,16 @@ class VaultApp:
         
         # Setup Ollama with progress callback
         try:
-            success, message = self.pdf_processor.ollama_setup.setup_ollama(progress_callback=update_progress)
+            success, message = self.pdf_processor.ollama_setup.setup_ollama(
+                progress_callback=update_progress, confirmed_download=confirmed_download
+            )
             if success:
                 self.pdf_processor.ollama_available = self.pdf_processor._test_ollama_connection()
+                if self.pdf_processor.ollama_available:
+                    self._component_status["ocr"]["status"] = "ready"
+                    self._component_status["ocr"]["message"] = (
+                        f"Ready ({self.pdf_processor.get_backend_status_label()})"
+                    )
                 progress_text.value = "✅ AI Knowledge Extraction ready!"
                 progress_bar.value = 1.0
                 progress_percent.value = "100%"
@@ -1673,7 +1763,7 @@ class VaultApp:
                 self._setup_qa_model_with_progress()
 
             if ran_any_step:
-                self._show_user_message("Local setup completed. You can now index and ask immediately.", level="success")
+                self._show_user_message("Local setup checked. Follow any open dialog to finish.", level="info")
             else:
                 self._show_user_message("Local setup already ready.", level="info")
         except Exception as e:
@@ -1895,14 +1985,18 @@ class VaultApp:
                     f"Ready ({self.pdf_processor.get_backend_status_label()})"
                 )
             else:
+                # Nothing is installed or downloaded automatically. Text-layer
+                # extraction still works; the dialog says how to add OCR.
                 self._component_status["ocr"]["status"] = "checking"
-                self._component_status["ocr"]["message"] = "Setting up..."
+                self._component_status["ocr"]["message"] = "Scanned-PDF OCR not set up (text PDFs work)"
                 
-                # Close progress dialog if setup failed
                 if progress_dialog and progress_dialog.open:
-                    progress_text.value = "⚠️ Setup in progress... Check Settings for details."
+                    progress_dialog.title = ft.Text(
+                        "Scanned-PDF OCR is not set up", color=LightTheme.TEXT_PRIMARY
+                    )
+                    progress_text.value = self._ocr_setup_hint()
                     if progress_bar:
-                        progress_bar.value = None
+                        progress_bar.visible = False
                     if progress_percent:
                         progress_percent.value = ""
                     if time_remaining_text:
@@ -1928,10 +2022,7 @@ class VaultApp:
                         ft.TextButton("OK", on_click=lambda e: setattr(progress_dialog, 'open', False) or self.page.update()),
                     ]
                     self.page.update()
-                else:
-                    # Setup failed - close dialog silently, user can setup from Settings
-                    progress_dialog.open = False
-                    self.page.update()
+                # Otherwise leave the dialog open: it explains how to set up OCR.
     
     def _needs_setup(self) -> bool:
         """Check if any components need setup."""
@@ -6944,8 +7035,8 @@ class VaultApp:
         except Exception as e:
             logger.warning(f"Failed to create Supabase client for token refresh: {e}")
         
-        # Initialize cloud sync service
-        if self.session_data:
+        # Initialize cloud sync service (only when a cloud backend is configured)
+        if self.session_data and self.backend_url:
             try:
                 self.cloud_sync = CloudSyncService(
                     backend_url=self.backend_url,
@@ -6957,7 +7048,8 @@ class VaultApp:
             except Exception as e:
                 logger.error(f"Failed to initialize cloud sync: {e}")
                 self.cloud_sync = None
-            
+
+        if self.session_data:
             # Initialize Q&A generator and training manager
             # Note: QAGenerator uses Ollama locally (TinyLlama) for Q&A generation
             # TrainingManager uses backend API (backend manages RunPod credentials)
@@ -6985,12 +7077,15 @@ class VaultApp:
                     self._component_status["qa"]["status"] = "checking"
                     self._component_status["qa"]["message"] = "Q&A model not downloaded"
                 
-                self.training_manager = TrainingManager(
-                    backend_url=self.backend_url,
-                    session_data=self.session_data,
-                    supabase_client=supabase_client  # Pass client for token refresh
-                )
-                logger.info("Q&A generator and training manager initialized")
+                # TrainingManager is a cloud-backend client: only create it when
+                # a backend is configured.
+                if self.backend_url:
+                    self.training_manager = TrainingManager(
+                        backend_url=self.backend_url,
+                        session_data=self.session_data,
+                        supabase_client=supabase_client  # Pass client for token refresh
+                    )
+                    logger.info("Q&A generator and training manager initialized")
 
                 # Initialize local training manager (for DPO/ORPO/GRPO/QAT on Apple Silicon)
                 try:
@@ -7137,6 +7232,12 @@ class VaultApp:
 
     def check_backend_connectivity(self):
         """Check Compute Pipeline (backend API) connectivity."""
+        if not self.backend_url:
+            # Local-only: no backend configured, so make no request at all.
+            self.backend_status = "not_configured"
+            self.update_compute_pipeline_icon()
+            return
+
         # Run in background thread
         def _check():
             try:
@@ -7174,6 +7275,10 @@ class VaultApp:
             self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
             self.compute_pipeline_icon.icon_color = LightTheme.ACCENT_ERROR
             self.compute_pipeline_icon.tooltip = "Compute Pipeline: Disconnected"
+        elif self.backend_status == "not_configured":
+            self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
+            self.compute_pipeline_icon.icon_color = LightTheme.TEXT_MUTED
+            self.compute_pipeline_icon.tooltip = BACKEND_NOT_CONFIGURED_LABEL
         else:
             self.compute_pipeline_icon.icon = ft.Icons.SCIENCE_ROUNDED
             self.compute_pipeline_icon.icon_color = LightTheme.ACCENT_WARNING
@@ -10802,20 +10907,23 @@ class VaultApp:
         self.current_view = "langchain_policies"
         self.secrets_list.controls.clear()
         
-        # Check authentication
-        if not self.session_data:
+        # Check authentication and that a cloud backend is configured
+        if not self.session_data or not self.backend_url:
             self.secrets_list.controls.append(
                 ft.Container(
                     content=ft.Column(
                         [
                             ft.Text(
-                                "🔒 Authentication Required",
+                                "🔒 Authentication Required" if not self.session_data
+                                else BACKEND_NOT_CONFIGURED_LABEL,
                                 size=24,
                                 weight=ft.FontWeight.BOLD,
                                 color=LightTheme.TEXT_PRIMARY,
                             ),
                             ft.Text(
-                                "Please log in to manage LangChain policies",
+                                "Please log in to manage LangChain policies" if not self.session_data
+                                else "LangChain policies are stored on a cloud backend. "
+                                "Set ENCLAVE_BACKEND_URL to manage them.",
                                 size=14,
                                 color=LightTheme.TEXT_SECONDARY,
                             ),
@@ -13949,7 +14057,11 @@ class VaultApp:
             if local_cache.exists():
                 logger.info(f"Using cached adapter: {local_cache}")
                 return str(local_cache)
-            
+
+            if not self.backend_url:
+                logger.info("Cloud backend not configured; not downloading adapter %s", adapter_id)
+                return None
+
             # Get download URL from backend
             response = requests.get(
                 f"{self.backend_url}/api/adapters/{adapter_id}/download",

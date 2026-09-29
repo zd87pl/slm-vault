@@ -1,25 +1,81 @@
 """
 Ollama Setup and Management
 
-Automatically installs and configures Ollama for OCR functionality.
-Handles installation, model downloading, and status checking.
+Detects a local Ollama install for OCR and, only after the user confirms,
+downloads the model it needs. Enclave never installs or starts Ollama itself:
+callers show install or start instructions instead.
 """
 
 import logging
-import subprocess
 import shutil
 import requests
 import time
-from pathlib import Path
 from typing import Optional, Callable, Tuple
 import platform
 
 logger = logging.getLogger(__name__)
 
+OLLAMA_WEBSITE = "https://ollama.com"
+OLLAMA_OCR_READY = "Ollama OCR is ready"
+
+# Approximate download sizes from the Ollama library (https://ollama.com/library),
+# shown to the user before a model download is confirmed.
+APPROX_MODEL_SIZES = {
+    "llama3.2-vision": "about 8 GB",
+    "llama3.2-vision:latest": "about 8 GB",
+    "llama3.2-vision:11b": "about 8 GB",
+    "tinyllama": "about 640 MB",
+    "tinyllama:latest": "about 640 MB",
+    "tinyllama:1.1b": "about 640 MB",
+}
+
+
+def approx_model_size(model: str) -> str:
+    """Return a human-readable approximate download size for an Ollama model."""
+    return APPROX_MODEL_SIZES.get(model, "size unknown; see https://ollama.com/library")
+
+
+def ollama_install_instructions(model: str) -> str:
+    """Explain how to set up Ollama by hand (Enclave never installs it)."""
+    return (
+        "Ollama is not installed, and Enclave does not install it for you. "
+        f"To use it, install Ollama from {OLLAMA_WEBSITE}, start it, then run "
+        f"`ollama pull {model}` ({approx_model_size(model)}) in a terminal. "
+        "Text-based PDFs work without it."
+    )
+
+
+def ollama_start_instructions() -> str:
+    """Explain how to start an installed Ollama (Enclave never starts it)."""
+    return (
+        "Ollama is installed but not running. Start it (open the Ollama app, or run "
+        "`ollama serve` in a terminal), then try again. Text-based PDFs work without it."
+    )
+
+
+def ollama_pull_instructions(model: str) -> str:
+    """Explain how to get a missing model without an automatic download."""
+    return (
+        f"The Ollama model {model} ({approx_model_size(model)}) is not downloaded. "
+        f"Run `ollama pull {model}` in a terminal, or download it from "
+        "Settings → Run Local Setup."
+    )
+
+
+def ollama_download_prompt(model: str, purpose: str) -> str:
+    """Confirmation text naming the model and its approximate download size."""
+    return (
+        f"Download the Ollama model {model} ({approx_model_size(model)}) for {purpose}? "
+        "Your local Ollama app downloads it from the Ollama registry, "
+        "and it is stored on this computer."
+    )
+
 
 class OllamaSetup:
     """
-    Handles automatic installation and setup of Ollama for OCR.
+    Detects Ollama and, after the user confirms, downloads its OCR model.
+
+    It never installs Ollama: see ollama_install_instructions().
     """
     
     def __init__(self, base_url: str = "http://localhost:11434", model: str = "llama3.2-vision:11b"):
@@ -56,166 +112,10 @@ class OllamaSetup:
         except Exception:
             return False
     
-    def install_ollama(self, progress_callback: Optional[Callable[[str], None]] = None) -> bool:
-        """
-        Install Ollama automatically.
-        
-        Args:
-            progress_callback: Optional callback function(status_message) for progress updates
-            
-        Returns:
-            True if installation successful
-        """
-        if self.is_ollama_installed():
-            if progress_callback:
-                progress_callback("Ollama jest już zainstalowane")
-            logger.info("Ollama already installed")
-            return True
-        
-        if progress_callback:
-            progress_callback("Installing Ollama...")
-        
-        logger.info("Installing Ollama...")
-        
-        try:
-            if self.system == "Darwin":  # macOS
-                # Try Homebrew first (most common)
-                if shutil.which("brew"):
-                    if progress_callback:
-                        progress_callback("Installing via Homebrew...")
-                    logger.info("Installing Ollama via Homebrew...")
-                    result = subprocess.run(
-                        ["brew", "install", "ollama"],
-                        capture_output=True,
-                        text=True,
-                        timeout=300
-                    )
-                    if result.returncode == 0:
-                        logger.info("Ollama installed via Homebrew")
-                        return True
-                    else:
-                        logger.warning(f"Homebrew installation failed: {result.stderr}")
-                
-                # Fallback to curl script
-                if progress_callback:
-                    progress_callback("Installing via install script...")
-                logger.info("Installing Ollama via curl script...")
-                result = subprocess.run(
-                    ["curl", "-fsSL", "https://ollama.com/install.sh"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                if result.returncode == 0:
-                    install_script = result.stdout
-                    install_process = subprocess.Popen(
-                        ["sh"],
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True
-                    )
-                    stdout, stderr = install_process.communicate(input=install_script, timeout=300)
-                    if install_process.returncode == 0:
-                        logger.info("Ollama installed via script")
-                        return True
-                    else:
-                        logger.error(f"Installation script failed: {stderr}")
-                
-            elif self.system == "Linux":
-                # Use curl script for Linux
-                if progress_callback:
-                    progress_callback("Installing via install script...")
-                logger.info("Installing Ollama via curl script...")
-                result = subprocess.run(
-                    ["curl", "-fsSL", "https://ollama.com/install.sh"],
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                if result.returncode == 0:
-                    install_script = result.stdout
-                    install_process = subprocess.Popen(
-                        ["sh"],
-                        stdin=subprocess.PIPE,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.PIPE,
-                        text=True
-                    )
-                    stdout, stderr = install_process.communicate(input=install_script, timeout=300)
-                    if install_process.returncode == 0:
-                        logger.info("Ollama installed via script")
-                        return True
-                    else:
-                        logger.error(f"Installation script failed: {stderr}")
-            
-            logger.error(f"Failed to install Ollama on {self.system}")
-            if progress_callback:
-                progress_callback("Nie udało się zainstalować Ollama automatycznie")
-            return False
-            
-        except subprocess.TimeoutExpired:
-            logger.error("Ollama installation timed out")
-            if progress_callback:
-                progress_callback("Instalacja Ollama przekroczyła limit czasu")
-            return False
-        except Exception as e:
-            logger.error(f"Error installing Ollama: {e}")
-            if progress_callback:
-                progress_callback(f"Installation error: {str(e)}")
-            return False
-    
-    def start_ollama_server(self, progress_callback: Optional[Callable[[str], None]] = None) -> bool:
-        """
-        Start Ollama server (non-blocking).
-        
-        Args:
-            progress_callback: Optional callback for progress updates
-            
-        Returns:
-            True if server started successfully
-        """
-        if self.is_ollama_running():
-            logger.info("Ollama server already running")
-            return True
-        
-        if not self.is_ollama_installed():
-            logger.error("Ollama not installed, cannot start server")
-            return False
-        
-        try:
-            if progress_callback:
-                progress_callback("Starting Ollama server...")
-            
-            logger.info("Starting Ollama server...")
-            # Start Ollama in background (non-blocking)
-            subprocess.Popen(
-                ["ollama", "serve"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True
-            )
-            
-            # Wait for server to start (max 10 seconds)
-            for _ in range(20):
-                time.sleep(0.5)
-                if self.is_ollama_running():
-                    logger.info("Ollama server started successfully")
-                    if progress_callback:
-                        progress_callback("Serwer Ollama uruchomiony")
-                    return True
-            
-            logger.warning("Ollama server did not start within timeout")
-            if progress_callback:
-                progress_callback("Serwer Ollama nie uruchomił się")
-            return False
-            
-        except Exception as e:
-            logger.error(f"Error starting Ollama server: {e}")
-            if progress_callback:
-                progress_callback(f"Server start error: {str(e)}")
-            return False
-    
+    def install_instructions(self) -> str:
+        """How to install Ollama and this model by hand."""
+        return ollama_install_instructions(self.model)
+
     def is_model_available(self) -> bool:
         """
         Check if the required vision model is available.
@@ -239,7 +139,12 @@ class OllamaSetup:
         except Exception:
             return False
     
-    def download_model(self, progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None) -> bool:
+    def download_model(
+        self,
+        progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None,
+        *,
+        confirmed: bool = False,
+    ) -> bool:
         """
         Download the required vision model.
         
@@ -248,6 +153,9 @@ class OllamaSetup:
                               - message: Status message
                               - percent: Progress percentage (0-100) or None if unknown
                               - time_remaining: Estimated time remaining (e.g., "2m 30s") or None
+            confirmed: True only after the user confirmed a prompt naming the
+                model and its size (see ollama_download_prompt). Without it,
+                nothing is downloaded.
             
         Returns:
             True if model downloaded successfully
@@ -257,6 +165,10 @@ class OllamaSetup:
             if progress_callback:
                 progress_callback(f"Model {self.model} already available", 100.0, None)
             return True
+
+        if not confirmed:
+            logger.info(ollama_pull_instructions(self.model))
+            return False
         
         if not self.is_ollama_running():
             logger.error("Ollama server not running, cannot download model")
@@ -402,12 +314,23 @@ class OllamaSetup:
                 progress_callback(f"Model download error: {str(e)}", None, None)
             return False
     
-    def setup_ollama(self, progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None) -> Tuple[bool, str]:
+    def setup_ollama(
+        self,
+        progress_callback: Optional[Callable[[str, Optional[float], Optional[str]], None]] = None,
+        *,
+        confirmed_download: bool = False,
+    ) -> Tuple[bool, str]:
         """
-        Complete setup: install, start server, download model.
+        Get a running Ollama ready by downloading the model it needs.
+
+        Never installs or starts Ollama: when it is missing or stopped, the
+        message says what to do. The model is downloaded only with
+        confirmed_download=True, which callers pass after the user confirmed
+        a prompt naming the model and its size.
         
         Args:
             progress_callback: Optional callback(message, percent, time_remaining) for progress updates
+            confirmed_download: Whether the user confirmed the model download
         
         Returns:
             (success: bool, message: str)
@@ -424,20 +347,22 @@ class OllamaSetup:
                     # Old-style callback, just pass message
                     progress_callback(msg)
         
-        # Step 1: Install Ollama
+        # Ollama must already be installed and running; never install or start it.
         if not self.is_ollama_installed():
-            if not self.install_ollama(lambda msg: wrapped_callback(msg, None, None)):
-                return False, "Nie udało się zainstalować Ollama"
+            return False, self.install_instructions()
+        if not self.is_ollama_running():
+            return False, ollama_start_instructions()
+
+        if not confirmed_download:
+            if self.is_model_available():
+                return True, OLLAMA_OCR_READY
+            return False, ollama_pull_instructions(self.model)
         
-        # Step 2: Start server
-        if not self.start_ollama_server(lambda msg: wrapped_callback(msg, None, None)):
-            return False, "Nie udało się uruchomić serwera Ollama"
-        
-        # Step 3: Download model (this one supports detailed progress)
-        if not self.download_model(wrapped_callback):
+        # Download model (this one supports detailed progress)
+        if not self.download_model(wrapped_callback, confirmed=True):
             return False, f"Nie udało się pobrać modelu {self.model}"
         
-        return True, "Ollama OCR gotowe do użycia"
+        return True, OLLAMA_OCR_READY
     
     def get_status(self) -> dict:
         """
