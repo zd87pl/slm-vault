@@ -47,7 +47,7 @@ dependencies = [
     "cryptography>=41.0.0",
 
     # MCP Protocol
-    "mcp>=1.0.0",
+    "mcp>=1.0.0,<2",
 
     # Database
     "sqlalchemy>=2.0.0",
