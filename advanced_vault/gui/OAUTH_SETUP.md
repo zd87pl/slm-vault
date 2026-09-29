@@ -82,7 +82,7 @@ Set these environment variables before running the GUI:
 ```bash
 export SUPABASE_URL="https://ibiapabkyskoazpgcymo.supabase.co"
 export SUPABASE_ANON_KEY="your_supabase_anon_key"
-export ENCLAVE_BACKEND_URL="https://keen-curiosity-production-1288.up.railway.app"
+export ENCLAVE_BACKEND_URL="https://your-backend.example.com"
 ```
 
 ## Test OAuth
