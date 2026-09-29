@@ -12,12 +12,15 @@ Performance optimizations (Phase 2-3):
 
 import logging
 import json
+import os
 import sqlite3
 from typing import List, Optional, Union
 from pathlib import Path
 import hashlib
 
 import numpy as np
+
+from advanced_vault.model_cache import load_offline_first
 
 logger = logging.getLogger(__name__)
 
@@ -302,11 +305,22 @@ class EmbeddingEngine:
             model_kwargs = {}
             if self.cache_dir:
                 model_kwargs["cache_folder"] = str(self.cache_dir)
+            # The cache sentence-transformers uses when no cache_folder is given.
+            cache_folder = model_kwargs.get("cache_folder") or os.getenv("SENTENCE_TRANSFORMERS_HOME")
 
-            self._model = sentence_transformer_cls(
+            def load_sentence_transformer(source: str, **kwargs):
+                return sentence_transformer_cls(source, device=device, **model_kwargs, **kwargs)
+
+            # Load from local files when the model is already downloaded;
+            # loading by repo id would query the Hugging Face Hub every time.
+            self._model = load_offline_first(
                 self.model_name,
-                device=device,
-                **model_kwargs
+                load_sentence_transformer,
+                cache_dir=cache_folder,
+                # Also finds a model whose files are split across caches: with
+                # transformers 4.x its weights go to TRANSFORMERS_CACHE, which
+                # the GUI sets to a different directory than HF_HUB_CACHE.
+                load_local=lambda: load_sentence_transformer(self.model_name, local_files_only=True),
             )
 
             self._dimension = self._model.get_sentence_embedding_dimension()

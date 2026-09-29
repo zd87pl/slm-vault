@@ -24,6 +24,8 @@ from base64 import b64decode
 from contextlib import contextmanager
 from dataclasses import dataclass
 
+from advanced_vault.model_cache import load_offline_first
+
 logger = logging.getLogger(__name__)
 
 # Check MLX availability
@@ -219,7 +221,9 @@ class MLXDoRAInference:
                     progress_callback(f"Loading {model_name.split('/')[-1]}...")
 
                 logger.info(f"Loading MLX model: {model_name}")
-                self.model, self.tokenizer = mlx_load(model_name)
+                # Use the local copy when already downloaded instead of
+                # querying the Hugging Face Hub on every load.
+                self.model, self.tokenizer = load_offline_first(model_name, mlx_load)
                 self.model_path = model_name
 
                 logger.info(f"✓ Loaded MLX model: {model_name}")
