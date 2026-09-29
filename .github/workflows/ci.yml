@@ -69,6 +69,62 @@ jobs:
           files: coverage.xml
           fail_ci_if_error: false
 
+  # Apple Silicon is the flagship platform, so run the core suite there too.
+  # The mlx extra is deliberately not installed: hosted runners are VMs with
+  # no usable Metal, so MLX suites skip via their import guards, as on Linux.
+  macos-test:
+    name: Tests (macOS Apple Silicon)
+    runs-on: macos-15  # arm64
+    timeout-minutes: 30
+    env:
+      # These runners report MPS as available, but allocations on it fail
+      # (actions/runner-images#9918, #11899), so keep embeddings on the CPU.
+      ENCLAVE_EMBEDDING_DEVICE: cpu
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install core + dev deps
+        run: |
+          pip install -e ".[dev]"
+
+      # Same command and flags as quick-test, minus coverage.
+      - name: Run tests
+        run: |
+          pytest tests/ advanced_vault/ \
+            --tb=short \
+            --timeout=120 \
+            -p no:warnings
+
+      # The two steps below mirror the smoke job's checks on macOS.
+      - name: CLI entry points respond
+        run: |
+          enclave --help
+          enclave doctor || true  # informational; exits 1 only on hard failures
+          enclave mcp config
+          enclave list
+
+      - name: README RAG example works verbatim
+        run: |
+          python - <<'EOF'
+          from advanced_vault.training import RAGIndex
+          import os
+
+          master_key = os.urandom(32)
+          with RAGIndex(master_key=master_key, db_path="./demo_rag.db") as index:
+              index.add_document(
+                  name="Q3 Report",
+                  content="Revenue increased 15% to $4.2M in Q3..."
+              )
+              results = index.search("What was Q3 revenue?")
+              assert results, "RAG search returned nothing"
+              print(f"OK: {results[0].document_name}")
+          EOF
+
   gui-test:
     name: GUI Tests (mock display)
     runs-on: ubuntu-latest
