@@ -1611,8 +1611,14 @@ def mcp_status(ctx):
         if info.get('config_path'):
             click.echo(f"{'':10s} config: {info['config_path']}")
 
-    ok, message = helper.test_mcp_server(use_cache=False)
-    click.echo(f"\nMCP server self-test: {'✅' if ok else '❌'} {message}")
+    # Same check as `enclave doctor`: launch the server as a client would.
+    from advanced_vault.cli.doctor import PASS, check_mcp_server
+
+    check = check_mcp_server()
+    ok = check.status == PASS
+    click.echo(f"\nMCP server self-test: {'✅' if ok else '❌'} {check.detail}")
+    if not ok:
+        click.echo(f"   ↳ fix: {check.fix}")
 
 
 @mcp.command("config")

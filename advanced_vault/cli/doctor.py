@@ -12,8 +12,13 @@ import importlib.util
 import json
 import os
 import platform
+import queue
 import shutil
+import subprocess
 import sys
+import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -87,19 +92,214 @@ def _total_ram_gb() -> float | None:
     return None
 
 
+# --- MCP server start-up check ---
+
+# Seconds for start-up plus the handshake; stopping the server can add up to ~7 s.
+MCP_SERVER_TIMEOUT = 25.0
+
+# Besides a server's configured "env", an MCP client passes through only these
+# variables (the default of the official mcp SDK's stdio client).
+_CLIENT_INHERITED_ENV = (
+    (
+        "APPDATA", "HOMEDRIVE", "HOMEPATH", "LOCALAPPDATA", "PATH", "PATHEXT",
+        "PROCESSOR_ARCHITECTURE", "SYSTEMDRIVE", "SYSTEMROOT", "TEMP", "USERNAME", "USERPROFILE",
+    )
+    if sys.platform == "win32"
+    else ("HOME", "LOGNAME", "PATH", "SHELL", "TERM", "USER")
+)
+_STDERR_TAIL_LINES = 8
+_MCP_SERVER_FIX = 'Run `pip install "mcp>=1.0.0,<2"` (or re-run ./setup.sh), then `enclave doctor` again'
+_MCP_SERVER_GENERIC_FIX = (
+    "Run `python -m advanced_vault.mcp_server` to see the server's full error "
+    "(Ctrl-C to stop), fix it, then `enclave doctor` again"
+)
+# stderr text that means the installed MCP SDK is the problem: the entry point's
+# own guard message, or the 1.x API missing under an unguarded start.
+_MCP_SDK_FAILURE_MARKERS = ("enclave-mcp: mcp ", "has no attribute 'list_tools'")
+
+
+class _MCPProbeError(Exception):
+    """The server did not complete the MCP handshake."""
+
+
+def _pump_lines(stream, lines: queue.Queue) -> None:
+    try:
+        for line in iter(stream.readline, b""):
+            lines.put(line)
+    except (OSError, ValueError):
+        pass
+    finally:
+        lines.put(None)  # EOF: the server closed stdout
+
+
+def _send_message(proc: subprocess.Popen, message: dict) -> None:
+    try:
+        proc.stdin.write(json.dumps(message).encode("utf-8") + b"\n")
+        proc.stdin.flush()
+    except OSError:
+        pass  # the server is gone; waiting for its reply reports how it exited
+
+
+def _await_reply(
+    proc: subprocess.Popen, lines: queue.Queue, request_id: int, method: str,
+    deadline: float, timeout: float,
+):
+    """Return the result of request ``request_id``, skipping anything else the server sends."""
+    while True:
+        # Checked on every line, so a server flooding stdout cannot outlast the deadline
+        if time.monotonic() >= deadline:
+            raise _MCPProbeError(f"no answer to `{method}` within {timeout:g}s")
+        try:
+            line = lines.get(timeout=max(0.0, deadline - time.monotonic()))
+        except queue.Empty:
+            raise _MCPProbeError(f"no answer to `{method}` within {timeout:g}s") from None
+        if line is None:
+            try:
+                code = proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                raise _MCPProbeError(f"server closed stdout before answering `{method}`") from None
+            raise _MCPProbeError(f"server exited with code {code} before answering `{method}`")
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue  # not JSON-RPC; MCP clients skip such lines as well
+        if not isinstance(message, dict) or "method" in message or message.get("id") != request_id:
+            continue  # a notification (e.g. a log message) or request, not our reply
+        if "error" in message:
+            error = message["error"]
+            reason = error.get("message", error) if isinstance(error, dict) else error
+            raise _MCPProbeError(f"`{method}` failed: {reason}")
+        return message.get("result")
+
+
+def _stop_server(proc: subprocess.Popen) -> None:
+    """Shut down like an MCP client: close stdin, then SIGTERM, then SIGKILL."""
+    try:
+        proc.stdin.close()
+    except OSError:
+        pass
+    for escalate in (None, proc.terminate, proc.kill):
+        if escalate is not None:
+            escalate()
+        try:
+            proc.wait(timeout=1)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _list_mcp_tools(entry: dict, cwd: str, errlog, timeout: float) -> int:
+    """Launch an MCP client config entry, run initialize + tools/list, count the tools.
+
+    A minimal newline-delimited JSON-RPC client instead of the mcp SDK's, so the
+    check works with any SDK version, including a broken one it is diagnosing.
+    The server is always stopped before this returns.
+    """
+    deadline = time.monotonic() + timeout
+    env = {key: os.environ[key] for key in _CLIENT_INHERITED_ENV if key in os.environ}
+    env.update(entry.get("env") or {})
+    try:
+        proc = subprocess.Popen(
+            [entry["command"], *entry.get("args", [])],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=errlog,
+            env=env,
+            cwd=cwd,
+        )
+    except OSError as exc:
+        raise _MCPProbeError(f"could not launch `{entry['command']}`: {exc}") from exc
+
+    lines: queue.Queue = queue.Queue()
+    reader = threading.Thread(target=_pump_lines, args=(proc.stdout, lines), daemon=True)
+    try:
+        reader.start()
+        _send_message(proc, {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2024-11-05",  # the first revision: every 1.x server accepts it
+                "capabilities": {},
+                "clientInfo": {"name": "enclave-doctor", "version": "1"},
+            },
+        })
+        _await_reply(proc, lines, 1, "initialize", deadline, timeout)
+        _send_message(proc, {"jsonrpc": "2.0", "method": "notifications/initialized"})
+        _send_message(proc, {"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
+        result = _await_reply(proc, lines, 2, "tools/list", deadline, timeout)
+    finally:
+        _stop_server(proc)
+        if reader.ident is not None:
+            reader.join(timeout=2)
+        if not reader.is_alive():
+            proc.stdout.close()
+
+    tools = result.get("tools") if isinstance(result, dict) else None
+    if not isinstance(tools, list):
+        raise _MCPProbeError("`tools/list` did not return a tool list")
+    return len(tools)
+
+
+def _stderr_tail(path: str) -> str:
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, os.path.getsize(path) - 16384))
+            text = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return ""
+    tail = [line.rstrip() for line in text.splitlines() if line.strip()][-_STDERR_TAIL_LINES:]
+    return "".join(f"\n   │ {line}" for line in tail)
+
+
+def check_mcp_server(
+    timeout: float = MCP_SERVER_TIMEOUT, server_entry: dict | None = None
+) -> CheckResult:
+    """Start the MCP server exactly as an MCP client would and list its tools.
+
+    The command comes from the code that writes the client config for
+    `enclave mcp install` / `enclave mcp config`, but with VAULT_PATH pointing at
+    a throwaway directory so the user's real vault is never touched.
+    ``server_entry`` replaces that config entry (used by tests).
+    """
+    name = "MCP server"
+    try:
+        with tempfile.TemporaryDirectory(prefix="enclave-doctor-", ignore_cleanup_errors=True) as tmp:
+            if server_entry is None:
+                from advanced_vault.gui.mcp_setup import MCPSetupHelper
+
+                helper = MCPSetupHelper(vault_path=os.path.join(tmp, "vault"))
+                server_entry = helper.generate_mcp_server_entry()
+            stderr_path = os.path.join(tmp, "server-stderr.log")
+            try:
+                with open(stderr_path, "wb") as errlog:
+                    tool_count = _list_mcp_tools(server_entry, tmp, errlog, timeout)
+            except _MCPProbeError as exc:
+                tail = _stderr_tail(stderr_path)
+                detail = f"{exc}; its stderr ends with:{tail}" if tail else str(exc)
+                sdk_problem = any(marker in tail for marker in _MCP_SDK_FAILURE_MARKERS)
+                fix = _MCP_SERVER_FIX if sdk_problem else _MCP_SERVER_GENERIC_FIX
+                return CheckResult(name, FAIL, detail, fix)
+    except OSError as exc:
+        return CheckResult(
+            name, FAIL, f"could not run the start-up check: {exc}", _MCP_SERVER_GENERIC_FIX
+        )
+    return CheckResult(name, PASS, f"starts over stdio and lists {tool_count} tools")
+
+
 def run_checks(vault_path: str = "~/.vault") -> DoctorReport:
     report = DoctorReport()
     vault_dir = Path(vault_path).expanduser()
 
     # --- Python ---
     py = sys.version_info
-    if (py.major, py.minor) >= (3, 10):
+    if (py.major, py.minor) >= (3, 11):
         report.add("Python", PASS, f"{platform.python_version()} at {sys.executable}")
     else:
         report.add(
             "Python",
             FAIL,
-            f"{platform.python_version()} — Enclave needs Python 3.10+",
+            f"{platform.python_version()} — Enclave needs Python 3.11+",
             "Install Python 3.11+ (e.g. `brew install python@3.11`) and re-run setup.sh",
         )
 
@@ -249,6 +449,9 @@ def run_checks(vault_path: str = "~/.vault") -> DoctorReport:
             report.add("Vault", PASS, f"initialized at {vault_dir}, master key protected")
     else:
         report.add("Vault", PASS, f"directory exists at {vault_dir} (no master key yet)")
+
+    # --- MCP server (launched the way Claude Desktop / Cursor launch it) ---
+    report.checks.append(check_mcp_server())
 
     # --- Claude Desktop integration ---
     try:

@@ -1586,6 +1586,12 @@ def create_vault_server(vault_path: str = "~/.vault") -> VaultMCPServer:
     Returns:
         Initialized VaultMCPServer instance
     """
+    # Also reached through the `mcp.servers` entry point, which skips main()
+    from advanced_vault.mcp_server import MCP_SDK_FIX, mcp_sdk_problem
+
+    problem = mcp_sdk_problem()
+    if problem:
+        raise RuntimeError(f"{problem}. Fix it with: {MCP_SDK_FIX}")
     return VaultMCPServer(vault_path)
 
 
@@ -1611,5 +1617,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    from advanced_vault.mcp_server import exit_if_sdk_incompatible
+
+    exit_if_sdk_incompatible()
     import asyncio
     asyncio.run(main())
