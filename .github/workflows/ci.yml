@@ -50,7 +50,7 @@ jobs:
         run: |
           pip install -e ".[dev]"
 
-      # Full testpaths: optional-dependency suites (backend, GUI, MLX) skip
+      # Full testpaths: optional-dependency suites (GUI, MLX) skip
       # automatically via conftest guards.
       - name: Run tests
         run: |
